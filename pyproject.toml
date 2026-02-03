@@ -1,0 +1,78 @@
+[build-system]
+requires = ["maturin>=1.4,<2.0"]
+build-backend = "maturin"
+
+[project]
+name = "swiftllm"
+version = "0.1.0"
+description = "High-performance LLM inference engine with PagedAttention"
+readme = "README.md"
+license = { file = "LICENSE" }
+requires-python = ">=3.8"
+keywords = ["llm", "inference", "cuda", "transformers", "machine-learning"]
+authors = [
+    { name = "SwiftLLM Contributors" }
+]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "Intended Audience :: Science/Research",
+    "License :: OSI Approved :: Apache Software License",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.8",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Rust",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+]
+dependencies = [
+    "numpy>=1.20",
+    "transformers>=4.30",
+    "torch>=2.0",
+    "safetensors>=0.3",
+    "tokenizers>=0.13",
+    "tqdm>=4.60",
+    "requests>=2.25",
+    "aiohttp>=3.8",
+    "pydantic>=2.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.0",
+    "pytest-asyncio>=0.21",
+    "black>=23.0",
+    "ruff>=0.1",
+    "mypy>=1.0",
+]
+
+[project.scripts]
+swiftllm = "swiftllm.cli:main"
+
+[project.urls]
+Homepage = "https://github.com/swiftllm/swiftllm"
+Documentation = "https://swiftllm.dev/docs"
+Repository = "https://github.com/swiftllm/swiftllm"
+Issues = "https://github.com/swiftllm/swiftllm/issues"
+
+[tool.maturin]
+python-source = "python"
+features = ["pyo3/extension-module"]
+module-name = "swiftllm._core"
+
+[tool.black]
+line-length = 100
+target-version = ["py38", "py39", "py310", "py311"]
+
+[tool.ruff]
+line-length = 100
+select = ["E", "F", "W", "I", "N", "D", "UP"]
+ignore = ["D100", "D104"]
+
+[tool.mypy]
+python_version = "3.8"
+warn_return_any = true
+warn_unused_configs = true

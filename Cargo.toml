@@ -1,0 +1,114 @@
+[package]
+name = "swiftllm"
+version = "0.1.0"
+edition = "2021"
+authors = ["SwiftLLM Contributors"]
+license = "Apache-2.0"
+description = "High-performance LLM inference engine with PagedAttention"
+
+[lib]
+name = "_core"
+crate-type = ["cdylib"]
+
+[dependencies]
+pyo3 = { version = "0.20", features = ["extension-module", "abi3-py38"] }
+swiftllm-core = { path = "crates/swiftllm-core" }
+swiftllm-models = { path = "crates/swiftllm-models" }
+tokio = { version = "1.35", features = ["full"] }
+
+[workspace]
+resolver = "2"
+members = [
+    "crates/swiftllm-core",
+    "crates/swiftllm-models",
+    "crates/swiftllm-cuda",
+    "crates/swiftllm-server",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+authors = ["SwiftLLM Contributors"]
+license = "Apache-2.0"
+repository = "https://github.com/swiftllm/swiftllm"
+description = "High-performance LLM inference engine with PagedAttention, continuous batching, and multi-GPU support"
+keywords = ["llm", "inference", "cuda", "transformer", "machine-learning"]
+categories = ["science", "machine-learning"]
+
+[workspace.dependencies]
+# Core dependencies
+tokio = { version = "1.35", features = ["full"] }
+async-trait = "0.1"
+futures = "0.3"
+parking_lot = "0.12"
+crossbeam = "0.8"
+dashmap = "5.5"
+rayon = "1.8"
+
+# Serialization
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+toml = "0.8"
+
+# Tensor operations
+half = { version = "2.3", features = ["serde", "num-traits", "bytemuck"] }
+num-traits = "0.2"
+ndarray = "0.15"
+bytemuck = { version = "1.14", features = ["derive"] }
+
+# CUDA bindings
+cudarc = { version = "0.12", features = ["cuda-12040"] }
+
+# Web server
+axum = { version = "0.7", features = ["ws", "macros"] }
+tower = "0.4"
+tower-http = { version = "0.5", features = ["cors", "trace", "compression-gzip"] }
+hyper = { version = "1.1", features = ["full"] }
+
+# Logging and tracing
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
+
+# Error handling
+thiserror = "1.0"
+anyhow = "1.0"
+
+# CLI
+clap = { version = "4.4", features = ["derive", "env"] }
+
+# Python bindings
+pyo3 = { version = "0.20", features = ["extension-module", "abi3-py38"] }
+
+# Testing
+criterion = "0.5"
+proptest = "1.4"
+tokio-test = "0.4"
+
+# Utilities
+uuid = { version = "1.6", features = ["v4", "serde"] }
+chrono = { version = "0.4", features = ["serde"] }
+rand = "0.8"
+regex = "1.10"
+memmap2 = "0.9"
+indicatif = "0.17"
+humansize = "2.1"
+
+# Model formats
+safetensors = "0.4"
+tokenizers = "0.15"
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+opt-level = 3
+debug = false
+strip = true
+
+[profile.release-with-debug]
+inherits = "release"
+debug = true
+strip = false
+
+[profile.bench]
+inherits = "release"
+debug = true

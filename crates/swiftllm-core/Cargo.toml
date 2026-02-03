@@ -1,0 +1,53 @@
+[package]
+name = "swiftllm-core"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "Core inference engine for SwiftLLM"
+
+[dependencies]
+# Async runtime
+tokio = { workspace = true }
+async-trait = { workspace = true }
+futures = { workspace = true }
+
+# Concurrency
+parking_lot = { workspace = true }
+crossbeam = { workspace = true }
+dashmap = { workspace = true }
+rayon = { workspace = true }
+
+# Serialization
+serde = { workspace = true }
+serde_json = { workspace = true }
+
+# Tensor operations
+half = { workspace = true }
+num-traits = { workspace = true }
+ndarray = { workspace = true }
+bytemuck = { workspace = true }
+
+# Error handling
+thiserror = { workspace = true }
+anyhow = { workspace = true }
+
+# Logging
+tracing = { workspace = true }
+
+# Utilities
+uuid = { workspace = true }
+rand = { workspace = true }
+
+# Internal crates
+swiftllm-cuda = { path = "../swiftllm-cuda", optional = true }
+
+[features]
+default = ["cuda"]
+cuda = ["dep:swiftllm-cuda"]
+
+[dev-dependencies]
+criterion = { workspace = true }
+proptest = { workspace = true }
+tokio-test = { workspace = true }
+
