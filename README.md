@@ -34,7 +34,32 @@
 
 ## Installation
 
-### From Source
+### Quick Install (Recommended)
+
+```bash
+git clone https://github.com/swiftllm/swiftllm.git
+cd swiftllm
+./install.sh
+```
+
+The installer automatically:
+- Detects your GPU and CUDA toolkit
+- Creates a Python virtual environment
+- Installs Rust if needed
+- Builds SwiftLLM from source
+- Installs llama-cpp-python with GPU support (if available)
+
+#### Installer Options
+
+```bash
+./install.sh --cpu          # CPU-only (skip GPU detection)
+./install.sh --gpu          # Force GPU/CUDA build
+./install.sh --venv ~/sllm  # Custom venv location
+./install.sh --no-venv      # Install into current Python environment
+./install.sh --model-dir /data/models  # Set model storage directory
+```
+
+### Manual Install
 
 ```bash
 git clone https://github.com/swiftllm/swiftllm.git
@@ -44,22 +69,18 @@ cd swiftllm
 pip install maturin
 maturin build --release
 pip install target/wheels/swiftllm-*.whl
-```
 
-### For GGUF Model Support
-
-```bash
-# CPU only
+# GGUF support (CPU)
 pip install llama-cpp-python
 
-# With CUDA GPU acceleration
+# GGUF support (CUDA GPU)
 CMAKE_ARGS='-DGGML_CUDA=on' CUDACXX=/usr/local/cuda/bin/nvcc pip install llama-cpp-python
 ```
 
 ### Requirements
 
 - Python 3.8+
-- Rust 1.70+ (for building from source)
+- Rust 1.70+ (auto-installed by `install.sh` if missing)
 - CUDA 11.8+ (optional, for GPU acceleration)
 
 ## Quick Start
