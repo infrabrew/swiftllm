@@ -13,6 +13,7 @@ Example usage:
 from .engine import LLM, AsyncLLM, LLMEngine, RequestOutput, CompletionOutput
 from .config import SamplingParams, EngineConfig, ServerConfig, LoRARequest
 from .sampling import SamplingStrategy, create_sampler
+from .model_resolver import resolve_model
 
 __version__ = "0.1.0"
 __all__ = [
@@ -28,6 +29,8 @@ __all__ = [
     "EngineConfig",
     "ServerConfig",
     "LoRARequest",
+    # Model resolution
+    "resolve_model",
     # Sampling
     "SamplingStrategy",
     "create_sampler",

@@ -66,6 +66,10 @@ def main():
     chat_parser = subparsers.add_parser("chat", help="Interactive chat mode")
     _add_chat_args(chat_parser)
 
+    # Download command
+    download_parser = subparsers.add_parser("download", help="Download a model from HuggingFace")
+    _add_download_args(download_parser)
+
     args = parser.parse_args()
 
     if args.command is None:
@@ -80,6 +84,7 @@ def main():
         "convert": cmd_convert,
         "info": cmd_info,
         "chat": cmd_chat,
+        "download": cmd_download,
     }
 
     try:
@@ -175,6 +180,12 @@ def _add_serve_args(parser: argparse.ArgumentParser):
         default=5,
         help="Number of speculative tokens (default: 5)",
     )
+    parser.add_argument(
+        "--download-dir",
+        default=None,
+        help="Directory for downloading models (default: ~/.cache/swiftllm/models, "
+             "or set SWIFTLLM_MODEL_DIR env var)",
+    )
 
 
 def _add_generate_args(parser: argparse.ArgumentParser):
@@ -245,6 +256,12 @@ def _add_generate_args(parser: argparse.ArgumentParser):
         action="store_true",
         help="Output in JSON format",
     )
+    parser.add_argument(
+        "--download-dir",
+        default=None,
+        help="Directory for downloading models (default: ~/.cache/swiftllm/models, "
+             "or set SWIFTLLM_MODEL_DIR env var)",
+    )
 
 
 def _add_benchmark_args(parser: argparse.ArgumentParser):
@@ -295,6 +312,12 @@ def _add_benchmark_args(parser: argparse.ArgumentParser):
         default=None,
         help="Output file for results (JSON)",
     )
+    parser.add_argument(
+        "--download-dir",
+        default=None,
+        help="Directory for downloading models (default: ~/.cache/swiftllm/models, "
+             "or set SWIFTLLM_MODEL_DIR env var)",
+    )
 
 
 def _add_convert_args(parser: argparse.ArgumentParser):
@@ -333,12 +356,18 @@ def _add_info_args(parser: argparse.ArgumentParser):
     parser.add_argument(
         "-m", "--model",
         required=True,
-        help="Path to the model",
+        help="Path to the model or HuggingFace model ID",
     )
     parser.add_argument(
         "--json",
         action="store_true",
         help="Output in JSON format",
+    )
+    parser.add_argument(
+        "--download-dir",
+        default=None,
+        help="Directory for downloading models (default: ~/.cache/swiftllm/models, "
+             "or set SWIFTLLM_MODEL_DIR env var)",
     )
 
 
@@ -377,6 +406,71 @@ def _add_chat_args(parser: argparse.ArgumentParser):
         action="store_true",
         help="Trust remote code from HuggingFace",
     )
+    parser.add_argument(
+        "--download-dir",
+        default=None,
+        help="Directory for downloading models (default: ~/.cache/swiftllm/models, "
+             "or set SWIFTLLM_MODEL_DIR env var)",
+    )
+
+
+def _add_download_args(parser: argparse.ArgumentParser):
+    """Add arguments for the download command."""
+    parser.add_argument(
+        "-m", "--model",
+        required=True,
+        help="HuggingFace model ID (e.g., 'org/model'), "
+             "HuggingFace URL (e.g., 'https://huggingface.co/org/repo/blob/main/file.gguf'), "
+             "or repo:filename shorthand (e.g., 'org/repo:file.gguf')",
+    )
+    parser.add_argument(
+        "--download-dir",
+        default=None,
+        help="Directory to save the model (default: ~/.cache/swiftllm/models, "
+             "or set SWIFTLLM_MODEL_DIR env var)",
+    )
+    parser.add_argument(
+        "--revision",
+        default=None,
+        help="Git revision to download (branch, tag, or commit hash)",
+    )
+    parser.add_argument(
+        "--token",
+        default=None,
+        help="HuggingFace API token for gated models (or set HF_TOKEN env var)",
+    )
+
+
+def cmd_download(args: argparse.Namespace):
+    """Download a model from HuggingFace."""
+    from .model_resolver import resolve_model, is_local_path
+
+    if is_local_path(args.model):
+        print(f"'{args.model}' is a local path, nothing to download.")
+        return
+
+    print(f"Downloading: {args.model}")
+    if args.download_dir:
+        print(f"Destination: {args.download_dir}")
+
+    local_path = resolve_model(
+        model=args.model,
+        download_dir=args.download_dir,
+        token=args.token,
+        revision=args.revision,
+    )
+
+    print(f"\nDone! Model saved to: {local_path}")
+
+    # Show file size
+    model_path = Path(local_path)
+    if model_path.is_file():
+        size_gb = model_path.stat().st_size / (1024 ** 3)
+        print(f"Size: {size_gb:.2f} GB")
+    elif model_path.is_dir():
+        total = sum(f.stat().st_size for f in model_path.rglob("*") if f.is_file())
+        size_gb = total / (1024 ** 3)
+        print(f"Total size: {size_gb:.2f} GB")
 
 
 def cmd_serve(args: argparse.Namespace):
@@ -408,6 +502,7 @@ def cmd_serve(args: argparse.Namespace):
         tensor_parallel_size=args.tensor_parallel_size,
         gpu_memory_utilization=args.gpu_memory_utilization,
         trust_remote_code=args.trust_remote_code,
+        download_dir=args.download_dir,
     )
 
     app = FastAPI(title="SwiftLLM", version=_get_version())
@@ -512,6 +607,7 @@ def cmd_generate(args: argparse.Namespace):
         model=args.model,
         tensor_parallel_size=args.tensor_parallel_size,
         trust_remote_code=args.trust_remote_code,
+        download_dir=args.download_dir,
     )
 
     params = SamplingParams(
@@ -577,6 +673,7 @@ def cmd_benchmark(args: argparse.Namespace):
     llm = LLM(
         model=args.model,
         tensor_parallel_size=args.tensor_parallel_size,
+        download_dir=args.download_dir,
     )
 
     # Generate random prompts of specified length
@@ -650,7 +747,13 @@ def cmd_convert(args: argparse.Namespace):
 
 def cmd_info(args: argparse.Namespace):
     """Display model information."""
-    model_path = Path(args.model)
+    from .model_resolver import resolve_model
+
+    resolved = resolve_model(
+        model=args.model,
+        download_dir=args.download_dir,
+    )
+    model_path = Path(resolved)
 
     info = {
         "path": str(model_path),
@@ -703,6 +806,7 @@ def cmd_chat(args: argparse.Namespace):
         model=args.model,
         tensor_parallel_size=args.tensor_parallel_size,
         trust_remote_code=args.trust_remote_code,
+        download_dir=args.download_dir,
     )
 
     params = SamplingParams(

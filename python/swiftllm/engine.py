@@ -99,6 +99,11 @@ class RequestOutput:
         )
 
 
+def _is_gguf_model(model_path: str) -> bool:
+    """Check if the model path points to a GGUF file."""
+    return model_path.lower().endswith(".gguf")
+
+
 class LLMEngine:
     """Low-level LLM inference engine.
 
@@ -123,13 +128,77 @@ class LLMEngine:
         # Lazy import to avoid startup overhead
         self._tokenizer = None
         self._model = None
+        self._is_gguf = False
 
     def _ensure_initialized(self):
         """Ensure the engine is initialized."""
         if self._initialized:
             return
 
-        # Import heavy dependencies only when needed
+        # Resolve model path (download from HuggingFace if needed)
+        from .model_resolver import resolve_model
+
+        original_model = self.config.model
+        resolved_path = resolve_model(
+            model=self.config.model,
+            download_dir=self.config.download_dir,
+        )
+        self.config.model = resolved_path
+
+        if self.config.tokenizer is None or self.config.tokenizer == original_model:
+            self.config.tokenizer = resolved_path
+        else:
+            self.config.tokenizer = resolve_model(
+                model=self.config.tokenizer,
+                download_dir=self.config.download_dir,
+            )
+
+        # Check if this is a GGUF model
+        if _is_gguf_model(resolved_path):
+            self._init_gguf(resolved_path)
+        else:
+            self._init_transformers(resolved_path)
+
+        self._initialized = True
+
+    def _init_gguf(self, model_path: str):
+        """Initialize with llama-cpp-python for GGUF models."""
+        try:
+            from llama_cpp import Llama
+        except ImportError:
+            raise ImportError(
+                "llama-cpp-python is required for GGUF models. "
+                "Install with: pip install llama-cpp-python\n"
+                "For CUDA: CMAKE_ARGS='-DGGML_CUDA=on' pip install llama-cpp-python"
+            )
+
+        self._is_gguf = True
+
+        # Determine GPU layers
+        n_gpu_layers = -1  # offload all layers to GPU by default
+        if self.config.device == "cpu":
+            n_gpu_layers = 0
+
+        # Context length
+        n_ctx = self.config.max_model_len or 4096
+
+        print(f"Loading GGUF model: {model_path}")
+        print(f"  GPU layers: {'all' if n_gpu_layers == -1 else n_gpu_layers}")
+        print(f"  Context length: {n_ctx}")
+
+        self._model = Llama(
+            model_path=model_path,
+            n_gpu_layers=n_gpu_layers,
+            n_ctx=n_ctx,
+            verbose=False,
+        )
+
+        # llama-cpp-python has its own tokenizer built in
+        self._tokenizer = None
+        print("GGUF model loaded successfully!")
+
+    def _init_transformers(self, model_path: str):
+        """Initialize with transformers tokenizer for non-GGUF models."""
         try:
             from transformers import AutoTokenizer
         except ImportError:
@@ -138,16 +207,11 @@ class LLMEngine:
                 "Install with: pip install transformers"
             )
 
-        # Load tokenizer
+        self._is_gguf = False
         self._tokenizer = AutoTokenizer.from_pretrained(
             self.config.tokenizer,
             trust_remote_code=self.config.trust_remote_code,
         )
-
-        # TODO: Initialize actual Rust engine via PyO3
-        # For now, we'll use a placeholder that demonstrates the API
-
-        self._initialized = True
 
     def add_request(
         self,
@@ -176,9 +240,11 @@ class LLMEngine:
         if sampling_params is None:
             sampling_params = SamplingParams()
 
-        # Tokenize if needed
-        if prompt_token_ids is None:
+        # Tokenize if needed (for non-GGUF models)
+        if prompt_token_ids is None and not self._is_gguf:
             prompt_token_ids = self._tokenizer.encode(prompt)
+        elif prompt_token_ids is None:
+            prompt_token_ids = []  # GGUF handles tokenization internally
 
         self._pending_requests[request_id] = {
             "prompt": prompt,
@@ -205,19 +271,93 @@ class LLMEngine:
         """
         self._ensure_initialized()
 
-        # TODO: Implement actual engine step via Rust
-        # This is a placeholder that simulates generation
+        if self._is_gguf:
+            return self._step_gguf()
+        else:
+            return self._step_placeholder()
 
+    def _step_gguf(self) -> List[RequestOutput]:
+        """Run inference step using llama-cpp-python."""
         outputs = []
         completed_ids = []
 
         for request_id, request_data in self._pending_requests.items():
-            # Simulate token generation
             prompt = request_data["prompt"]
             prompt_token_ids = request_data["prompt_token_ids"]
             params = request_data["sampling_params"]
 
-            # For demo: generate a simple response
+            # Build llama-cpp generation kwargs
+            kwargs = {
+                "max_tokens": params.max_tokens,
+                "temperature": params.temperature,
+                "top_p": params.top_p,
+            }
+
+            if params.top_k > 0:
+                kwargs["top_k"] = params.top_k
+
+            if params.stop:
+                kwargs["stop"] = params.stop
+
+            if params.frequency_penalty != 0.0:
+                kwargs["frequency_penalty"] = params.frequency_penalty
+
+            if params.presence_penalty != 0.0:
+                kwargs["presence_penalty"] = params.presence_penalty
+
+            if params.repetition_penalty != 1.0:
+                kwargs["repeat_penalty"] = params.repetition_penalty
+
+            # Run generation
+            result = self._model(prompt, **kwargs)
+
+            response_text = result["choices"][0]["text"]
+            finish = result["choices"][0].get("finish_reason", "stop")
+
+            if finish == "length":
+                finish_reason = FinishReason.LENGTH
+            else:
+                finish_reason = FinishReason.STOP
+
+            # Get token count from usage
+            completion_tokens = result.get("usage", {}).get("completion_tokens", 0)
+
+            output = RequestOutput(
+                request_id=request_id,
+                prompt=prompt,
+                prompt_token_ids=prompt_token_ids,
+                outputs=[
+                    CompletionOutput(
+                        index=0,
+                        text=response_text,
+                        token_ids=list(range(completion_tokens)),
+                        finish_reason=finish_reason,
+                    )
+                ],
+                finished=True,
+                metrics={
+                    "prompt_tokens": result.get("usage", {}).get("prompt_tokens", 0),
+                    "completion_tokens": completion_tokens,
+                },
+            )
+            outputs.append(output)
+            completed_ids.append(request_id)
+
+        for request_id in completed_ids:
+            del self._pending_requests[request_id]
+
+        return outputs
+
+    def _step_placeholder(self) -> List[RequestOutput]:
+        """Placeholder step for non-GGUF models (until Rust backend is ready)."""
+        outputs = []
+        completed_ids = []
+
+        for request_id, request_data in self._pending_requests.items():
+            prompt = request_data["prompt"]
+            prompt_token_ids = request_data["prompt_token_ids"]
+            params = request_data["sampling_params"]
+
             response_text = " I'm SwiftLLM, ready to help!"
             response_tokens = self._tokenizer.encode(response_text)
 
@@ -238,7 +378,6 @@ class LLMEngine:
             outputs.append(output)
             completed_ids.append(request_id)
 
-        # Clean up completed requests
         for request_id in completed_ids:
             del self._pending_requests[request_id]
 
@@ -272,6 +411,7 @@ class LLM:
         tokenizer: Optional[str] = None,
         dtype: str = "auto",
         quantization: Optional[str] = None,
+        download_dir: Optional[str] = None,
         max_model_len: Optional[int] = None,
         tensor_parallel_size: int = 1,
         gpu_memory_utilization: float = 0.90,
@@ -287,6 +427,7 @@ class LLM:
             tokenizer: Path to tokenizer. Defaults to model path.
             dtype: Data type for model weights ('auto', 'float16', 'bfloat16', 'float32').
             quantization: Quantization method ('awq', 'gptq', 'squeezellm', None).
+            download_dir: Directory for downloading models. Defaults to ~/.cache/swiftllm/models.
             max_model_len: Maximum sequence length for the model.
             tensor_parallel_size: Number of GPUs for tensor parallelism.
             gpu_memory_utilization: Fraction of GPU memory to use.
@@ -306,6 +447,7 @@ class LLM:
             tokenizer=tokenizer,
             dtype=dtype_enum,
             quantization=quant_enum,
+            download_dir=download_dir,
             max_model_len=max_model_len,
             tensor_parallel_size=tensor_parallel_size,
             gpu_memory_utilization=gpu_memory_utilization,
@@ -411,11 +553,16 @@ class LLM:
         if isinstance(prompts, str):
             prompts = [prompts]
 
+        if self._engine._is_gguf:
+            return [self._engine._model.tokenize(p.encode()) for p in prompts]
+
         return [self._engine._tokenizer.encode(p) for p in prompts]
 
     def get_tokenizer(self):
         """Get the tokenizer used by this LLM."""
         self._engine._ensure_initialized()
+        if self._engine._is_gguf:
+            return self._engine._model
         return self._engine._tokenizer
 
 

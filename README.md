@@ -9,101 +9,146 @@
 
 **SwiftLLM** is a high-performance LLM inference and serving engine built with Rust for maximum speed and efficiency. It features state-of-the-art memory management, continuous batching, and multi-GPU support.
 
-## ✨ Key Features
+## Key Features
 
-- 🚀 **High Throughput**: Continuous batching and efficient scheduling for maximum tokens/second
-- 💾 **Memory Efficient**: PagedAttention for optimal KV cache management
-- ⚡ **Low Latency**: Optimized CUDA kernels and speculative decoding
-- 🔄 **Tensor Parallelism**: Scale to multiple GPUs seamlessly
-- 🌐 **OpenAI Compatible**: Drop-in replacement for OpenAI API
-- 🐍 **Python Friendly**: Easy-to-use Python API with async support
-- 📦 **Multiple Formats**: Support for HuggingFace, GGUF, and SafeTensors
+- **High Throughput**: Continuous batching and efficient scheduling for maximum tokens/second
+- **Memory Efficient**: PagedAttention for optimal KV cache management
+- **Low Latency**: Optimized CUDA kernels and speculative decoding
+- **Tensor Parallelism**: Scale to multiple GPUs seamlessly
+- **OpenAI Compatible**: Drop-in replacement for OpenAI API
+- **Python Friendly**: Easy-to-use Python API with async support
+- **Multiple Formats**: Support for HuggingFace, GGUF, and SafeTensors
+- **Model Downloading**: Download models from HuggingFace Hub by ID or URL
+- **GGUF Inference**: Run quantized GGUF models on GPU via llama-cpp-python
 
-## 🎯 Supported Models
+## Supported Models
 
 | Architecture | Models |
 |-------------|--------|
 | **LLaMA** | LLaMA, LLaMA 2, LLaMA 3, Code Llama |
 | **Mistral** | Mistral 7B, Mixtral 8x7B |
-| **Qwen** | Qwen, Qwen 2 |
+| **Qwen** | Qwen, Qwen 2, Qwen 3 |
 | **Phi** | Phi-2, Phi-3 |
+| **Falcon** | Falcon |
+| **Gemma** | Gemma |
 
-## 📦 Installation
-
-### From PyPI (Recommended)
-
-```bash
-pip install swiftllm
-```
+## Installation
 
 ### From Source
 
 ```bash
-# Clone the repository
 git clone https://github.com/swiftllm/swiftllm.git
 cd swiftllm
 
-# Build with Rust
-cargo build --release
+# Build with Rust + Python
+pip install maturin
+maturin build --release
+pip install target/wheels/swiftllm-*.whl
+```
 
-# Install Python package
-pip install -e .
+### For GGUF Model Support
+
+```bash
+# CPU only
+pip install llama-cpp-python
+
+# With CUDA GPU acceleration
+CMAKE_ARGS='-DGGML_CUDA=on' CUDACXX=/usr/local/cuda/bin/nvcc pip install llama-cpp-python
 ```
 
 ### Requirements
 
 - Python 3.8+
-- CUDA 11.8+ (for GPU acceleration)
 - Rust 1.70+ (for building from source)
+- CUDA 11.8+ (optional, for GPU acceleration)
 
-## 🚀 Quick Start
+## Quick Start
+
+### Download a Model
+
+```bash
+# Download a full HuggingFace repo
+swiftllm download -m meta-llama/Llama-2-7b-hf
+
+# Download a single GGUF file by URL
+swiftllm download -m "https://huggingface.co/TeichAI/Qwen3-32B-Kimi-K2-Thinking-Distill-GGUF/blob/main/Qwen3-32B-Kimi-K2-Thinking-Distill.q4_k_m.gguf"
+
+# Download a single GGUF file with shorthand
+swiftllm download -m "TeichAI/Qwen3-32B-Kimi-K2-Thinking-Distill-GGUF:Qwen3-32B-Kimi-K2-Thinking-Distill.q4_k_m.gguf"
+
+# Specify where to store models
+swiftllm download -m "Qwen/Qwen2.5-0.5B-Instruct-GGUF:qwen2.5-0.5b-instruct-q4_k_m.gguf" --download-dir /data/models
+```
+
+### Run a GGUF Model
+
+```bash
+# One-shot generation
+swiftllm generate \
+  -m "Qwen/Qwen2.5-0.5B-Instruct-GGUF:qwen2.5-0.5b-instruct-q4_k_m.gguf" \
+  -p "What is the capital of France?" \
+  --max-tokens 128
+
+# Interactive chat
+swiftllm chat \
+  -m "Qwen/Qwen2.5-0.5B-Instruct-GGUF:qwen2.5-0.5b-instruct-q4_k_m.gguf"
+
+# Use a local GGUF file directly
+swiftllm generate -m /path/to/model.gguf -p "Hello world"
+```
 
 ### Python API
 
 ```python
 from swiftllm import LLM, SamplingParams
 
-# Initialize the model
-llm = LLM(model="meta-llama/Llama-2-7b-hf")
+# Load a GGUF model (downloads automatically if not cached)
+llm = LLM(model="Qwen/Qwen2.5-0.5B-Instruct-GGUF:qwen2.5-0.5b-instruct-q4_k_m.gguf")
+
+# Or from a local path
+llm = LLM(model="/path/to/model.gguf")
 
 # Generate text
-sampling_params = SamplingParams(temperature=0.7, max_tokens=256)
-outputs = llm.generate(["Hello, how are you?"], sampling_params)
-
+params = SamplingParams(temperature=0.7, max_tokens=256)
+outputs = llm.generate(["Hello, how are you?"], params)
 print(outputs[0].outputs[0].text)
+```
+
+### Model Resolver API
+
+```python
+from swiftllm import resolve_model
+
+# Resolve a HuggingFace URL to a local path (downloads if needed)
+path = resolve_model("https://huggingface.co/org/repo/blob/main/model.gguf")
+
+# Resolve a repo:filename shorthand
+path = resolve_model("org/repo:model.q4_k_m.gguf")
+
+# Resolve a full repo
+path = resolve_model("meta-llama/Llama-2-7b-hf")
+
+# Local paths are validated and returned as-is
+path = resolve_model("/data/models/my-model.gguf")
+
+# Control download location
+path = resolve_model("org/repo:model.gguf", download_dir="/data/models")
 ```
 
 ### OpenAI-Compatible Server
 
 ```bash
-# Start the server
-swiftllm serve --model meta-llama/Llama-2-7b-hf --port 8000
+swiftllm serve -m /path/to/model.gguf --port 8000
 
-# Use with OpenAI client
 curl http://localhost:8000/v1/chat/completions \
   -H "Content-Type: application/json" \
   -d '{
-    "model": "llama-2-7b",
+    "model": "my-model",
     "messages": [{"role": "user", "content": "Hello!"}]
   }'
 ```
 
-### Streaming
-
-```python
-import asyncio
-from swiftllm import AsyncLLM, SamplingParams
-
-async def main():
-    llm = AsyncLLM(model="meta-llama/Llama-2-7b-hf")
-
-    async for output in llm.generate("Tell me a story:", SamplingParams()):
-        print(output.outputs[0].text, end="", flush=True)
-
-asyncio.run(main())
-```
-
-## ⚙️ Configuration
+## Configuration
 
 ### Engine Configuration
 
@@ -112,11 +157,12 @@ from swiftllm import LLM
 
 llm = LLM(
     model="meta-llama/Llama-2-7b-hf",
-    tensor_parallel_size=2,        # Use 2 GPUs
-    gpu_memory_utilization=0.90,   # Use 90% of GPU memory
-    max_model_len=4096,            # Maximum sequence length
-    dtype="float16",               # Data type
-    quantization="awq",            # Quantization method
+    download_dir="/data/models",          # Where to store downloaded models
+    tensor_parallel_size=2,               # Use 2 GPUs
+    gpu_memory_utilization=0.90,          # Use 90% of GPU memory
+    max_model_len=4096,                   # Maximum sequence length
+    dtype="float16",                      # Data type
+    quantization="awq",                   # Quantization method
 )
 ```
 
@@ -126,92 +172,101 @@ llm = LLM(
 from swiftllm import SamplingParams
 
 params = SamplingParams(
-    temperature=0.7,      # Sampling temperature
-    top_p=0.9,            # Nucleus sampling
-    top_k=50,             # Top-k sampling
-    max_tokens=256,       # Maximum tokens to generate
-    stop=["</s>"],        # Stop sequences
-    presence_penalty=0.1, # Presence penalty
-    frequency_penalty=0.1,# Frequency penalty
+    temperature=0.7,        # Sampling temperature
+    top_p=0.9,              # Nucleus sampling
+    top_k=50,               # Top-k sampling
+    max_tokens=256,         # Maximum tokens to generate
+    stop=["</s>"],          # Stop sequences
+    presence_penalty=0.1,   # Presence penalty
+    frequency_penalty=0.1,  # Frequency penalty
 )
 ```
 
-## 🔧 CLI Commands
+### Environment Variables
+
+| Variable | Description |
+|----------|-------------|
+| `SWIFTLLM_MODEL_DIR` | Default directory for downloaded models (overrides `~/.cache/swiftllm/models`) |
+| `HF_TOKEN` | HuggingFace API token for accessing gated models |
+
+## CLI Commands
 
 ```bash
+# Download a model
+swiftllm download -m <model> [--download-dir <dir>]
+
 # Start server
-swiftllm serve --model <model> --port 8000
+swiftllm serve -m <model> --port 8000
 
 # Run inference
-swiftllm generate --model <model> --prompt "Hello"
+swiftllm generate -m <model> -p "Hello" --max-tokens 256
 
 # Interactive chat
-swiftllm chat --model <model>
+swiftllm chat -m <model>
 
 # Benchmark
-swiftllm benchmark --model <model> --num-prompts 100
+swiftllm benchmark -m <model> --num-prompts 100
 
 # Model info
-swiftllm info --model <model>
+swiftllm info -m <model>
 
 # Convert model format
-swiftllm convert --input <path> --output <path> --format safetensors
+swiftllm convert -i <path> -o <path> --format safetensors
 ```
 
-## 🏗️ Architecture
+### Model Specifiers
+
+The `-m` / `--model` flag accepts multiple formats:
+
+| Format | Example | Description |
+|--------|---------|-------------|
+| Local path | `/data/models/model.gguf` | Use a model already on disk |
+| HF repo ID | `meta-llama/Llama-2-7b-hf` | Download full repo |
+| HF URL | `https://huggingface.co/org/repo/blob/main/file.gguf` | Download single file |
+| Repo:file | `org/repo:model.q4_k_m.gguf` | Download single file (shorthand) |
+
+## Architecture
 
 ```
-┌─────────────────────────────────────────────────────────────────┐
-│                     SwiftLLM Architecture                        │
-├─────────────────────────────────────────────────────────────────┤
-│  ┌─────────────────┐  ┌─────────────────┐  ┌─────────────────┐  │
-│  │  OpenAI API     │  │  Python SDK     │  │  CLI Interface  │  │
-│  └────────┬────────┘  └────────┬────────┘  └────────┬────────┘  │
-│           │                    │                    │           │
-│  ┌────────┴────────────────────┴────────────────────┴────────┐  │
-│  │                 Scheduler (Continuous Batching)            │  │
-│  └────────────────────────────┬───────────────────────────────┘  │
-│                               │                                  │
-│  ┌────────────────────────────┴───────────────────────────────┐  │
-│  │          PagedAttention Memory Manager                      │  │
-│  └────────────────────────────┬───────────────────────────────┘  │
-│                               │                                  │
-│  ┌────────────────────────────┴───────────────────────────────┐  │
-│  │                    CUDA Kernels                              │  │
-│  └────────────────────────────────────────────────────────────┘  │
-└─────────────────────────────────────────────────────────────────┘
++-----------------------------------------------------------------+
+|                     SwiftLLM Architecture                       |
++-----------------------------------------------------------------+
+|  +----------------+  +----------------+  +------------------+   |
+|  |  OpenAI API    |  |  Python SDK    |  |  CLI Interface   |   |
+|  +-------+--------+  +-------+--------+  +--------+---------+   |
+|          |                    |                     |            |
+|  +-------+--------------------+---------------------+--------+  |
+|  |                Model Resolver & Downloader                 |  |
+|  |         (HuggingFace Hub / Local Path / GGUF URL)          |  |
+|  +----------------------------+-------------------------------+  |
+|                               |                                  |
+|  +----------------------------+-------------------------------+  |
+|  |              Inference Backend                              |  |
+|  |    [llama-cpp-python (GGUF)]  [Rust Engine (HF/ST)]        |  |
+|  +----------------------------+-------------------------------+  |
+|                               |                                  |
+|  +----------------------------+-------------------------------+  |
+|  |          PagedAttention Memory Manager                      |  |
+|  +----------------------------+-------------------------------+  |
+|                               |                                  |
+|  +----------------------------+-------------------------------+  |
+|  |                    CUDA Kernels                              |  |
+|  +--------------------------------------------------------------+
++-----------------------------------------------------------------+
 ```
 
-## 📊 Performance
-
-SwiftLLM achieves high throughput through:
-
-- **PagedAttention**: Efficient KV cache management with minimal memory waste
-- **Continuous Batching**: Dynamic request scheduling at iteration level
-- **Speculative Decoding**: Accelerate generation with draft models
-- **Optimized Kernels**: Custom CUDA kernels for attention and quantization
-
-### Benchmarks
-
-| Model | Hardware | Throughput | Latency (TTFT) |
-|-------|----------|------------|----------------|
-| Llama-2-7B | 1x A100 | 2000+ tok/s | <50ms |
-| Llama-2-13B | 1x A100 | 1200+ tok/s | <80ms |
-| Llama-2-70B | 4x A100 | 800+ tok/s | <150ms |
-
-## 🔌 Multi-GPU Support
+## Multi-GPU Support
 
 SwiftLLM supports tensor parallelism for large models:
 
 ```python
-# Use 4 GPUs for a 70B model
 llm = LLM(
     model="meta-llama/Llama-2-70b-hf",
     tensor_parallel_size=4,
 )
 ```
 
-## 📚 Examples
+## Examples
 
 See the [examples/](examples/) directory for more:
 
@@ -221,17 +276,18 @@ See the [examples/](examples/) directory for more:
 - [openai_server.py](examples/openai_server.py) - OpenAI API server
 - [multi_gpu.py](examples/multi_gpu.py) - Multi-GPU inference
 
-## 🤝 Contributing
+## Contributing
 
 Contributions are welcome! Please see [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines.
 
-## 📄 License
+## License
 
 Apache License 2.0. See [LICENSE](LICENSE) for details.
 
-## 🙏 Acknowledgments
+## Acknowledgments
 
 SwiftLLM builds on ideas from:
 - [vLLM](https://github.com/vllm-project/vllm) - PagedAttention concept
+- [llama.cpp](https://github.com/ggml-org/llama.cpp) - GGUF format and quantization
 - [FlashAttention](https://github.com/Dao-AILab/flash-attention) - Efficient attention kernels
 - [HuggingFace Transformers](https://github.com/huggingface/transformers) - Model architectures
