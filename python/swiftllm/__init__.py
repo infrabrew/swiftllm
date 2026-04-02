@@ -34,9 +34,23 @@ __all__ = [
     # Sampling
     "SamplingStrategy",
     "create_sampler",
+    # Training
+    "Trainer",
+    "TrainingConfig",
+    "LoRAConfig",
+    "fine_tune",
     # Version
     "__version__",
 ]
+
+# Training imports (lazy to avoid import overhead for inference-only usage)
+def __getattr__(name):
+    _training_names = {"Trainer", "TrainingConfig", "LoRAConfig", "fine_tune"}
+    if name in _training_names:
+        from .training import Trainer, TrainingConfig, LoRAConfig, fine_tune
+        return {"Trainer": Trainer, "TrainingConfig": TrainingConfig,
+                "LoRAConfig": LoRAConfig, "fine_tune": fine_tune}[name]
+    raise AttributeError(f"module 'swiftllm' has no attribute {name!r}")
 
 
 def version() -> str:

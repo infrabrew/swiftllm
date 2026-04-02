@@ -7,6 +7,8 @@ This module provides the CLI for SwiftLLM, supporting:
 - benchmark: Run performance benchmarks
 - convert: Convert model formats
 - info: Display model information
+- train: Train or fine-tune a model
+- finetune: Fine-tune with LoRA (convenience command)
 """
 
 import argparse
@@ -70,6 +72,14 @@ def main():
     download_parser = subparsers.add_parser("download", help="Download a model from HuggingFace")
     _add_download_args(download_parser)
 
+    # Train command
+    train_parser = subparsers.add_parser("train", help="Train or fine-tune a model")
+    _add_train_args(train_parser)
+
+    # Finetune command (convenience alias with LoRA defaults)
+    finetune_parser = subparsers.add_parser("finetune", help="Fine-tune a model with LoRA")
+    _add_finetune_args(finetune_parser)
+
     args = parser.parse_args()
 
     if args.command is None:
@@ -85,6 +95,8 @@ def main():
         "info": cmd_info,
         "chat": cmd_chat,
         "download": cmd_download,
+        "train": cmd_train,
+        "finetune": cmd_finetune,
     }
 
     try:
@@ -853,6 +865,279 @@ def cmd_chat(args: argparse.Namespace):
         messages.append({"role": "assistant", "content": response})
 
     print("\nGoodbye!")
+
+
+def _add_train_args(parser: argparse.ArgumentParser):
+    """Add arguments for the train command."""
+    parser.add_argument(
+        "-m", "--model",
+        required=True,
+        help="Path to the model or HuggingFace model ID",
+    )
+    parser.add_argument(
+        "--train-data",
+        required=True,
+        help="Path to training data (JSONL, CSV, or text)",
+    )
+    parser.add_argument(
+        "--eval-data",
+        default=None,
+        help="Path to evaluation data",
+    )
+    parser.add_argument(
+        "-o", "--output-dir",
+        default="./output",
+        help="Output directory for checkpoints (default: ./output)",
+    )
+    parser.add_argument(
+        "--method",
+        choices=["full", "lora", "qlora"],
+        default="lora",
+        help="Fine-tuning method (default: lora)",
+    )
+    parser.add_argument(
+        "--num-epochs",
+        type=int,
+        default=3,
+        help="Number of training epochs (default: 3)",
+    )
+    parser.add_argument(
+        "--batch-size",
+        type=int,
+        default=4,
+        help="Per-device batch size (default: 4)",
+    )
+    parser.add_argument(
+        "--gradient-accumulation-steps",
+        type=int,
+        default=1,
+        help="Gradient accumulation steps (default: 1)",
+    )
+    parser.add_argument(
+        "--learning-rate", "--lr",
+        type=float,
+        default=5e-5,
+        help="Learning rate (default: 5e-5)",
+    )
+    parser.add_argument(
+        "--weight-decay",
+        type=float,
+        default=0.01,
+        help="Weight decay (default: 0.01)",
+    )
+    parser.add_argument(
+        "--warmup-steps",
+        type=int,
+        default=100,
+        help="Warmup steps (default: 100)",
+    )
+    parser.add_argument(
+        "--max-seq-len",
+        type=int,
+        default=2048,
+        help="Maximum sequence length (default: 2048)",
+    )
+    parser.add_argument(
+        "--lr-scheduler",
+        choices=["linear", "cosine", "cosine_with_restarts", "constant", "constant_with_warmup"],
+        default="cosine",
+        help="Learning rate scheduler (default: cosine)",
+    )
+    parser.add_argument(
+        "--mixed-precision",
+        choices=["no", "fp16", "bf16"],
+        default="fp16",
+        help="Mixed precision mode (default: fp16)",
+    )
+    parser.add_argument(
+        "--lora-r",
+        type=int,
+        default=16,
+        help="LoRA rank (default: 16)",
+    )
+    parser.add_argument(
+        "--lora-alpha",
+        type=float,
+        default=32.0,
+        help="LoRA alpha (default: 32.0)",
+    )
+    parser.add_argument(
+        "--lora-dropout",
+        type=float,
+        default=0.05,
+        help="LoRA dropout (default: 0.05)",
+    )
+    parser.add_argument(
+        "--lora-targets",
+        nargs="+",
+        default=["q_proj", "k_proj", "v_proj", "o_proj"],
+        help="LoRA target modules (default: q_proj k_proj v_proj o_proj)",
+    )
+    parser.add_argument(
+        "--save-steps",
+        type=int,
+        default=500,
+        help="Save checkpoint every N steps (default: 500)",
+    )
+    parser.add_argument(
+        "--eval-steps",
+        type=int,
+        default=500,
+        help="Evaluate every N steps (default: 500)",
+    )
+    parser.add_argument(
+        "--logging-steps",
+        type=int,
+        default=10,
+        help="Log every N steps (default: 10)",
+    )
+    parser.add_argument(
+        "--save-total-limit",
+        type=int,
+        default=3,
+        help="Maximum checkpoints to keep (default: 3)",
+    )
+    parser.add_argument(
+        "--seed",
+        type=int,
+        default=42,
+        help="Random seed (default: 42)",
+    )
+    parser.add_argument(
+        "--resume-from-checkpoint",
+        default=None,
+        help="Path to checkpoint to resume from",
+    )
+    parser.add_argument(
+        "--config",
+        default=None,
+        help="Path to training config JSON file (overrides other args)",
+    )
+
+
+def _add_finetune_args(parser: argparse.ArgumentParser):
+    """Add arguments for the finetune command (LoRA-focused convenience)."""
+    parser.add_argument(
+        "-m", "--model",
+        required=True,
+        help="Path to the model or HuggingFace model ID",
+    )
+    parser.add_argument(
+        "--train-data",
+        required=True,
+        help="Path to training data (JSONL, CSV, or text)",
+    )
+    parser.add_argument(
+        "-o", "--output-dir",
+        default="./output",
+        help="Output directory (default: ./output)",
+    )
+    parser.add_argument(
+        "--lora-r",
+        type=int,
+        default=16,
+        help="LoRA rank (default: 16)",
+    )
+    parser.add_argument(
+        "--lora-alpha",
+        type=float,
+        default=32.0,
+        help="LoRA alpha (default: 32.0)",
+    )
+    parser.add_argument(
+        "--learning-rate", "--lr",
+        type=float,
+        default=2e-4,
+        help="Learning rate (default: 2e-4)",
+    )
+    parser.add_argument(
+        "--num-epochs",
+        type=int,
+        default=1,
+        help="Number of epochs (default: 1)",
+    )
+    parser.add_argument(
+        "--batch-size",
+        type=int,
+        default=4,
+        help="Per-device batch size (default: 4)",
+    )
+    parser.add_argument(
+        "--max-seq-len",
+        type=int,
+        default=2048,
+        help="Maximum sequence length (default: 2048)",
+    )
+    parser.add_argument(
+        "--seed",
+        type=int,
+        default=42,
+        help="Random seed (default: 42)",
+    )
+
+
+def cmd_train(args: argparse.Namespace):
+    """Train or fine-tune a model."""
+    from .training import TrainingConfig, LoRAConfig, Trainer, FineTuningMethod, LrScheduler, MixedPrecision
+
+    if args.config:
+        config = TrainingConfig.load(args.config)
+        print(f"Loaded config from {args.config}")
+    else:
+        method = FineTuningMethod(args.method)
+        lora = None
+        if method in (FineTuningMethod.LORA, FineTuningMethod.QLORA):
+            lora = LoRAConfig(
+                r=args.lora_r,
+                alpha=args.lora_alpha,
+                dropout=args.lora_dropout,
+                target_modules=args.lora_targets,
+            )
+
+        config = TrainingConfig(
+            model=args.model,
+            train_data=args.train_data,
+            eval_data=args.eval_data,
+            output_dir=args.output_dir,
+            fine_tuning_method=method,
+            lora=lora,
+            num_epochs=args.num_epochs,
+            per_device_batch_size=args.batch_size,
+            gradient_accumulation_steps=args.gradient_accumulation_steps,
+            learning_rate=args.learning_rate,
+            weight_decay=args.weight_decay,
+            warmup_steps=args.warmup_steps,
+            max_seq_len=args.max_seq_len,
+            lr_scheduler=LrScheduler(args.lr_scheduler),
+            mixed_precision=MixedPrecision(args.mixed_precision),
+            save_steps=args.save_steps,
+            eval_steps=args.eval_steps,
+            logging_steps=args.logging_steps,
+            save_total_limit=args.save_total_limit,
+            seed=args.seed,
+            resume_from_checkpoint=args.resume_from_checkpoint,
+        )
+
+    trainer = Trainer(config)
+    trainer.train()
+
+
+def cmd_finetune(args: argparse.Namespace):
+    """Fine-tune a model with LoRA (convenience command)."""
+    from .training import fine_tune
+
+    fine_tune(
+        model=args.model,
+        train_data=args.train_data,
+        output_dir=args.output_dir,
+        lora_r=args.lora_r,
+        lora_alpha=args.lora_alpha,
+        learning_rate=args.learning_rate,
+        num_epochs=args.num_epochs,
+        per_device_batch_size=args.batch_size,
+        max_seq_len=args.max_seq_len,
+        seed=args.seed,
+    )
 
 
 def _estimate_params(info: dict) -> int:

@@ -9,9 +9,11 @@ pub mod streaming;
 
 use api::openai::OpenAIApi;
 use axum::{
+    body::Body,
     extract::State,
-    http::{header, Method, StatusCode},
-    response::IntoResponse,
+    http::{header, Method, Request, StatusCode},
+    middleware::{self, Next},
+    response::{IntoResponse, Response},
     routing::{get, post},
     Json, Router,
 };
@@ -22,6 +24,9 @@ use swiftllm_core::engine::Engine;
 use swiftllm_core::error::Result;
 use tower_http::cors::{Any, CorsLayer};
 use tower_http::trace::TraceLayer;
+
+/// Maximum request body size (10 MB)
+const MAX_REQUEST_BODY_SIZE: usize = 10 * 1024 * 1024;
 
 /// Server state shared across handlers
 #[derive(Clone)]
@@ -34,6 +39,67 @@ pub struct AppState {
 
     /// API key (optional)
     pub api_key: Option<String>,
+}
+
+/// API key authentication middleware
+async fn auth_middleware(
+    State(state): State<AppState>,
+    req: Request<Body>,
+    next: Next,
+) -> std::result::Result<Response, StatusCode> {
+    // Skip auth for health check and metrics
+    let path = req.uri().path();
+    if path == "/health" || path == "/v1/health" || path == "/metrics" {
+        return Ok(next.run(req).await);
+    }
+
+    // If no API key configured, skip auth
+    let expected_key = match &state.api_key {
+        Some(key) => key,
+        None => return Ok(next.run(req).await),
+    };
+
+    // Check Authorization header
+    let auth_header = req
+        .headers()
+        .get(header::AUTHORIZATION)
+        .and_then(|v| v.to_str().ok());
+
+    match auth_header {
+        Some(header_val) => {
+            let token = header_val.strip_prefix("Bearer ").unwrap_or(header_val);
+            if token == expected_key {
+                Ok(next.run(req).await)
+            } else {
+                tracing::warn!("Invalid API key from {:?}", req.headers().get("x-forwarded-for"));
+                Err(StatusCode::UNAUTHORIZED)
+            }
+        }
+        None => {
+            tracing::warn!("Missing Authorization header");
+            Err(StatusCode::UNAUTHORIZED)
+        }
+    }
+}
+
+/// Security headers middleware
+async fn security_headers(req: Request<Body>, next: Next) -> Response {
+    let mut response = next.run(req).await;
+    let headers = response.headers_mut();
+
+    headers.insert("x-content-type-options", "nosniff".parse().unwrap());
+    headers.insert("x-frame-options", "DENY".parse().unwrap());
+    headers.insert(
+        "strict-transport-security",
+        "max-age=31536000; includeSubDomains".parse().unwrap(),
+    );
+    headers.insert(
+        "cache-control",
+        "no-store, no-cache, must-revalidate".parse().unwrap(),
+    );
+    headers.insert("x-request-id", uuid::Uuid::new_v4().to_string().parse().unwrap());
+
+    response
 }
 
 /// Create the API router
@@ -54,11 +120,15 @@ pub fn create_router(state: AppState) -> Router {
         .route("/v1/models/:model_id", get(api::openai::get_model))
         // Metrics
         .route("/metrics", get(metrics))
-        // State
-        .with_state(state)
-        // Middleware
+        // State and middleware
+        .with_state(state.clone())
+        .layer(middleware::from_fn_with_state(state, auth_middleware))
+        .layer(middleware::from_fn(security_headers))
         .layer(cors)
         .layer(TraceLayer::new_for_http())
+        .layer(
+            tower_http::limit::RequestBodyLimitLayer::new(MAX_REQUEST_BODY_SIZE),
+        )
 }
 
 /// Health check endpoint
@@ -111,6 +181,9 @@ pub async fn start_server(
         .map_err(|e| swiftllm_core::error::Error::Internal(format!("Invalid address: {}", e)))?;
 
     tracing::info!("Starting server on {}", addr);
+    if config.api_key.is_some() {
+        tracing::info!("API key authentication enabled");
+    }
 
     // Create listener
     let listener = tokio::net::TcpListener::bind(addr).await.map_err(|e| {
