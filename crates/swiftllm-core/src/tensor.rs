@@ -139,10 +139,22 @@ impl Device {
     }
 
     /// Get the CUDA device index (panics if CPU)
+    ///
+    /// DEPRECATED: Use `try_cuda_device_index()` instead to avoid panics.
     pub fn cuda_device_index(&self) -> usize {
         match self {
             Device::Cuda(idx) => *idx,
             Device::Cpu => panic!("Not a CUDA device"),
+        }
+    }
+
+    /// Get the CUDA device index, returning an error if this is not a CUDA device.
+    pub fn try_cuda_device_index(&self) -> crate::error::Result<usize> {
+        match self {
+            Device::Cuda(idx) => Ok(*idx),
+            Device::Cpu => Err(crate::error::Error::Device(
+                "Expected CUDA device, got CPU".to_string(),
+            )),
         }
     }
 }

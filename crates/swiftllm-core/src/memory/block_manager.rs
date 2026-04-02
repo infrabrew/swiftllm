@@ -295,17 +295,47 @@ impl BlockManager {
         }
     }
 
-    /// Calculate the memory size per block in bytes
-    pub fn block_size_bytes(&self) -> usize {
+    /// Calculate the memory size per block in bytes, using checked arithmetic.
+    /// Returns `None` on overflow.
+    pub fn block_size_bytes_checked(&self) -> Option<usize> {
         // Each block stores block_size tokens of KV cache for all layers
         // Memory = 2 (K + V) * num_layers * num_kv_heads * head_dim * block_size * sizeof(dtype)
         // Assuming float16 (2 bytes)
-        2 * self.num_layers * self.num_kv_heads * self.head_dim * self.block_size * 2
+        2usize
+            .checked_mul(self.num_layers)?
+            .checked_mul(self.num_kv_heads)?
+            .checked_mul(self.head_dim)?
+            .checked_mul(self.block_size)?
+            .checked_mul(2)
+    }
+
+    /// Calculate the memory size per block in bytes.
+    /// Panics on overflow (use `block_size_bytes_checked` for fallible version).
+    pub fn block_size_bytes(&self) -> usize {
+        self.block_size_bytes_checked()
+            .expect("block_size_bytes overflowed")
     }
 
     /// Calculate number of blocks needed for given number of tokens
     pub fn blocks_needed(&self, num_tokens: usize) -> usize {
+        if num_tokens == 0 {
+            return 0;
+        }
         (num_tokens + self.block_size - 1) / self.block_size
+    }
+
+    /// Validate that max_seq_len can be represented in the block table.
+    /// Returns an error if too many blocks would be required.
+    pub fn validate_max_seq_len(&self, max_seq_len: usize) -> Result<()> {
+        let blocks = self.blocks_needed(max_seq_len);
+        let total_gpu = self.gpu_allocator.lock().num_blocks();
+        if blocks > total_gpu {
+            return Err(Error::InvalidConfig(format!(
+                "max_seq_len {} requires {} blocks but only {} GPU blocks available",
+                max_seq_len, blocks, total_gpu,
+            )));
+        }
+        Ok(())
     }
 
     /// Check if we can allocate blocks for a sequence

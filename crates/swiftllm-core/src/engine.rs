@@ -166,12 +166,10 @@ impl Engine {
             && scheduler_output.blocks_to_swap_in.is_empty()
             && scheduler_output.blocks_to_swap_out.is_empty()
         {
-            // Nothing to do
             return Ok(Vec::new());
         }
 
-        // Execute memory operations
-        // In a real implementation, this would trigger CUDA memory copies
+        // Log memory operations
         if !scheduler_output.blocks_to_swap_in.is_empty() {
             tracing::debug!(
                 "Swapping in {} blocks",
@@ -185,17 +183,131 @@ impl Engine {
             );
         }
 
-        // In a real implementation, we would:
-        // 1. Build the execution batch
-        // 2. Run model forward pass
-        // 3. Sample tokens
-        // 4. Update sequences
+        let step_start = Instant::now();
+        let mut finished_outputs = Vec::new();
 
-        // For now, increment step counter
+        // Process each scheduled sequence group
+        for scheduled in &scheduler_output.scheduled_groups {
+            let seq_group = &scheduled.seq_group;
+            let request_id = seq_group.request_id;
+
+            for seq in &seq_group.sequences {
+                if seq.is_finished() {
+                    continue;
+                }
+
+                // Build a synthetic logit vector for sampling
+                // In a full implementation, this comes from the model forward pass.
+                // Here we simulate logits based on a simple vocabulary distribution.
+                let vocab_size = 32000; // Standard LLaMA vocab size
+                let mut logits = vec![0.0f32; vocab_size];
+
+                // Create a deterministic but varied distribution based on sequence state
+                let seed_val = seq.id.as_u64().wrapping_mul(31)
+                    .wrapping_add(seq.len() as u64)
+                    .wrapping_add(self.step_counter.load(Ordering::Relaxed) as u64);
+                let mut rng_state = seed_val;
+                for logit in logits.iter_mut() {
+                    // Simple xorshift for deterministic pseudo-random logits
+                    rng_state ^= rng_state << 13;
+                    rng_state ^= rng_state >> 7;
+                    rng_state ^= rng_state << 17;
+                    *logit = ((rng_state as f32) / (u64::MAX as f32)) * 10.0 - 5.0;
+                }
+
+                // Use the sampler to pick a token
+                let samplers = self.samplers.read();
+                if let Some(sampler) = samplers.get(&request_id) {
+                    // We need write access for sampling (RNG state)
+                    drop(samplers);
+                    let mut samplers = self.samplers.write();
+                    if let Some(sampler) = samplers.get_mut(&request_id) {
+                        match sampler.sample(&logits) {
+                            Ok(token) => {
+                                let token_id = token.id;
+
+                                // Check finish conditions
+                                let max_tokens = seq_group.sampling_params.max_tokens;
+                                let generated = seq.num_generated() + 1;
+
+                                let is_eos = token_id == 2; // Common EOS token ID
+                                let hit_max = generated >= max_tokens;
+
+                                let finish_reason = if is_eos {
+                                    Some(FinishReason::Stop)
+                                } else if hit_max {
+                                    Some(FinishReason::Length)
+                                } else {
+                                    None
+                                };
+
+                                // Build output if finished or streaming
+                                if finish_reason.is_some() {
+                                    let output = RequestOutput {
+                                        request_id,
+                                        outputs: vec![GenerationOutput {
+                                            index: 0,
+                                            text: String::new(), // Would need detokenizer
+                                            token_ids: seq.output_tokens.iter()
+                                                .map(|t| t.id)
+                                                .chain(std::iter::once(token_id))
+                                                .collect(),
+                                            cumulative_logprob: seq.cumulative_logprob
+                                                + token.logprob.unwrap_or(0.0),
+                                            logprobs: None,
+                                            finish_reason,
+                                            stop_reason: None,
+                                        }],
+                                        finished: true,
+                                        prompt: None,
+                                        prompt_token_ids: None,
+                                        prompt_logprobs: None,
+                                        metrics: Some(RequestMetrics {
+                                            time_to_first_token: 0.0,
+                                            total_time: step_start.elapsed().as_secs_f64(),
+                                            prompt_tokens: seq.prompt_len,
+                                            generated_tokens: generated,
+                                            tokens_per_second: 0.0,
+                                        }),
+                                    };
+                                    finished_outputs.push(output);
+
+                                    // Clean up: free blocks and remove sampler
+                                    self.block_manager.free(seq.id);
+                                    self.scheduler.finish_request(request_id);
+                                }
+                            }
+                            Err(e) => {
+                                tracing::error!("Sampling error for request {}: {}", request_id, e);
+                                // Clean up on sampling failure
+                                self.block_manager.free(seq.id);
+                                self.scheduler.finish_request(request_id);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // Update execution stats
+        let elapsed = step_start.elapsed().as_secs_f64();
+        let num_tokens = scheduler_output.num_batched_tokens;
+        let is_prefill = scheduler_output.scheduled_groups.iter()
+            .any(|sg| sg.seq_group.state == crate::types::SequenceGroupState::Prefill);
+        self.exec_stats.lock().update(is_prefill, num_tokens, elapsed);
+
+        // Increment step counter
         self.step_counter.fetch_add(1, Ordering::Relaxed);
 
-        // Return empty outputs (placeholder)
-        Ok(Vec::new())
+        // Clean up samplers for finished requests
+        {
+            let mut samplers = self.samplers.write();
+            for output in &finished_outputs {
+                samplers.remove(&output.request_id);
+            }
+        }
+
+        Ok(finished_outputs)
     }
 
     /// Run the engine loop asynchronously

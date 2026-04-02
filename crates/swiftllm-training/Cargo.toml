@@ -1,0 +1,43 @@
+[package]
+name = "swiftllm-training"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "Training and fine-tuning module for SwiftLLM"
+
+[dependencies]
+swiftllm-core = { path = "../swiftllm-core" }
+swiftllm-models = { path = "../swiftllm-models" }
+
+# Core
+tokio = { workspace = true }
+async-trait = { workspace = true }
+parking_lot = { workspace = true }
+rayon = { workspace = true }
+
+# Serialization
+serde = { workspace = true }
+serde_json = { workspace = true }
+
+# Tensor / math
+half = { workspace = true }
+num-traits = { workspace = true }
+ndarray = { workspace = true }
+bytemuck = { workspace = true }
+rand = { workspace = true }
+
+# Logging
+tracing = { workspace = true }
+
+# Error handling
+thiserror = { workspace = true }
+anyhow = { workspace = true }
+
+# Utilities
+uuid = { workspace = true }
+chrono = { workspace = true }
+indicatif = { workspace = true }
+
+[dev-dependencies]
+tokio-test = { workspace = true }

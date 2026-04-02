@@ -356,11 +356,101 @@ impl OpenAIApi {
     }
 }
 
+/// Validate chat completion request parameters
+fn validate_chat_request(request: &ChatCompletionRequest) -> std::result::Result<(), ErrorResponse> {
+    if request.messages.is_empty() {
+        return Err(ErrorResponse {
+            error: ErrorDetail {
+                message: "messages must not be empty".to_string(),
+                error_type: "invalid_request_error".to_string(),
+                code: Some("invalid_messages".to_string()),
+            },
+        });
+    }
+
+    if request.temperature < 0.0 || request.temperature > 2.0 {
+        return Err(ErrorResponse {
+            error: ErrorDetail {
+                message: "temperature must be between 0.0 and 2.0".to_string(),
+                error_type: "invalid_request_error".to_string(),
+                code: Some("invalid_temperature".to_string()),
+            },
+        });
+    }
+
+    if request.top_p < 0.0 || request.top_p > 1.0 {
+        return Err(ErrorResponse {
+            error: ErrorDetail {
+                message: "top_p must be between 0.0 and 1.0".to_string(),
+                error_type: "invalid_request_error".to_string(),
+                code: Some("invalid_top_p".to_string()),
+            },
+        });
+    }
+
+    if let Some(max_tokens) = request.max_tokens {
+        if max_tokens == 0 || max_tokens > 128_000 {
+            return Err(ErrorResponse {
+                error: ErrorDetail {
+                    message: "max_tokens must be between 1 and 128000".to_string(),
+                    error_type: "invalid_request_error".to_string(),
+                    code: Some("invalid_max_tokens".to_string()),
+                },
+            });
+        }
+    }
+
+    if request.n == 0 || request.n > 128 {
+        return Err(ErrorResponse {
+            error: ErrorDetail {
+                message: "n must be between 1 and 128".to_string(),
+                error_type: "invalid_request_error".to_string(),
+                code: Some("invalid_n".to_string()),
+            },
+        });
+    }
+
+    // Validate message content length (prevent abuse)
+    let total_content_len: usize = request.messages.iter().map(|m| m.content.len()).sum();
+    if total_content_len > 1_000_000 {
+        return Err(ErrorResponse {
+            error: ErrorDetail {
+                message: "total message content exceeds maximum length".to_string(),
+                error_type: "invalid_request_error".to_string(),
+                code: Some("content_too_long".to_string()),
+            },
+        });
+    }
+
+    // Validate roles
+    for msg in &request.messages {
+        match msg.role.as_str() {
+            "system" | "user" | "assistant" | "tool" | "function" => {}
+            _ => {
+                return Err(ErrorResponse {
+                    error: ErrorDetail {
+                        message: format!("invalid role: '{}'. Must be one of: system, user, assistant, tool, function", msg.role),
+                        error_type: "invalid_request_error".to_string(),
+                        code: Some("invalid_role".to_string()),
+                    },
+                });
+            }
+        }
+    }
+
+    Ok(())
+}
+
 /// Chat completions endpoint
 pub async fn chat_completions(
     State(state): State<AppState>,
     Json(request): Json<ChatCompletionRequest>,
 ) -> impl IntoResponse {
+    // Validate request
+    if let Err(error) = validate_chat_request(&request) {
+        return (StatusCode::BAD_REQUEST, Json(error)).into_response();
+    }
+
     let id = OpenAIApi::generate_id("chatcmpl");
     let created = Utc::now().timestamp();
     let system_fingerprint = OpenAIApi::system_fingerprint();
@@ -487,14 +577,23 @@ pub async fn chat_completions(
             }
         }
         Err(e) => {
+            // Log the full error internally but return a sanitized message
+            tracing::error!("Chat completion error: {}", e);
+            let (status, message) = if e.is_oom() {
+                (StatusCode::SERVICE_UNAVAILABLE, "Server is at capacity. Please try again later.".to_string())
+            } else if e.is_timeout() {
+                (StatusCode::GATEWAY_TIMEOUT, "Request timed out.".to_string())
+            } else {
+                (StatusCode::INTERNAL_SERVER_ERROR, "An internal error occurred.".to_string())
+            };
             let error = ErrorResponse {
                 error: ErrorDetail {
-                    message: e.to_string(),
+                    message,
                     error_type: "server_error".to_string(),
                     code: Some("internal_error".to_string()),
                 },
             };
-            (StatusCode::INTERNAL_SERVER_ERROR, Json(error)).into_response()
+            (status, Json(error)).into_response()
         }
     }
 }

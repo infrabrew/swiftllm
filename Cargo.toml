@@ -23,6 +23,7 @@ members = [
     "crates/swiftllm-models",
     "crates/swiftllm-cuda",
     "crates/swiftllm-server",
+    "crates/swiftllm-training",
 ]
 
 [workspace.package]

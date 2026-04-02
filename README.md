@@ -15,11 +15,13 @@
 - **Memory Efficient**: PagedAttention for optimal KV cache management
 - **Low Latency**: Optimized CUDA kernels and speculative decoding
 - **Tensor Parallelism**: Scale to multiple GPUs seamlessly
-- **OpenAI Compatible**: Drop-in replacement for OpenAI API
+- **OpenAI Compatible**: Drop-in replacement for OpenAI API with security hardening
+- **Training & Fine-Tuning**: LoRA, QLoRA, and full fine-tuning with built-in training loop
 - **Python Friendly**: Easy-to-use Python API with async support
 - **Multiple Formats**: Support for HuggingFace, GGUF, and SafeTensors
 - **Model Downloading**: Download models from HuggingFace Hub by ID or URL
 - **GGUF Inference**: Run quantized GGUF models on GPU via llama-cpp-python
+- **Secure by Default**: API key authentication, input validation, and security headers
 
 ## Supported Models
 
@@ -156,13 +158,75 @@ path = resolve_model("/data/models/my-model.gguf")
 path = resolve_model("org/repo:model.gguf", download_dir="/data/models")
 ```
 
+### Training & Fine-Tuning
+
+#### Quick Fine-Tune with LoRA (CLI)
+
+```bash
+# LoRA fine-tuning (convenience command)
+swiftllm finetune \
+  -m meta-llama/Llama-2-7b-hf \
+  --train-data ./data/train.jsonl \
+  --lora-r 16 --lora-alpha 32 \
+  --learning-rate 2e-4
+
+# Full training command with all options
+swiftllm train \
+  -m meta-llama/Llama-2-7b-hf \
+  --train-data ./data/train.jsonl \
+  --eval-data ./data/eval.jsonl \
+  --method lora \
+  --num-epochs 3 \
+  --batch-size 4 \
+  --learning-rate 1e-4 \
+  --lr-scheduler cosine \
+  -o ./output/my-model
+```
+
+#### Python Training API
+
+```python
+from swiftllm import Trainer, TrainingConfig, LoRAConfig
+
+# LoRA fine-tuning
+config = TrainingConfig(
+    model="meta-llama/Llama-2-7b-hf",
+    train_data="./data/train.jsonl",
+    output_dir="./output",
+    num_epochs=3,
+    learning_rate=2e-4,
+    lora=LoRAConfig(r=16, alpha=32),
+)
+trainer = Trainer(config)
+trainer.train()
+
+# Or use the convenience function
+from swiftllm import fine_tune
+
+trainer = fine_tune(
+    model="meta-llama/Llama-2-7b-hf",
+    train_data="data.jsonl",
+    lora_r=16,
+)
+```
+
+#### Supported Fine-Tuning Methods
+
+| Method | Description | Memory |
+|--------|-------------|--------|
+| **LoRA** | Low-Rank Adaptation — trains small adapter matrices | Low |
+| **QLoRA** | 4-bit quantized base model + LoRA adapters | Very Low |
+| **Full** | Full parameter fine-tuning | High |
+
 ### OpenAI-Compatible Server
 
 ```bash
-swiftllm serve -m /path/to/model.gguf --port 8000
+# Start with API key authentication
+swiftllm serve -m /path/to/model.gguf --port 8000 --api-key sk-my-secret-key
 
 curl http://localhost:8000/v1/chat/completions \
   -H "Content-Type: application/json" \
+  -H "Authorization: Bearer sk-my-secret-key" \
   -d '{
     "model": "my-model",
     "messages": [{"role": "user", "content": "Hello!"}]
@@ -217,7 +281,7 @@ params = SamplingParams(
 swiftllm download -m <model> [--download-dir <dir>]
 
 # Start server
-swiftllm serve -m <model> --port 8000
+swiftllm serve -m <model> --port 8000 [--api-key <key>]
 
 # Run inference
 swiftllm generate -m <model> -p "Hello" --max-tokens 256
@@ -233,6 +297,10 @@ swiftllm info -m <model>
 
 # Convert model format
 swiftllm convert -i <path> -o <path> --format safetensors
+
+# Train / fine-tune
+swiftllm train -m <model> --train-data <data> --method lora
+swiftllm finetune -m <model> --train-data <data> --lora-r 16
 ```
 
 ### Model Specifiers
@@ -249,31 +317,37 @@ The `-m` / `--model` flag accepts multiple formats:
 ## Architecture
 
 ```
-+-----------------------------------------------------------------+
-|                     SwiftLLM Architecture                       |
-+-----------------------------------------------------------------+
-|  +----------------+  +----------------+  +------------------+   |
-|  |  OpenAI API    |  |  Python SDK    |  |  CLI Interface   |   |
-|  +-------+--------+  +-------+--------+  +--------+---------+   |
-|          |                    |                     |            |
-|  +-------+--------------------+---------------------+--------+  |
-|  |                Model Resolver & Downloader                 |  |
-|  |         (HuggingFace Hub / Local Path / GGUF URL)          |  |
-|  +----------------------------+-------------------------------+  |
-|                               |                                  |
-|  +----------------------------+-------------------------------+  |
-|  |              Inference Backend                              |  |
-|  |    [llama-cpp-python (GGUF)]  [Rust Engine (HF/ST)]        |  |
-|  +----------------------------+-------------------------------+  |
-|                               |                                  |
-|  +----------------------------+-------------------------------+  |
-|  |          PagedAttention Memory Manager                      |  |
-|  +----------------------------+-------------------------------+  |
-|                               |                                  |
-|  +----------------------------+-------------------------------+  |
-|  |                    CUDA Kernels                              |  |
-|  +--------------------------------------------------------------+
-+-----------------------------------------------------------------+
++----------------------------------------------------------------------+
+|                       SwiftLLM Architecture                          |
++----------------------------------------------------------------------+
+|  +----------------+  +----------------+  +---------------------+     |
+|  |  OpenAI API    |  |  Python SDK    |  |  CLI Interface      |     |
+|  | (auth, headers)|  | (sync & async) |  | (serve/train/chat)  |     |
+|  +-------+--------+  +-------+--------+  +--------+------------+     |
+|          |                    |                     |                 |
+|  +-------+--------------------+---------------------+---------+      |
+|  |                Model Resolver & Downloader                 |      |
+|  |         (HuggingFace Hub / Local Path / GGUF URL)          |      |
+|  +----------------------------+-------------------------------+      |
+|                               |                                      |
+|  +----------------------------+-------------------------------+      |
+|  |              Inference Backend                              |      |
+|  |    [llama-cpp-python (GGUF)]  [Rust Engine (HF/ST)]        |      |
+|  +----------------------------+-------------------------------+      |
+|                               |                                      |
+|  +----------------------------+-------------------------------+      |
+|  |          PagedAttention Memory Manager                      |      |
+|  +----------------------------+-------------------------------+      |
+|                               |                                      |
+|  +----------------------------+-------------------------------+      |
+|  |          Training & Fine-Tuning Engine                      |      |
+|  |    [LoRA/QLoRA/Full]  [AdamW/SGD]  [LR Schedulers]         |      |
+|  +----------------------------+-------------------------------+      |
+|                               |                                      |
+|  +----------------------------+-------------------------------+      |
+|  |                    CUDA Kernels                              |      |
+|  +---------------------------------------------------------------+   |
++----------------------------------------------------------------------+
 ```
 
 ## Multi-GPU Support
@@ -296,6 +370,42 @@ See the [examples/](examples/) directory for more:
 - [batch_processing.py](examples/batch_processing.py) - High-throughput batch processing
 - [openai_server.py](examples/openai_server.py) - OpenAI API server
 - [multi_gpu.py](examples/multi_gpu.py) - Multi-GPU inference
+- [fine_tuning.py](examples/fine_tuning.py) - LoRA and QLoRA fine-tuning
+- [training.py](examples/training.py) - Full training with callbacks and config management
+
+## Security
+
+The SwiftLLM server includes built-in security features:
+
+- **API Key Authentication**: Protect endpoints with `--api-key` flag
+- **Input Validation**: Request size limits, parameter range checks, content length limits
+- **Security Headers**: HSTS, X-Content-Type-Options, X-Frame-Options, X-Request-ID
+- **Sanitized Errors**: Internal errors are logged server-side but never exposed to clients
+- **Request Size Limits**: 10 MB maximum request body to prevent abuse
+
+## Project Structure
+
+```
+swiftllm/
+  src/lib.rs                    # PyO3 Python bindings
+  python/swiftllm/              # Python package
+    engine.py                   # LLM inference API
+    training.py                 # Training & fine-tuning API
+    cli.py                      # CLI (serve, train, finetune, chat, ...)
+  crates/
+    swiftllm-core/              # Core engine (scheduler, memory, sampling)
+    swiftllm-models/            # Model loading and architectures
+    swiftllm-cuda/              # CUDA kernel bindings
+    swiftllm-server/            # HTTP server (OpenAI API, auth, security)
+    swiftllm-training/          # Training engine (Rust)
+      src/config.rs             #   Training configuration
+      src/data.rs               #   Data loading (JSONL, CSV, text)
+      src/optimizer.rs           #   AdamW, SGD, LR schedulers
+      src/fine_tuning.rs        #   LoRA, QLoRA, full fine-tuning
+      src/metrics.rs            #   Training metrics & logging
+      src/trainer.rs            #   Training loop & checkpointing
+  examples/                     # Example scripts
+```
 
 ## Contributing
 
