@@ -97,6 +97,9 @@ pub struct ModelConfig {
 
     /// Rope scaling configuration (optional)
     pub rope_scaling: Option<RopeScalingConfig>,
+
+    /// EOS token ID (model-specific, defaults to 2 if unset)
+    pub eos_token_id: Option<u32>,
 }
 
 impl Default for ModelConfig {
@@ -110,6 +113,7 @@ impl Default for ModelConfig {
             trust_remote_code: false,
             quantization: None,
             rope_scaling: None,
+            eos_token_id: None,
         }
     }
 }

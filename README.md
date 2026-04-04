@@ -1,13 +1,14 @@
 # SwiftLLM
 
 <p align="center">
+  <img src="https://img.shields.io/badge/version-2.0.0--alpha-orange.svg" alt="v2.0.0-alpha">
   <img src="https://img.shields.io/badge/rust-%23000000.svg?style=flat&logo=rust&logoColor=white" alt="Rust">
   <img src="https://img.shields.io/badge/python-3.8+-blue.svg" alt="Python 3.8+">
   <img src="https://img.shields.io/badge/CUDA-11.8+-green.svg" alt="CUDA 11.8+">
   <img src="https://img.shields.io/badge/license-Apache%202.0-blue.svg" alt="License">
 </p>
 
-**SwiftLLM** is a high-performance LLM inference and serving engine built with Rust for maximum speed and efficiency. It features state-of-the-art memory management, continuous batching, and multi-GPU support.
+**SwiftLLM** is a high-performance LLM inference, serving, and training engine built with Rust for maximum speed and efficiency. It features state-of-the-art memory management, continuous batching, multi-GPU support, and built-in LoRA/QLoRA fine-tuning.
 
 ## Key Features
 
@@ -406,6 +407,70 @@ swiftllm/
       src/trainer.rs            #   Training loop & checkpointing
   examples/                     # Example scripts
 ```
+
+## Changelog
+
+### v2.0.0-alpha
+
+**Training & Fine-Tuning**
+- Added `swiftllm-training` Rust crate with full training infrastructure
+- LoRA, QLoRA, and full fine-tuning support with configurable adapters
+- AdamW and SGD optimizers with linear/cosine/constant LR schedulers
+- Dataset loading (JSONL, CSV, text) with instruction templates
+- Training metrics tracking with rolling windows and perplexity
+- Checkpoint save/load with configurable `save_total_limit`
+- Python `Trainer` class with callbacks, early stopping, and checkpoint management
+- CLI commands: `swiftllm train` and `swiftllm finetune`
+- Training examples: `examples/fine_tuning.py`, `examples/training.py`
+
+**Inference Engine**
+- Implemented core engine `step()` with batch processing and token sampling
+- Configurable EOS token ID per model (no longer hardcoded to 2)
+- Eliminated redundant read-then-write lock upgrade in sampling hot path
+- Fast path for greedy sampling — zero-allocation when no penalties are active
+
+**Sampling Optimizations**
+- Replaced O(n log n) full sort with O(n) quickselect (`select_nth_unstable_by`) for top-k, beam search, and `get_top_logprobs`
+- Partial sort for `sample_top_n` — only the top N elements are fully sorted
+- Python: numerically stable `_log_softmax` replaces `log(probs + eps)` across all samplers
+- Python: `BeamSearchSampler` now maintains beam state across calls with proper expansion and pruning
+
+**Scheduler**
+- O(n) victim selection for preemption (was O(n log n) sort per step)
+
+**Training Crate Improvements**
+- Gradient clipping (`clip_grad_norm`) with global norm
+- LoRA `transform_grad` now applies `alpha/r` scaling to adapter gradients
+- AdamW bias correction uses `powf` instead of `powi` to avoid i32 overflow at large step counts
+- Exported `clip_grad_norm` from crate root
+
+**Server & API**
+- API key authentication middleware (`--api-key` flag)
+- Security headers: HSTS, X-Content-Type-Options, X-Frame-Options, X-Request-ID
+- Request body size limit (10 MB)
+- Input validation for chat completions (temperature, top_p, max_tokens, content length)
+- Sanitized error responses — internal details logged server-side only
+- `/metrics` endpoint with JSON and Prometheus text format (`Accept: text/plain`)
+- SSE streaming helpers for OpenAI-compatible streaming responses
+
+**Python API**
+- Complete PyO3 bindings: `PyEngine`, `PyEngineConfig`, `PySamplingParams`, `PyGenerationOutput`, `PyRequestOutput`
+- `EarlyStoppingConfig` for training with configurable patience and min_delta
+- `Trainer.resume_from_checkpoint()` class method
+- Checkpoint save/load with `save_total_limit` enforcement
+- Throughput (tok/s) in training log output
+
+### v0.1.0
+
+- Initial release
+- PagedAttention memory management with block allocator and copy-on-write
+- Continuous batching scheduler with preemption (swap/recompute)
+- Token sampling: greedy, temperature, top-k, top-p, min-p, repetition penalty
+- OpenAI-compatible HTTP API (chat completions, completions, models)
+- Python SDK: `LLM`, `AsyncLLM`, `SamplingParams`
+- CLI: serve, generate, benchmark, convert, info, chat, download
+- HuggingFace model downloading and resolution
+- GGUF model support via llama-cpp-python
 
 ## Contributing
 

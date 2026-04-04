@@ -55,6 +55,9 @@ pub struct Engine {
 
     /// Output sender for async streaming
     output_tx: Option<mpsc::UnboundedSender<RequestOutput>>,
+
+    /// EOS token ID (configurable per model, defaults to 2)
+    eos_token_id: TokenId,
 }
 
 impl Engine {
@@ -116,6 +119,7 @@ impl Engine {
             exec_stats: Mutex::new(ExecutionStats::default()),
             shutdown: Arc::new(Notify::new()),
             output_tx: None,
+            eos_token_id: config.model.eos_token_id.unwrap_or(2),
         })
     }
 
@@ -215,13 +219,11 @@ impl Engine {
                     *logit = ((rng_state as f32) / (u64::MAX as f32)) * 10.0 - 5.0;
                 }
 
-                // Use the sampler to pick a token
-                let samplers = self.samplers.read();
-                if let Some(sampler) = samplers.get(&request_id) {
-                    // We need write access for sampling (RNG state)
-                    drop(samplers);
-                    let mut samplers = self.samplers.write();
-                    if let Some(sampler) = samplers.get_mut(&request_id) {
+                // Acquire write lock directly — sampling mutates RNG state,
+                // so the prior read→drop→write pattern was always wasteful
+                let mut samplers = self.samplers.write();
+                if let Some(sampler) = samplers.get_mut(&request_id) {
+                    {
                         match sampler.sample(&logits) {
                             Ok(token) => {
                                 let token_id = token.id;
@@ -230,7 +232,7 @@ impl Engine {
                                 let max_tokens = seq_group.sampling_params.max_tokens;
                                 let generated = seq.num_generated() + 1;
 
-                                let is_eos = token_id == 2; // Common EOS token ID
+                                let is_eos = token_id == self.eos_token_id;
                                 let hit_max = generated >= max_tokens;
 
                                 let finish_reason = if is_eos {

@@ -82,9 +82,9 @@ impl Optimizer for AdamW {
         if m.len() != n { m.resize(n, 0.0); }
         if v.len() != n { v.resize(n, 0.0); }
 
-        // Bias correction
-        let bc1 = 1.0 - self.beta1.powi(t as i32);
-        let bc2 = 1.0 - self.beta2.powi(t as i32);
+        // Bias correction — use powf to avoid i32 overflow for t > 2^31
+        let bc1 = 1.0 - self.beta1.powf(t);
+        let bc2 = 1.0 - self.beta2.powf(t);
 
         let lr = self.lr;
         let beta1 = self.beta1 as f32;
@@ -179,6 +179,21 @@ impl Optimizer for SGD {
     fn reset(&mut self) {
         self.velocity.clear();
     }
+}
+
+/// Clip gradient by global norm — returns the original norm
+pub fn clip_grad_norm(grads: &mut [f32], max_norm: f32) -> f32 {
+    if max_norm <= 0.0 {
+        return 0.0;
+    }
+    let total_norm: f32 = grads.iter().map(|g| g * g).sum::<f32>().sqrt();
+    if total_norm > max_norm {
+        let scale = max_norm / (total_norm + 1e-6);
+        for g in grads.iter_mut() {
+            *g *= scale;
+        }
+    }
+    total_norm
 }
 
 /// Learning rate scheduler

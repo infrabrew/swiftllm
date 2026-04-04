@@ -15,7 +15,7 @@ from .config import SamplingParams, EngineConfig, ServerConfig, LoRARequest
 from .sampling import SamplingStrategy, create_sampler
 from .model_resolver import resolve_model
 
-__version__ = "0.1.0"
+__version__ = "2.0.0a1"
 __all__ = [
     # Main classes
     "LLM",

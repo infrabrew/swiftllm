@@ -242,8 +242,14 @@ impl FineTuningMethod for LoRAFineTuning {
         self.config.target_modules.iter().any(|m| param_name.contains(m))
     }
 
-    fn transform_grad(&self, _param_name: &str, grad: &[f32]) -> Vec<f32> {
-        grad.to_vec()
+    fn transform_grad(&self, param_name: &str, grad: &[f32]) -> Vec<f32> {
+        // Apply LoRA scaling (alpha / r) to gradients for adapter parameters
+        if let Some(adapter) = self.adapters.values().find(|a| param_name.contains(&a.name)) {
+            let scaling = adapter.scaling as f32;
+            grad.iter().map(|&g| g * scaling).collect()
+        } else {
+            grad.to_vec()
+        }
     }
 }
 

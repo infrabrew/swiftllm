@@ -41,8 +41,8 @@ class GreedySampler(Sampler):
     ) -> Tuple[int, float]:
         """Select the token with highest probability."""
         token_id = int(np.argmax(logits))
-        # Compute log probability (log softmax)
-        log_probs = logits - np.logaddexp.reduce(logits)
+        # Numerically stable log softmax: log(softmax(x)) = x - max(x) - log(sum(exp(x - max(x))))
+        log_probs = _log_softmax(logits)
         return token_id, float(log_probs[token_id])
 
 
@@ -68,7 +68,7 @@ class TemperatureSampler(Sampler):
         scaled_logits = logits / self.temperature
         probs = _softmax(scaled_logits)
         token_id = int(np.random.choice(len(probs), p=probs))
-        log_probs = np.log(probs + 1e-10)
+        log_probs = _log_softmax(scaled_logits)
         return token_id, float(log_probs[token_id])
 
 
@@ -154,7 +154,7 @@ class TopPSampler(Sampler):
         idx = int(np.random.choice(len(nucleus_probs), p=nucleus_probs))
         token_id = int(nucleus_indices[idx])
 
-        log_probs = np.log(probs + 1e-10)
+        log_probs = _log_softmax(scaled_logits)
         return token_id, float(log_probs[token_id])
 
 
@@ -196,12 +196,12 @@ class MinPSampler(Sampler):
             filtered_probs = filtered_probs / filtered_probs.sum()
             token_id = int(np.random.choice(len(filtered_probs), p=filtered_probs))
 
-        log_probs = np.log(probs + 1e-10)
+        log_probs = _log_softmax(scaled_logits)
         return token_id, float(log_probs[token_id])
 
 
 class BeamSearchSampler(Sampler):
-    """Beam search decoding (not a true sampler, but follows the interface)."""
+    """Beam search decoding with persistent beam state across calls."""
 
     def __init__(self, beam_width: int, length_penalty: float = 1.0):
         """Initialize beam search.
@@ -212,22 +212,56 @@ class BeamSearchSampler(Sampler):
         """
         self.beam_width = beam_width
         self.length_penalty = length_penalty
+        # Each beam: (token_ids, cumulative_log_prob)
         self._beams: List[Tuple[List[int], float]] = []
+        self._step: int = 0
+
+    def reset(self):
+        """Reset beam state for a new sequence."""
+        self._beams = []
+        self._step = 0
 
     def __call__(
         self,
         logits: np.ndarray,
         token_ids: Optional[List[int]] = None,
     ) -> Tuple[int, float]:
-        """Return best token from beam search.
+        """Advance beam search by one step and return the best beam's latest token.
 
-        Note: This is a simplified version. Full beam search requires
-        maintaining multiple sequences.
+        Maintains beam state across calls. Call reset() between sequences.
         """
-        # For single-step, just return the best token
-        token_id = int(np.argmax(logits))
-        log_probs = logits - np.logaddexp.reduce(logits)
-        return token_id, float(log_probs[token_id])
+        log_probs = _log_softmax(logits)
+        self._step += 1
+
+        if not self._beams:
+            # First step — seed beams from top-k of initial logits
+            top_indices = np.argpartition(log_probs, -self.beam_width)[-self.beam_width:]
+            self._beams = [
+                ([int(idx)], float(log_probs[idx]))
+                for idx in top_indices
+            ]
+        else:
+            # Expand each beam with all vocab tokens, keep top beam_width overall
+            candidates: List[Tuple[List[int], float]] = []
+            for beam_tokens, beam_score in self._beams:
+                for idx in np.argpartition(log_probs, -self.beam_width)[-self.beam_width:]:
+                    idx = int(idx)
+                    new_score = beam_score + float(log_probs[idx])
+                    # Length-normalized score
+                    length = len(beam_tokens) + 1
+                    norm_score = new_score / (length ** self.length_penalty)
+                    candidates.append((beam_tokens + [idx], new_score))
+
+            # Keep top beam_width by normalized score
+            candidates.sort(
+                key=lambda c: c[1] / (len(c[0]) ** self.length_penalty),
+                reverse=True,
+            )
+            self._beams = candidates[:self.beam_width]
+
+        # Return the latest token of the best beam
+        best_beam = self._beams[0]
+        return best_beam[0][-1], best_beam[1] / (len(best_beam[0]) ** self.length_penalty)
 
 
 @dataclass
@@ -357,16 +391,24 @@ class SamplingStrategy:
 
         # Sample
         token_id = int(np.random.choice(len(probs), p=probs))
-        log_prob = float(np.log(probs[token_id] + 1e-10))
+        # Use log of the filtered+renormalized probability (avoids log(0))
+        log_prob = float(np.log(probs[token_id])) if probs[token_id] > 0 else float('-inf')
 
         return token_id, log_prob
 
 
 def _softmax(x: np.ndarray) -> np.ndarray:
-    """Compute softmax values for array x."""
+    """Compute softmax values for array x (numerically stable)."""
     x_max = np.max(x)
     exp_x = np.exp(x - x_max)
     return exp_x / exp_x.sum()
+
+
+def _log_softmax(x: np.ndarray) -> np.ndarray:
+    """Compute log-softmax (numerically stable, avoids log(0))."""
+    x_max = np.max(x)
+    shifted = x - x_max
+    return shifted - np.log(np.sum(np.exp(shifted)))
 
 
 def create_sampler(
