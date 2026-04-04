@@ -310,13 +310,16 @@ impl Scheduler {
         let running_count = running.len();
 
         if free_blocks == 0 && running_count > 0 {
-            // Need to preempt - use FCFS (preempt last arrived)
+            // Need to preempt — evict the latest arrival (FCFS policy)
             if self.config.enable_preemption {
-                // Sort by arrival time (earliest first)
-                running.sort_by(|a, b| a.arrival_time.cmp(&b.arrival_time));
+                // Find the latest-arrived sequence in O(n) instead of sorting O(n log n)
+                let victim_idx = running
+                    .iter()
+                    .enumerate()
+                    .max_by_key(|(_, sg)| sg.arrival_time)
+                    .map(|(i, _)| i);
 
-                // Preempt the last one
-                if let Some(seq_group) = running.pop() {
+                if let Some(seq_group) = victim_idx.map(|i| running.swap_remove(i)) {
                     let request_id = seq_group.request_id;
 
                     match self.preemption_mode {

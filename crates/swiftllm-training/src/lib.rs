@@ -22,5 +22,5 @@ pub use config::{DataConfig, FineTuningConfig, TrainingConfig};
 pub use data::{DataLoader, Dataset, InstructionDataset, TextDataset};
 pub use fine_tuning::{FineTuningMethod, FullFineTuning, LoRAConfig, LoRAFineTuning, QLoRAFineTuning};
 pub use metrics::TrainingMetrics;
-pub use optimizer::{AdamW, LearningRateScheduler, Optimizer, SGD};
+pub use optimizer::{clip_grad_norm, AdamW, LearningRateScheduler, Optimizer, SGD};
 pub use trainer::Trainer;

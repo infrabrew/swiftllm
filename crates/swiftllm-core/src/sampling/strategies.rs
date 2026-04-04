@@ -97,10 +97,12 @@ impl Sampler for TopKSampler {
             return;
         }
 
-        // Find the k-th largest value
-        let mut sorted: Vec<f32> = logits.to_vec();
-        sorted.sort_by(|a, b| b.partial_cmp(a).unwrap());
-        let threshold = sorted[self.k - 1];
+        // Use quickselect (O(n) average) instead of full sort (O(n log n))
+        let mut indices: Vec<usize> = (0..logits.len()).collect();
+        indices.select_nth_unstable_by(self.k, |&a, &b| {
+            logits[b].partial_cmp(&logits[a]).unwrap()
+        });
+        let threshold = logits[indices[self.k - 1]];
 
         // Set all values below threshold to -inf
         for logit in logits.iter_mut() {
@@ -330,19 +332,16 @@ impl BeamSearchSampler {
 
 impl Sampler for BeamSearchSampler {
     fn apply(&self, logits: &mut [f32], _context: &SamplingContext) {
-        // For beam search, we keep top-k candidates
-        let mut sorted: Vec<(usize, f32)> = logits
-            .iter()
-            .enumerate()
-            .map(|(i, &v)| (i, v))
-            .collect();
-        sorted.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap());
+        if self.num_beams >= logits.len() {
+            return;
+        }
 
-        let threshold = if sorted.len() > self.num_beams {
-            sorted[self.num_beams - 1].1
-        } else {
-            f32::NEG_INFINITY
-        };
+        // Use quickselect for O(n) average instead of O(n log n) sort
+        let mut indices: Vec<usize> = (0..logits.len()).collect();
+        indices.select_nth_unstable_by(self.num_beams, |&a, &b| {
+            logits[b].partial_cmp(&logits[a]).unwrap()
+        });
+        let threshold = logits[indices[self.num_beams - 1]];
 
         for logit in logits.iter_mut() {
             if *logit < threshold {

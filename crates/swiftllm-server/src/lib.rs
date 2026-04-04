@@ -139,28 +139,76 @@ async fn health_check() -> impl IntoResponse {
     }))
 }
 
-/// Metrics endpoint
-async fn metrics(State(state): State<AppState>) -> impl IntoResponse {
+/// Metrics endpoint — returns JSON by default, Prometheus text format if Accept header requests it
+async fn metrics(State(state): State<AppState>, req: Request<Body>) -> Response {
     let stats = state.engine.stats();
-    Json(serde_json::json!({
-        "scheduler": {
-            "running_requests": stats.scheduler.running_requests,
-            "waiting_requests": stats.scheduler.waiting_requests,
-            "completed_requests": stats.scheduler.completed_requests,
-            "throughput_tps": stats.execution.tokens_per_second
-        },
-        "memory": {
-            "gpu_utilization": stats.block_manager.gpu_utilization,
-            "cpu_utilization": stats.block_manager.cpu_utilization,
-            "free_gpu_blocks": stats.block_manager.free_gpu_blocks,
-            "free_cpu_blocks": stats.block_manager.free_cpu_blocks
-        },
-        "execution": {
-            "prefill_tokens": stats.execution.prefill_tokens,
-            "decode_tokens": stats.execution.decode_tokens,
-            "total_forward_passes": stats.execution.total_forward_passes
-        }
-    }))
+
+    // Check if Prometheus format is requested
+    let wants_prometheus = req
+        .headers()
+        .get(header::ACCEPT)
+        .and_then(|v| v.to_str().ok())
+        .map(|v| v.contains("text/plain") || v.contains("openmetrics"))
+        .unwrap_or(false);
+
+    if wants_prometheus {
+        let body = format!(
+            "# HELP swiftllm_requests_running Number of running requests\n\
+             # TYPE swiftllm_requests_running gauge\n\
+             swiftllm_requests_running {}\n\
+             # HELP swiftllm_requests_waiting Number of waiting requests\n\
+             # TYPE swiftllm_requests_waiting gauge\n\
+             swiftllm_requests_waiting {}\n\
+             # HELP swiftllm_requests_completed_total Total completed requests\n\
+             # TYPE swiftllm_requests_completed_total counter\n\
+             swiftllm_requests_completed_total {}\n\
+             # HELP swiftllm_throughput_tokens_per_second Token throughput\n\
+             # TYPE swiftllm_throughput_tokens_per_second gauge\n\
+             swiftllm_throughput_tokens_per_second {:.2}\n\
+             # HELP swiftllm_gpu_memory_utilization GPU memory utilization\n\
+             # TYPE swiftllm_gpu_memory_utilization gauge\n\
+             swiftllm_gpu_memory_utilization {:.4}\n\
+             # HELP swiftllm_gpu_blocks_free Free GPU blocks\n\
+             # TYPE swiftllm_gpu_blocks_free gauge\n\
+             swiftllm_gpu_blocks_free {}\n\
+             # HELP swiftllm_steps_total Total engine steps\n\
+             # TYPE swiftllm_steps_total counter\n\
+             swiftllm_steps_total {}\n",
+            stats.scheduler.running_requests,
+            stats.scheduler.waiting_requests,
+            stats.scheduler.completed_requests,
+            stats.execution.tokens_per_second,
+            stats.block_manager.gpu_utilization,
+            stats.block_manager.free_gpu_blocks,
+            stats.step_count,
+        );
+        Response::builder()
+            .header(header::CONTENT_TYPE, "text/plain; version=0.0.4")
+            .body(Body::from(body))
+            .unwrap()
+    } else {
+        Json(serde_json::json!({
+            "scheduler": {
+                "running_requests": stats.scheduler.running_requests,
+                "waiting_requests": stats.scheduler.waiting_requests,
+                "completed_requests": stats.scheduler.completed_requests,
+                "throughput_tps": stats.execution.tokens_per_second
+            },
+            "memory": {
+                "gpu_utilization": stats.block_manager.gpu_utilization,
+                "cpu_utilization": stats.block_manager.cpu_utilization,
+                "free_gpu_blocks": stats.block_manager.free_gpu_blocks,
+                "free_cpu_blocks": stats.block_manager.free_cpu_blocks
+            },
+            "execution": {
+                "prefill_tokens": stats.execution.prefill_tokens,
+                "decode_tokens": stats.execution.decode_tokens,
+                "total_forward_passes": stats.execution.total_forward_passes,
+                "step_count": stats.step_count
+            }
+        }))
+        .into_response()
+    }
 }
 
 /// Start the server

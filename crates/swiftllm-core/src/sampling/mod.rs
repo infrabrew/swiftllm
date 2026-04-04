@@ -157,14 +157,28 @@ impl TokenSampler {
             return Err(Error::Sampling("Empty logits".to_string()));
         }
 
-        // Apply modifications in order:
-        // 1. Logit bias
-        // 2. Repetition penalty
-        // 3. Frequency/presence penalty
-        // 4. Temperature
-        // 5. Top-k / Top-p / Min-p filtering
-        // 6. Sample
+        // Check if we need to modify logits at all — avoids allocation for the common
+        // case where no penalties, biases, or filtering are active
+        let needs_modification = !self.params.logit_bias.is_empty()
+            || (self.params.repetition_penalty != 1.0 && !self.token_counts.is_empty())
+            || ((self.params.frequency_penalty != 0.0 || self.params.presence_penalty != 0.0)
+                && !self.token_counts.is_empty())
+            || !self.params.is_greedy();
 
+        if !needs_modification && self.params.is_greedy() {
+            // Fast path: pure greedy with no modifications — no allocation needed
+            let token_id = self.sample_greedy(logits);
+            *self.token_counts.entry(token_id).or_insert(0) += 1;
+            let logprob = self.compute_logprob(logits, token_id);
+            return Ok(Token {
+                id: token_id,
+                text: None,
+                logprob: Some(logprob),
+                top_logprobs: None,
+            });
+        }
+
+        // Slow path: clone and modify
         let mut logits = logits.to_vec();
 
         // Apply logit bias
@@ -332,12 +346,13 @@ impl TokenSampler {
         (logits[token_id as usize] - max_logit) - sum.ln()
     }
 
-    /// Get top log probabilities
+    /// Get top log probabilities using partial sort for efficiency
     pub fn get_top_logprobs(&self, logits: &[f32], top_n: usize) -> Vec<(TokenId, f32)> {
         let max_logit = logits.iter().cloned().fold(f32::NEG_INFINITY, f32::max);
         let sum: f32 = logits.iter().map(|&x| (x - max_logit).exp()).sum();
         let log_sum = sum.ln();
 
+        let n = top_n.min(logits.len());
         let mut indexed: Vec<(TokenId, f32)> = logits
             .iter()
             .enumerate()
@@ -347,8 +362,12 @@ impl TokenSampler {
             })
             .collect();
 
+        // Partial sort: only guarantee the top N are correct — O(n) avg vs O(n log n)
+        if n < indexed.len() {
+            indexed.select_nth_unstable_by(n, |a, b| b.1.partial_cmp(&a.1).unwrap());
+            indexed.truncate(n);
+        }
         indexed.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap());
-        indexed.truncate(top_n);
         indexed
     }
 
@@ -363,7 +382,7 @@ impl TokenSampler {
     }
 }
 
-/// Sample multiple tokens (for beam search)
+/// Sample multiple tokens (for beam search) — uses partial sort for O(n) avg
 pub fn sample_top_n(logits: &[f32], n: usize) -> Vec<(TokenId, f32)> {
     let mut indexed: Vec<(TokenId, f32)> = logits
         .iter()
@@ -371,8 +390,12 @@ pub fn sample_top_n(logits: &[f32], n: usize) -> Vec<(TokenId, f32)> {
         .map(|(idx, &logit)| (idx as TokenId, logit))
         .collect();
 
+    let n = n.min(indexed.len());
+    if n < indexed.len() {
+        indexed.select_nth_unstable_by(n, |a, b| b.1.partial_cmp(&a.1).unwrap());
+        indexed.truncate(n);
+    }
     indexed.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap());
-    indexed.truncate(n);
     indexed
 }
 
