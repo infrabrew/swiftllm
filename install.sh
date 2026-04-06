@@ -10,6 +10,7 @@
 #   ./install.sh --venv DIR   # Use a specific venv directory
 #   ./install.sh --no-venv    # Install into current Python environment
 #   ./install.sh --model-dir  # Set default model download directory
+#   ./install.sh --airgap     # Offline install from air-gap bundle
 #
 # ============================================================================
 
@@ -34,7 +35,13 @@ NO_VENV=false
 FORCE_CPU=false
 FORCE_GPU=false
 MODEL_DIR=""
+AIRGAP=false
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+# Air-gap bundle paths (relative to SCRIPT_DIR)
+BUNDLE_WHEELS="$SCRIPT_DIR/../wheels"
+BUNDLE_RUST="$SCRIPT_DIR/../rust"
+BUNDLE_MODELS="$SCRIPT_DIR/../models"
 
 # ----------------------------
 # Parse arguments
@@ -61,6 +68,10 @@ while [[ $# -gt 0 ]]; do
             MODEL_DIR="$2"
             shift 2
             ;;
+        --airgap|--offline)
+            AIRGAP=true
+            shift
+            ;;
         -h|--help)
             echo "SwiftLLM Installer"
             echo ""
@@ -72,6 +83,7 @@ while [[ $# -gt 0 ]]; do
             echo "  --venv DIR     Create/use virtual environment at DIR"
             echo "  --no-venv      Install into current Python (no venv)"
             echo "  --model-dir    Set default model download directory"
+            echo "  --airgap       Offline install from air-gap bundle (no network)"
             echo "  -h, --help     Show this help message"
             exit 0
             ;;
@@ -228,7 +240,11 @@ fi
 
 # Upgrade pip
 info "Upgrading pip..."
-$PYTHON -m pip install --upgrade pip --quiet 2>/dev/null
+if $AIRGAP; then
+    $PYTHON -m pip install --upgrade pip --no-index --find-links "$BUNDLE_WHEELS" --quiet 2>/dev/null || true
+else
+    $PYTHON -m pip install --upgrade pip --quiet 2>/dev/null
+fi
 success "pip is up to date"
 
 # ----------------------------
@@ -239,6 +255,21 @@ step "Checking Rust toolchain..."
 if command_exists rustc; then
     RUST_VERSION=$(rustc --version | awk '{print $2}')
     success "Found Rust $RUST_VERSION"
+elif $AIRGAP; then
+    # Air-gap: use bundled rustup-init
+    if [[ -x "$BUNDLE_RUST/rustup-init" ]]; then
+        info "Installing Rust from bundled rustup-init..."
+        "$BUNDLE_RUST/rustup-init" -y --quiet 2>/dev/null
+        source "$HOME/.cargo/env" 2>/dev/null || true
+        if command_exists rustc; then
+            RUST_VERSION=$(rustc --version | awk '{print $2}')
+            success "Installed Rust $RUST_VERSION (from bundle)"
+        else
+            fail "Bundled Rust install failed. Pre-install Rust on this host."
+        fi
+    else
+        fail "Rust not found and no bundled installer at $BUNDLE_RUST/rustup-init. Pre-install Rust on this host."
+    fi
 else
     info "Rust not found. Installing via rustup..."
     curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --quiet
@@ -256,7 +287,11 @@ fi
 # ----------------------------
 step "Installing build tools..."
 
-$PIP install --quiet maturin 2>/dev/null
+if $AIRGAP; then
+    $PIP install --quiet maturin --no-index --find-links "$BUNDLE_WHEELS" 2>/dev/null
+else
+    $PIP install --quiet maturin 2>/dev/null
+fi
 success "maturin installed"
 
 # ----------------------------
@@ -283,7 +318,11 @@ success "Built: $(basename "$WHEEL")"
 # ----------------------------
 step "Installing SwiftLLM..."
 
-$PIP install --force-reinstall "$WHEEL" --quiet 2>/dev/null
+if $AIRGAP; then
+    $PIP install --force-reinstall "$WHEEL" --no-index --find-links "$BUNDLE_WHEELS" --quiet 2>/dev/null
+else
+    $PIP install --force-reinstall "$WHEEL" --quiet 2>/dev/null
+fi
 success "SwiftLLM installed"
 
 # ----------------------------
@@ -291,25 +330,30 @@ success "SwiftLLM installed"
 # ----------------------------
 step "Installing GGUF backend (llama-cpp-python)..."
 
+AIRGAP_PIP_FLAGS=""
+if $AIRGAP; then
+    AIRGAP_PIP_FLAGS="--no-index --find-links $BUNDLE_WHEELS"
+fi
+
 if $USE_GPU; then
     info "Building llama-cpp-python with CUDA support..."
 
     export CUDACXX="$NVCC_PATH"
     export CMAKE_ARGS="-DGGML_CUDA=on"
 
-    $PIP install llama-cpp-python --force-reinstall --no-cache-dir 2>&1 | tail -3
+    $PIP install llama-cpp-python --force-reinstall --no-cache-dir $AIRGAP_PIP_FLAGS 2>&1 | tail -3
 
     if $PYTHON -c "from llama_cpp import Llama; print('ok')" 2>/dev/null | grep -q ok; then
         success "llama-cpp-python installed with CUDA support"
     else
         warn "CUDA build may have failed. Falling back to CPU build..."
         unset CUDACXX CMAKE_ARGS
-        $PIP install llama-cpp-python --force-reinstall --no-cache-dir --quiet 2>/dev/null
+        $PIP install llama-cpp-python --force-reinstall --no-cache-dir --quiet $AIRGAP_PIP_FLAGS 2>/dev/null
         success "llama-cpp-python installed (CPU fallback)"
     fi
 else
     info "Building llama-cpp-python (CPU only)..."
-    $PIP install llama-cpp-python --quiet 2>/dev/null
+    $PIP install llama-cpp-python --quiet $AIRGAP_PIP_FLAGS 2>/dev/null
     success "llama-cpp-python installed (CPU)"
 fi
 
@@ -327,6 +371,17 @@ else
     mkdir -p "$DEFAULT_MODEL_DIR" 2>/dev/null
     success "Default model directory: $DEFAULT_MODEL_DIR"
     info "Override with: export SWIFTLLM_MODEL_DIR=/your/path"
+fi
+
+# Copy bundled models if in air-gap mode
+if $AIRGAP && [[ -d "$BUNDLE_MODELS" ]]; then
+    DEST_MODEL_DIR="${MODEL_DIR:-$DEFAULT_MODEL_DIR}"
+    BUNDLED_COUNT=$(ls "$BUNDLE_MODELS" 2>/dev/null | wc -l | tr -d ' ')
+    if [[ "$BUNDLED_COUNT" -gt 0 ]]; then
+        info "Copying $BUNDLED_COUNT bundled model(s) to $DEST_MODEL_DIR..."
+        cp -rn "$BUNDLE_MODELS"/* "$DEST_MODEL_DIR/" 2>/dev/null || true
+        success "Bundled models installed"
+    fi
 fi
 
 # ----------------------------
@@ -398,6 +453,10 @@ if $USE_GPU; then
     echo -e "  ${BOLD}GPU acceleration:${NC} ${GREEN}Enabled${NC} (CUDA $CUDA_VERSION)"
 else
     echo -e "  ${BOLD}GPU acceleration:${NC} CPU only"
+fi
+
+if $AIRGAP; then
+    echo -e "  ${BOLD}Install mode:${NC} ${YELLOW}Air-gapped (offline)${NC}"
 fi
 
 echo ""

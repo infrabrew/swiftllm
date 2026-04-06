@@ -60,6 +60,41 @@ The installer automatically:
 ./install.sh --venv ~/sllm  # Custom venv location
 ./install.sh --no-venv      # Install into current Python environment
 ./install.sh --model-dir /data/models  # Set model storage directory
+./install.sh --airgap       # Offline install from air-gap bundle (no network)
+```
+
+### Air-Gapped / Offline Install
+
+For hosts with no internet access, create a bundle on a connected machine first:
+
+```bash
+# On a CONNECTED machine — download everything into a portable archive
+git clone https://github.com/swiftllm/swiftllm.git && cd swiftllm
+
+# Basic bundle (source + all Python wheels + Rust installer)
+./airgap-bundle.sh
+
+# Include a model in the bundle
+./airgap-bundle.sh --model "Qwen/Qwen2.5-0.5B-Instruct-GGUF:qwen2.5-0.5b-instruct-q4_k_m.gguf"
+
+# CPU-only wheels + custom output path
+./airgap-bundle.sh --cpu -o /mnt/usb/swiftllm-bundle.tar.gz
+```
+
+Transfer the archive to the air-gapped host, then:
+
+```bash
+# On the AIR-GAPPED host
+tar xzf swiftllm-airgap-bundle.tar.gz
+cd swiftllm-airgap-bundle/swiftllm
+./install.sh --airgap
+```
+
+To run in offline mode at runtime (skip all HuggingFace downloads):
+
+```bash
+export SWIFTLLM_OFFLINE=1
+swiftllm generate -m /path/to/local/model.gguf -p "Hello"
 ```
 
 ### Manual Install
@@ -304,6 +339,7 @@ params = SamplingParams(
 | Variable | Description |
 |----------|-------------|
 | `SWIFTLLM_MODEL_DIR` | Default directory for downloaded models (overrides `~/.cache/swiftllm/models`) |
+| `SWIFTLLM_OFFLINE` | Set to `1` to disable all network downloads (air-gapped mode) |
 | `HF_TOKEN` | HuggingFace API token for accessing gated models |
 
 ## CLI Commands
