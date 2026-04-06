@@ -529,7 +529,10 @@ swiftllm/
 - Checkpoint save/load with `save_total_limit` enforcement
 - Throughput (tok/s) in training log output
 
-### v0.1.0
+**Added Airgap Support
+- All in One package setup bundle on a connected device.
+
+### v1.0.0
 
 - Initial release
 - PagedAttention memory management with block allocator and copy-on-write
