@@ -529,7 +529,7 @@ swiftllm/
 - Checkpoint save/load with `save_total_limit` enforcement
 - Throughput (tok/s) in training log output
 
-**Added Airgap Support
+**Added Airgap Support**
 - All in One package setup bundle on a connected device.
 
 ### v1.0.0
