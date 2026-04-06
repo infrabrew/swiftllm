@@ -20,6 +20,18 @@ logger = logging.getLogger(__name__)
 DEFAULT_CACHE_DIR = os.path.join(os.path.expanduser("~"), ".cache", "swiftllm", "models")
 ENV_MODEL_DIR = "SWIFTLLM_MODEL_DIR"
 ENV_HF_TOKEN = "HF_TOKEN"
+ENV_OFFLINE = "SWIFTLLM_OFFLINE"
+
+
+def is_offline_mode() -> bool:
+    """Check if SwiftLLM is running in offline / air-gapped mode.
+
+    Offline mode is enabled by setting SWIFTLLM_OFFLINE=1 (or "true"/"yes").
+    When active, all network downloads are disabled and only local/cached
+    models are used.
+    """
+    val = os.environ.get(ENV_OFFLINE, "").lower()
+    return val in ("1", "true", "yes")
 
 # Matches: https://huggingface.co/org/repo/blob/revision/filename
 # or:      https://huggingface.co/org/repo/resolve/revision/filename
@@ -123,6 +135,36 @@ def _resolve_token(token: Optional[str] = None) -> Optional[str]:
     return os.environ.get(ENV_HF_TOKEN)
 
 
+def scan_local_cache(
+    filename: str,
+    download_dir: Optional[str] = None,
+) -> Optional[str]:
+    """Search the local cache for a file by name.
+
+    Walks the cache directory looking for an exact filename match.
+    Useful in offline/air-gapped mode to locate previously downloaded
+    or manually placed models.
+
+    Args:
+        filename: The file to search for (e.g., 'model.q4_k_m.gguf').
+        download_dir: Directory to scan (defaults to the standard cache dir).
+
+    Returns:
+        Absolute path if found, None otherwise.
+    """
+    cache_dir = resolve_download_dir(download_dir)
+    if not os.path.isdir(cache_dir):
+        return None
+
+    for root, _dirs, files in os.walk(cache_dir):
+        if filename in files:
+            path = os.path.join(root, filename)
+            logger.info("Found cached file: %s", path)
+            return path
+
+    return None
+
+
 def download_file(
     repo_id: str,
     filename: str,
@@ -131,6 +173,10 @@ def download_file(
     revision: Optional[str] = None,
 ) -> str:
     """Download a single file from a HuggingFace repo.
+
+    In offline mode (SWIFTLLM_OFFLINE=1), searches the local cache instead
+    of contacting HuggingFace. Raises FileNotFoundError if the file is not
+    cached.
 
     Args:
         repo_id: HuggingFace repo ID (e.g., 'org/model-name').
@@ -142,8 +188,20 @@ def download_file(
     Returns:
         Absolute path to the downloaded file.
     """
-    hf_hub = _get_hf_hub()
     cache_dir = resolve_download_dir(download_dir)
+
+    # Offline mode: only use local cache
+    if is_offline_mode():
+        cached = scan_local_cache(filename, download_dir)
+        if cached:
+            return cached
+        raise FileNotFoundError(
+            f"Offline mode: '{filename}' from '{repo_id}' not found in {cache_dir}. "
+            f"Copy the file into {cache_dir} or disable offline mode "
+            f"(unset {ENV_OFFLINE})."
+        )
+
+    hf_hub = _get_hf_hub()
     token = _resolve_token(token)
 
     logger.info(
@@ -170,6 +228,9 @@ def download_repo(
 ) -> str:
     """Download a full HuggingFace repo.
 
+    In offline mode (SWIFTLLM_OFFLINE=1), searches the local cache for a
+    directory matching the repo name. Raises FileNotFoundError if not found.
+
     Args:
         repo_id: HuggingFace repo ID (e.g., 'org/model-name').
         download_dir: Directory to store the download.
@@ -179,8 +240,29 @@ def download_repo(
     Returns:
         Absolute path to the downloaded model directory.
     """
-    hf_hub = _get_hf_hub()
     cache_dir = resolve_download_dir(download_dir)
+
+    # Offline mode: scan for a cached directory matching the repo name
+    if is_offline_mode():
+        repo_name = repo_id.replace("/", "--")
+        # Check common HuggingFace cache layouts
+        for candidate_name in [repo_name, repo_id.split("/")[-1], repo_id]:
+            for root, dirs, _files in os.walk(cache_dir):
+                for d in dirs:
+                    if candidate_name in d:
+                        full = os.path.join(root, d)
+                        # Verify it looks like a model dir (has config or gguf files)
+                        contents = os.listdir(full)
+                        if any(f.endswith(('.json', '.gguf', '.safetensors', '.bin')) for f in contents):
+                            logger.info("Found cached repo: %s", full)
+                            return full
+        raise FileNotFoundError(
+            f"Offline mode: repo '{repo_id}' not found in {cache_dir}. "
+            f"Copy the model directory into {cache_dir} or disable offline mode "
+            f"(unset {ENV_OFFLINE})."
+        )
+
+    hf_hub = _get_hf_hub()
     token = _resolve_token(token)
 
     logger.info("Downloading repo '%s' to %s", repo_id, cache_dir)
