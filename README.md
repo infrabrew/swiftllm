@@ -17,7 +17,7 @@
 - **Low Latency**: Optimized CUDA kernels and speculative decoding
 - **Tensor Parallelism**: Scale to multiple GPUs seamlessly
 - **OpenAI Compatible**: Drop-in replacement for OpenAI API with security hardening
-- **Training & Fine-Tuning**: LoRA, QLoRA, and full fine-tuning with built-in training loop
+- **Training & Fine-Tuning**: LoRA, QLoRA, and full fine-tuning with Muon, AdamW, and SGD optimizers
 - **Python Friendly**: Easy-to-use Python API with async support
 - **Multiple Formats**: Support for HuggingFace, GGUF, and SafeTensors
 - **Model Downloading**: Download models from HuggingFace Hub by ID or URL
@@ -219,6 +219,37 @@ trainer = fine_tune(
 | **QLoRA** | 4-bit quantized base model + LoRA adapters | Very Low |
 | **Full** | Full parameter fine-tuning | High |
 
+#### Optimizers
+
+| Optimizer | Best For | Description |
+|-----------|----------|-------------|
+| **Muon** | Matrix-shaped params (linear layers) | Newton-Schulz orthogonalization on Nesterov momentum; faster convergence than Adam for >=2D weights. Auto-falls back to AdamW for 1D params (biases, norms). [arXiv:2409.20325](https://arxiv.org/abs/2409.20325) |
+| **AdamW** | General purpose | Decoupled weight decay Adam; default for most fine-tuning |
+| **SGD** | Large-batch training | SGD with optional Nesterov momentum |
+
+#### Muon Optimizer (Rust API)
+
+```rust
+use swiftllm_training::{Muon, MuonConfig};
+use swiftllm_training::Optimizer;
+
+let mut opt = Muon::new(MuonConfig {
+    lr: 0.02,              // LR for >=2D params (Muon path)
+    momentum: 0.95,        // Nesterov momentum coefficient
+    ns_steps: 5,           // Newton-Schulz iterations
+    weight_decay: 0.0,     // Decoupled weight decay (Muon)
+    adamw_lr: 3e-4,        // LR for 1D params (AdamW fallback)
+    ..Default::default()
+});
+
+// Register shapes for explicit control (optional)
+opt.set_shape("layer0.weight", 4096, 4096);
+
+let mut param = vec![0.01f32; 4096 * 4096];
+let grad = compute_gradient(&model, &batch);
+opt.step(&mut param, &grad, "layer0.weight");
+```
+
 ### OpenAI-Compatible Server
 
 ```bash
@@ -342,7 +373,7 @@ The `-m` / `--model` flag accepts multiple formats:
 |                               |                                      |
 |  +----------------------------+-------------------------------+      |
 |  |          Training & Fine-Tuning Engine                      |      |
-|  |    [LoRA/QLoRA/Full]  [AdamW/SGD]  [LR Schedulers]         |      |
+|  |    [LoRA/QLoRA/Full]  [Muon/AdamW/SGD]  [LR Schedulers]    |      |
 |  +----------------------------+-------------------------------+      |
 |                               |                                      |
 |  +----------------------------+-------------------------------+      |
@@ -402,6 +433,7 @@ swiftllm/
       src/config.rs             #   Training configuration
       src/data.rs               #   Data loading (JSONL, CSV, text)
       src/optimizer.rs           #   AdamW, SGD, LR schedulers
+      src/muon.rs               #   Muon optimizer (Newton-Schulz orthogonalization)
       src/fine_tuning.rs        #   LoRA, QLoRA, full fine-tuning
       src/metrics.rs            #   Training metrics & logging
       src/trainer.rs            #   Training loop & checkpointing
@@ -415,6 +447,7 @@ swiftllm/
 **Training & Fine-Tuning**
 - Added `swiftllm-training` Rust crate with full training infrastructure
 - LoRA, QLoRA, and full fine-tuning support with configurable adapters
+- Muon optimizer: Newton-Schulz orthogonalization on Nesterov momentum for fast convergence on matrix-shaped params, with automatic AdamW fallback for 1D params
 - AdamW and SGD optimizers with linear/cosine/constant LR schedulers
 - Dataset loading (JSONL, CSV, text) with instruction templates
 - Training metrics tracking with rolling windows and perplexity
