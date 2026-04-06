@@ -41,3 +41,4 @@ indicatif = { workspace = true }
 
 [dev-dependencies]
 tokio-test = { workspace = true }
+tempfile = "3.24"

@@ -123,7 +123,7 @@ impl Trainer {
     }
 
     /// Run the training loop
-    pub fn train<D: Dataset>(&mut self, train_data: &mut DataLoader<D>, eval_data: Option<&mut DataLoader<D>>) -> Result<()> {
+    pub fn train<D: Dataset>(&mut self, train_data: &mut DataLoader<D>, mut eval_data: Option<&mut DataLoader<D>>) -> Result<()> {
         let total_steps = self.total_steps(train_data.len());
         let warmup_steps = self.warmup_steps(total_steps);
 
@@ -179,7 +179,7 @@ impl Trainer {
                 if self.config.eval_steps > 0
                     && self.state.global_step % self.config.eval_steps == 0
                 {
-                    if let Some(ref mut eval) = eval_data.as_deref_mut() {
+                    if let Some(ref mut eval) = eval_data {
                         let eval_loss = self.evaluate(eval);
                         self.metrics.record_eval(eval_loss);
                         tracing::info!("Eval loss: {:.4} | Eval ppl: {:.2}", eval_loss, eval_loss.exp());
@@ -223,7 +223,7 @@ impl Trainer {
 
         // Simulate a decreasing loss curve
         let base_loss = 3.0;
-        let decay = (-self.state.global_step as f64 * 0.001).exp();
+        let decay = (-(self.state.global_step as f64) * 0.001).exp();
         let noise = (self.state.global_step as f64 * 0.1).sin() * 0.05;
         base_loss * decay + 0.5 + noise
     }

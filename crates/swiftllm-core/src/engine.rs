@@ -107,6 +107,8 @@ impl Engine {
         // Create memory pool
         let memory_pool = MemoryPool::new(config.memory.clone());
 
+        let eos_token_id = config.model.eos_token_id.unwrap_or(2);
+
         Ok(Self {
             config,
             scheduler,
@@ -119,7 +121,7 @@ impl Engine {
             exec_stats: Mutex::new(ExecutionStats::default()),
             shutdown: Arc::new(Notify::new()),
             output_tx: None,
-            eos_token_id: config.model.eos_token_id.unwrap_or(2),
+            eos_token_id,
         })
     }
 
