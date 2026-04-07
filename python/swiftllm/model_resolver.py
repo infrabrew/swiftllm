@@ -245,17 +245,27 @@ def download_repo(
     # Offline mode: scan for a cached directory matching the repo name
     if is_offline_mode():
         repo_name = repo_id.replace("/", "--")
-        # Check common HuggingFace cache layouts
-        for candidate_name in [repo_name, repo_id.split("/")[-1], repo_id]:
-            for root, dirs, _files in os.walk(cache_dir):
-                for d in dirs:
-                    if candidate_name in d:
-                        full = os.path.join(root, d)
-                        # Verify it looks like a model dir (has config or gguf files)
-                        contents = os.listdir(full)
-                        if any(f.endswith(('.json', '.gguf', '.safetensors', '.bin')) for f in contents):
-                            logger.info("Found cached repo: %s", full)
-                            return full
+        # Check common HuggingFace cache layouts using exact name matching
+        candidate_names = {repo_name, repo_id.split("/")[-1], repo_id}
+        for root, dirs, _files in os.walk(cache_dir):
+            for d in dirs:
+                # Require exact match or exact prefix with separator to prevent
+                # partial substring matches (e.g. "model" matching "model-v2")
+                if d not in candidate_names and not any(
+                    d == f"models--{c}" or d == f"snapshots--{c}" for c in candidate_names
+                ):
+                    continue
+                full = os.path.join(root, d)
+                # Verify the match is still within the cache directory
+                real_full = os.path.realpath(full)
+                real_cache = os.path.realpath(cache_dir)
+                if not real_full.startswith(real_cache + os.sep):
+                    continue
+                # Verify it looks like a model dir (has config or gguf files)
+                contents = os.listdir(full)
+                if any(f.endswith(('.json', '.gguf', '.safetensors', '.bin')) for f in contents):
+                    logger.info("Found cached repo: %s", full)
+                    return full
         raise FileNotFoundError(
             f"Offline mode: repo '{repo_id}' not found in {cache_dir}. "
             f"Copy the model directory into {cache_dir} or disable offline mode "

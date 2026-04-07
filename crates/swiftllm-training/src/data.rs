@@ -81,7 +81,14 @@ impl TextDataset {
             .map(|line| {
                 let text = if line.len() > max_seq_len * 4 {
                     // Rough char-to-token ratio ~4:1
-                    line[..max_seq_len * 4].to_string()
+                    // Use char boundary-safe truncation to avoid panics on multi-byte UTF-8
+                    let limit = max_seq_len * 4;
+                    let end = line.char_indices()
+                        .take_while(|&(i, _)| i < limit)
+                        .last()
+                        .map(|(i, c)| i + c.len_utf8())
+                        .unwrap_or(0);
+                    line[..end].to_string()
                 } else {
                     line.to_string()
                 };
