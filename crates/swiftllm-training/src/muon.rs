@@ -28,7 +28,7 @@ pub struct MuonConfig {
     /// Nesterov momentum coefficient (typical: 0.95)
     pub momentum: f64,
 
-    /// Number of Newton-Schulz iterations for orthogonalization (typical: 5-10)
+    /// Number of Newton-Schulz iterations for orthogonalization (typical: 5-10, max: 20)
     pub ns_steps: usize,
 
     /// Weight decay (decoupled, applied before the update)
@@ -233,7 +233,7 @@ impl Muon {
         }
 
         // Newton-Schulz iterations: X <- X * (3I - X^T X) / 2
-        let ns_steps = self.config.ns_steps;
+        let ns_steps = self.config.ns_steps.min(20); // Cap to prevent runaway loops
         let mut xtx = vec![0.0f32; work_cols * work_cols];
         let mut temp = vec![0.0f32; work_rows * work_cols];
 
@@ -306,8 +306,8 @@ impl Muon {
 
         aws.step_count += 1;
         let t = aws.step_count as f64;
-        let bc1 = 1.0 - (self.config.adamw_beta1).powf(t);
-        let bc2 = 1.0 - (self.config.adamw_beta2).powf(t);
+        let bc1 = (1.0 - (self.config.adamw_beta1).powf(t)).max(f64::EPSILON);
+        let bc2 = (1.0 - (self.config.adamw_beta2).powf(t)).max(f64::EPSILON);
 
         for i in 0..n {
             aws.m[i] = beta1 * aws.m[i] + (1.0 - beta1) * grad[i];

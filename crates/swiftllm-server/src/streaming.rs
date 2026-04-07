@@ -38,15 +38,17 @@ pub fn chat_completion_chunk(
     content: &str,
     finish_reason: Option<&str>,
 ) -> String {
-    let finish = match finish_reason {
-        Some(reason) => format!("\"{}\"", reason),
-        None => "null".to_string(),
-    };
-
-    format!(
-        r#"{{"id":"{}","object":"chat.completion.chunk","model":"{}","choices":[{{"index":0,"delta":{{"content":"{}"}},"finish_reason":{}}}]}}"#,
-        id, model, content, finish
-    )
+    let chunk = serde_json::json!({
+        "id": id,
+        "object": "chat.completion.chunk",
+        "model": model,
+        "choices": [{
+            "index": 0,
+            "delta": { "content": content },
+            "finish_reason": finish_reason,
+        }]
+    });
+    chunk.to_string()
 }
 
 /// Create the final [DONE] sentinel for SSE streaming

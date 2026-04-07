@@ -396,11 +396,17 @@ class Trainer:
             Trainer configured to resume from the checkpoint.
         """
         state_path = os.path.join(checkpoint_path, "trainer_state.json")
+        # Validate checkpoint path doesn't escape via ".." traversal
+        real_state = os.path.realpath(state_path)
+        real_ckpt = os.path.realpath(checkpoint_path)
+        if not real_state.startswith(real_ckpt + os.sep):
+            raise ValueError(f"Invalid checkpoint path: state file resolves outside checkpoint dir")
         with open(state_path) as f:
             state = json.load(f)
-        config = TrainingConfig.load(
+        config_path = os.path.realpath(
             os.path.join(checkpoint_path, "..", "training_config.json")
         )
+        config = TrainingConfig.load(config_path)
         config.resume_from_checkpoint = checkpoint_path
         trainer = cls(config)
         trainer._metrics = TrainingMetrics(

@@ -208,6 +208,12 @@ impl LoRAFineTuning {
     pub fn merge_weights(&self, base_weights: &mut HashMap<String, Vec<f32>>) {
         for (name, adapter) in &self.adapters {
             if let Some(weights) = base_weights.get_mut(name) {
+                // Validate LoRA buffer sizes before indexing
+                let expected_a_len = adapter.input_dim * adapter.r;
+                let expected_b_len = adapter.r * adapter.output_dim;
+                if adapter.lora_a.len() < expected_a_len || adapter.lora_b.len() < expected_b_len {
+                    continue; // Skip malformed adapters
+                }
                 // W' = W + scaling * (B @ A)
                 // Simple matrix multiply for merging
                 for i in 0..adapter.output_dim {

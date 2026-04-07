@@ -91,7 +91,7 @@ PY_VERSION=$("$PYTHON" -c "import sys; print(f'{sys.version_info.major}.{sys.ver
 # ----------------------------
 # Set up bundle directory
 # ----------------------------
-BUNDLE_DIR=$(mktemp -d)
+BUNDLE_DIR=$(mktemp -d) || fail "Failed to create temporary directory"
 BUNDLE_NAME="swiftllm-airgap-bundle"
 DEST="$BUNDLE_DIR/$BUNDLE_NAME"
 mkdir -p "$DEST"/{wheels,rust,models}
@@ -118,13 +118,17 @@ success "Source tree copied"
 # ----------------------------
 step "Downloading Python wheels..."
 
-PLATFORM_FLAG=""
+PLATFORM_FLAG=()
 if [[ -n "$PLATFORM" ]]; then
-    PLATFORM_FLAG="--platform $PLATFORM --only-binary=:all:"
+    # Validate platform tag: only allow alphanumeric, underscores, dots, hyphens
+    if [[ ! "$PLATFORM" =~ ^[a-zA-Z0-9._-]+$ ]]; then
+        fail "Invalid platform tag: $PLATFORM"
+    fi
+    PLATFORM_FLAG=(--platform "$PLATFORM" --only-binary=:all:)
 fi
 
 # Core build tool
-$PYTHON -m pip download maturin -d "$DEST/wheels" $PLATFORM_FLAG 2>&1 | tail -3
+$PYTHON -m pip download maturin -d "$DEST/wheels" "${PLATFORM_FLAG[@]}" 2>&1 | tail -3
 success "maturin wheels downloaded"
 
 # Runtime dependencies from pyproject.toml
@@ -132,19 +136,19 @@ $PYTHON -m pip download \
     "numpy>=1.20" "transformers>=4.30" "torch>=2.0" "safetensors>=0.3" \
     "tokenizers>=0.13" "tqdm>=4.60" "requests>=2.25" "aiohttp>=3.8" \
     "pydantic>=2.0" "huggingface-hub>=0.14" \
-    -d "$DEST/wheels" $PLATFORM_FLAG 2>&1 | tail -5
+    -d "$DEST/wheels" "${PLATFORM_FLAG[@]}" 2>&1 | tail -5
 success "Runtime dependency wheels downloaded"
 
 # llama-cpp-python
 if $CPU_ONLY; then
-    $PYTHON -m pip download llama-cpp-python -d "$DEST/wheels" $PLATFORM_FLAG 2>&1 | tail -3
+    $PYTHON -m pip download llama-cpp-python -d "$DEST/wheels" "${PLATFORM_FLAG[@]}" 2>&1 | tail -3
 else
-    $PYTHON -m pip download llama-cpp-python -d "$DEST/wheels" $PLATFORM_FLAG 2>&1 | tail -3
+    $PYTHON -m pip download llama-cpp-python -d "$DEST/wheels" "${PLATFORM_FLAG[@]}" 2>&1 | tail -3
 fi
 success "llama-cpp-python wheel downloaded"
 
 # pip itself (for bootstrapping)
-$PYTHON -m pip download pip setuptools wheel -d "$DEST/wheels" $PLATFORM_FLAG 2>&1 | tail -3
+$PYTHON -m pip download pip setuptools wheel -d "$DEST/wheels" "${PLATFORM_FLAG[@]}" 2>&1 | tail -3
 success "pip/setuptools/wheel downloaded"
 
 WHEEL_COUNT=$(ls "$DEST/wheels/" | wc -l | tr -d ' ')
@@ -167,9 +171,22 @@ esac
 
 if [[ -n "$RUST_TARGET" ]]; then
     RUSTUP_URL="https://static.rust-lang.org/rustup/dist/${RUST_TARGET}/rustup-init"
+    RUSTUP_SHA_URL="${RUSTUP_URL}.sha256"
     if curl -sSfL "$RUSTUP_URL" -o "$DEST/rust/rustup-init"; then
+        # Verify SHA256 checksum
+        if curl -sSfL "$RUSTUP_SHA_URL" -o "$DEST/rust/rustup-init.sha256" 2>/dev/null; then
+            EXPECTED_SHA=$(awk '{print $1}' "$DEST/rust/rustup-init.sha256")
+            ACTUAL_SHA=$(shasum -a 256 "$DEST/rust/rustup-init" | awk '{print $1}')
+            if [[ "$EXPECTED_SHA" != "$ACTUAL_SHA" ]]; then
+                fail "SHA256 checksum mismatch for rustup-init (expected $EXPECTED_SHA, got $ACTUAL_SHA)"
+            fi
+            rm -f "$DEST/rust/rustup-init.sha256"
+            success "Downloaded and verified rustup-init for $RUST_TARGET"
+        else
+            warn "Could not download checksum file. Proceeding without verification."
+            success "Downloaded rustup-init for $RUST_TARGET (unverified)"
+        fi
         chmod +x "$DEST/rust/rustup-init"
-        success "Downloaded rustup-init for $RUST_TARGET"
     else
         warn "Failed to download rustup-init. Rust must be pre-installed on the target."
     fi
@@ -183,16 +200,18 @@ if [[ ${#MODELS[@]} -gt 0 ]]; then
     for model in "${MODELS[@]}"; do
         info "Downloading: $model"
         $PYTHON -c "
+import sys, shutil, os
 from swiftllm.model_resolver import resolve_model
-import shutil, os
-path = resolve_model('$model')
-dest = os.path.join('$DEST/models', os.path.basename(path))
+model_id = sys.argv[1]
+dest_dir = sys.argv[2]
+path = resolve_model(model_id)
+dest = os.path.join(dest_dir, os.path.basename(path))
 if os.path.isfile(path):
     shutil.copy2(path, dest)
 elif os.path.isdir(path):
     shutil.copytree(path, dest)
 print(f'Saved to: {dest}')
-" 2>&1
+" "$model" "$DEST/models" 2>&1
     done
     MODEL_SIZE=$(du -sh "$DEST/models/" | cut -f1)
     success "Models downloaded ($MODEL_SIZE)"
