@@ -187,6 +187,9 @@ class TrainingConfig:
         d["lr_scheduler"] = LrScheduler(d.get("lr_scheduler", "cosine"))
         d["mixed_precision"] = MixedPrecision(d.get("mixed_precision", "fp16"))
         d["fine_tuning_method"] = FineTuningMethod(d.get("fine_tuning_method", "lora"))
+        # Filter to known fields to tolerate future/extra keys in saved configs
+        known = {f.name for f in cls.__dataclass_fields__.values()} - {"lora"}
+        d = {k: v for k, v in d.items() if k in known}
         return cls(lora=lora, **d)
 
 

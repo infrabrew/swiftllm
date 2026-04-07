@@ -205,7 +205,7 @@ impl SpeculativeDecoder {
         probs
             .iter()
             .enumerate()
-            .max_by(|(_, a), (_, b)| a.partial_cmp(b).unwrap())
+            .max_by(|(_, a), (_, b)| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal))
             .map(|(idx, _)| idx as TokenId)
             .unwrap_or(0)
     }

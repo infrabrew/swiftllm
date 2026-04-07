@@ -93,7 +93,7 @@ class RequestOutput:
     def __repr__(self) -> str:
         return (
             f"RequestOutput(request_id={self.request_id!r}, "
-            f"prompt={self.prompt[:50] + '...' if self.prompt and len(self.prompt) > 50 else self.prompt!r}, "
+            f"prompt={repr(self.prompt[:50] + '...') if self.prompt and len(self.prompt) > 50 else repr(self.prompt)}, "
             f"num_outputs={len(self.outputs)}, "
             f"finished={self.finished})"
         )
@@ -208,6 +208,11 @@ class LLMEngine:
             )
 
         self._is_gguf = False
+        if self.config.trust_remote_code:
+            import logging
+            logging.getLogger(__name__).warning(
+                "trust_remote_code is enabled — remote code from HuggingFace will be executed"
+            )
         self._tokenizer = AutoTokenizer.from_pretrained(
             self.config.tokenizer,
             trust_remote_code=self.config.trust_remote_code,
@@ -286,60 +291,76 @@ class LLMEngine:
             prompt_token_ids = request_data["prompt_token_ids"]
             params = request_data["sampling_params"]
 
-            # Build llama-cpp generation kwargs
-            kwargs = {
-                "max_tokens": params.max_tokens,
-                "temperature": params.temperature,
-                "top_p": params.top_p,
-            }
+            try:
+                # Build llama-cpp generation kwargs
+                kwargs = {
+                    "max_tokens": params.max_tokens,
+                    "temperature": params.temperature,
+                    "top_p": params.top_p,
+                }
 
-            if params.top_k > 0:
-                kwargs["top_k"] = params.top_k
+                if params.top_k > 0:
+                    kwargs["top_k"] = params.top_k
 
-            if params.stop:
-                kwargs["stop"] = params.stop
+                if params.stop:
+                    kwargs["stop"] = params.stop
 
-            if params.frequency_penalty != 0.0:
-                kwargs["frequency_penalty"] = params.frequency_penalty
+                if params.frequency_penalty != 0.0:
+                    kwargs["frequency_penalty"] = params.frequency_penalty
 
-            if params.presence_penalty != 0.0:
-                kwargs["presence_penalty"] = params.presence_penalty
+                if params.presence_penalty != 0.0:
+                    kwargs["presence_penalty"] = params.presence_penalty
 
-            if params.repetition_penalty != 1.0:
-                kwargs["repeat_penalty"] = params.repetition_penalty
+                if params.repetition_penalty != 1.0:
+                    kwargs["repeat_penalty"] = params.repetition_penalty
 
-            # Run generation
-            result = self._model(prompt, **kwargs)
+                # Run generation
+                result = self._model(prompt, **kwargs)
 
-            response_text = result["choices"][0]["text"]
-            finish = result["choices"][0].get("finish_reason", "stop")
+                response_text = result["choices"][0]["text"]
+                finish = result["choices"][0].get("finish_reason", "stop")
 
-            if finish == "length":
-                finish_reason = FinishReason.LENGTH
-            else:
-                finish_reason = FinishReason.STOP
+                if finish == "length":
+                    finish_reason = FinishReason.LENGTH
+                else:
+                    finish_reason = FinishReason.STOP
 
-            # Get token count from usage
-            completion_tokens = result.get("usage", {}).get("completion_tokens", 0)
+                # Get token count from usage
+                completion_tokens = result.get("usage", {}).get("completion_tokens", 0)
 
-            output = RequestOutput(
-                request_id=request_id,
-                prompt=prompt,
-                prompt_token_ids=prompt_token_ids,
-                outputs=[
-                    CompletionOutput(
-                        index=0,
-                        text=response_text,
-                        token_ids=list(range(completion_tokens)),
-                        finish_reason=finish_reason,
-                    )
-                ],
-                finished=True,
-                metrics={
-                    "prompt_tokens": result.get("usage", {}).get("prompt_tokens", 0),
-                    "completion_tokens": completion_tokens,
-                },
-            )
+                output = RequestOutput(
+                    request_id=request_id,
+                    prompt=prompt,
+                    prompt_token_ids=prompt_token_ids,
+                    outputs=[
+                        CompletionOutput(
+                            index=0,
+                            text=response_text,
+                            token_ids=list(range(completion_tokens)),
+                            finish_reason=finish_reason,
+                        )
+                    ],
+                    finished=True,
+                    metrics={
+                        "prompt_tokens": result.get("usage", {}).get("prompt_tokens", 0),
+                        "completion_tokens": completion_tokens,
+                    },
+                )
+            except Exception:
+                output = RequestOutput(
+                    request_id=request_id,
+                    prompt=prompt,
+                    prompt_token_ids=prompt_token_ids,
+                    outputs=[
+                        CompletionOutput(
+                            index=0,
+                            text="",
+                            token_ids=[],
+                            finish_reason=FinishReason.ABORT,
+                        )
+                    ],
+                    finished=True,
+                )
             outputs.append(output)
             completed_ids.append(request_id)
 

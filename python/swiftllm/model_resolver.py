@@ -156,9 +156,14 @@ def scan_local_cache(
     if not os.path.isdir(cache_dir):
         return None
 
-    for root, _dirs, files in os.walk(cache_dir):
+    for root, _dirs, files in os.walk(cache_dir, followlinks=False):
         if filename in files:
             path = os.path.join(root, filename)
+            # Verify the path stays within the cache directory
+            real_path = os.path.realpath(path)
+            real_cache = os.path.realpath(cache_dir)
+            if not real_path.startswith(real_cache + os.sep):
+                continue
             logger.info("Found cached file: %s", path)
             return path
 
@@ -247,7 +252,7 @@ def download_repo(
         repo_name = repo_id.replace("/", "--")
         # Check common HuggingFace cache layouts using exact name matching
         candidate_names = {repo_name, repo_id.split("/")[-1], repo_id}
-        for root, dirs, _files in os.walk(cache_dir):
+        for root, dirs, _files in os.walk(cache_dir, followlinks=False):
             for d in dirs:
                 # Require exact match or exact prefix with separator to prevent
                 # partial substring matches (e.g. "model" matching "model-v2")
@@ -262,7 +267,10 @@ def download_repo(
                 if not real_full.startswith(real_cache + os.sep):
                     continue
                 # Verify it looks like a model dir (has config or gguf files)
-                contents = os.listdir(full)
+                try:
+                    contents = os.listdir(full)
+                except OSError:
+                    continue
                 if any(f.endswith(('.json', '.gguf', '.safetensors', '.bin')) for f in contents):
                     logger.info("Found cached repo: %s", full)
                     return full

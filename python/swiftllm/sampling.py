@@ -66,9 +66,9 @@ class TemperatureSampler(Sampler):
     ) -> Tuple[int, float]:
         """Sample with temperature scaling."""
         scaled_logits = logits / self.temperature
-        probs = _softmax(scaled_logits)
-        token_id = int(np.random.choice(len(probs), p=probs))
         log_probs = _log_softmax(scaled_logits)
+        probs = np.exp(log_probs)
+        token_id = int(np.random.choice(len(probs), p=probs))
         return token_id, float(log_probs[token_id])
 
 
@@ -106,9 +106,9 @@ class TopKSampler(Sampler):
         idx = int(np.random.choice(len(top_k_probs), p=top_k_probs))
         token_id = int(top_k_indices[idx])
 
-        # Compute original log probability
-        log_probs = scaled_logits - np.logaddexp.reduce(scaled_logits)
-        return token_id, float(log_probs[token_id])
+        # Log probability from renormalized top-k distribution
+        top_k_log_probs = _log_softmax(top_k_logits)
+        return token_id, float(top_k_log_probs[idx])
 
 
 class TopPSampler(Sampler):
@@ -134,7 +134,8 @@ class TopPSampler(Sampler):
     ) -> Tuple[int, float]:
         """Sample from nucleus of probability mass."""
         scaled_logits = logits / self.temperature if self.temperature != 1.0 else logits
-        probs = _softmax(scaled_logits)
+        log_probs = _log_softmax(scaled_logits)
+        probs = np.exp(log_probs)
 
         # Sort by probability descending
         sorted_indices = np.argsort(probs)[::-1]
@@ -154,7 +155,6 @@ class TopPSampler(Sampler):
         idx = int(np.random.choice(len(nucleus_probs), p=nucleus_probs))
         token_id = int(nucleus_indices[idx])
 
-        log_probs = _log_softmax(scaled_logits)
         return token_id, float(log_probs[token_id])
 
 
@@ -180,7 +180,8 @@ class MinPSampler(Sampler):
     ) -> Tuple[int, float]:
         """Sample from tokens above min probability threshold."""
         scaled_logits = logits / self.temperature if self.temperature != 1.0 else logits
-        probs = _softmax(scaled_logits)
+        log_probs = _log_softmax(scaled_logits)
+        probs = np.exp(log_probs)
 
         # Find threshold
         max_prob = np.max(probs)
@@ -196,7 +197,6 @@ class MinPSampler(Sampler):
             filtered_probs = filtered_probs / filtered_probs.sum()
             token_id = int(np.random.choice(len(filtered_probs), p=filtered_probs))
 
-        log_probs = _log_softmax(scaled_logits)
         return token_id, float(log_probs[token_id])
 
 
@@ -282,9 +282,8 @@ class SamplingStrategy:
     seed: Optional[int] = None
 
     def __post_init__(self):
-        """Set random seed if provided."""
-        if self.seed is not None:
-            np.random.seed(self.seed)
+        """Initialize per-instance RNG to avoid mutating global state."""
+        self._rng = np.random.default_rng(self.seed)
 
     def apply_penalties(
         self,
@@ -390,7 +389,7 @@ class SamplingStrategy:
             probs = _softmax(logits)
 
         # Sample
-        token_id = int(np.random.choice(len(probs), p=probs))
+        token_id = int(self._rng.choice(len(probs), p=probs))
         # Use log of the filtered+renormalized probability (avoids log(0))
         log_prob = float(np.log(probs[token_id])) if probs[token_id] > 0 else float('-inf')
 
