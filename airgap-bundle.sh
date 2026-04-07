@@ -24,7 +24,7 @@
 #   ./install.sh --airgap
 # ============================================================================
 
-set -e
+set -eo pipefail
 
 RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'
 BLUE='\033[0;34m'; CYAN='\033[0;36m'; BOLD='\033[1m'; NC='\033[0m'
@@ -50,10 +50,16 @@ PLATFORM=""
 # ----------------------------
 while [[ $# -gt 0 ]]; do
     case "$1" in
-        --model|-m)     MODELS+=("$2"); shift 2 ;;
+        --model|-m)
+            [[ -z "${2:-}" || "$2" == --* ]] && fail "--model requires an argument"
+            MODELS+=("$2"); shift 2 ;;
         --cpu)          CPU_ONLY=true; shift ;;
-        -o|--output)    OUTPUT="$2"; shift 2 ;;
-        --platform)     PLATFORM="$2"; shift 2 ;;
+        -o|--output)
+            [[ -z "${2:-}" || "$2" == --* ]] && fail "-o/--output requires a path argument"
+            OUTPUT="$2"; shift 2 ;;
+        --platform)
+            [[ -z "${2:-}" || "$2" == --* ]] && fail "--platform requires a platform tag argument"
+            PLATFORM="$2"; shift 2 ;;
         -h|--help)
             echo "SwiftLLM Air-Gap Bundle Creator"
             echo ""
@@ -79,7 +85,7 @@ for py in python3 python; do
     if command -v "$py" &>/dev/null; then
         PY_MAJOR=$("$py" -c "import sys; print(sys.version_info.major)" 2>/dev/null)
         PY_MINOR=$("$py" -c "import sys; print(sys.version_info.minor)" 2>/dev/null)
-        if [[ "$PY_MAJOR" -ge 3 ]] && [[ "$PY_MINOR" -ge 8 ]]; then
+        if [[ "$PY_MAJOR" -gt 3 ]] || { [[ "$PY_MAJOR" -eq 3 ]] && [[ "$PY_MINOR" -ge 8 ]]; }; then
             PYTHON="$py"
             break
         fi
@@ -92,6 +98,7 @@ PY_VERSION=$("$PYTHON" -c "import sys; print(f'{sys.version_info.major}.{sys.ver
 # Set up bundle directory
 # ----------------------------
 BUNDLE_DIR=$(mktemp -d) || fail "Failed to create temporary directory"
+trap 'rm -rf "$BUNDLE_DIR"' EXIT
 BUNDLE_NAME="swiftllm-airgap-bundle"
 DEST="$BUNDLE_DIR/$BUNDLE_NAME"
 mkdir -p "$DEST"/{wheels,rust,models}
@@ -110,6 +117,8 @@ info "Output: $OUTPUT"
 step "Copying source tree..."
 rsync -a --exclude='target/' --exclude='venv/' --exclude='.venv/' \
     --exclude='*.pyc' --exclude='__pycache__/' --exclude='.git/' \
+    --exclude='.env*' --exclude='*.pem' --exclude='*.key' \
+    --exclude='*.log' --exclude='models/' \
     "$SCRIPT_DIR/" "$DEST/swiftllm/"
 success "Source tree copied"
 
@@ -226,7 +235,8 @@ step "Creating archive..."
 ARCHIVE_SIZE=$(du -sh "$OUTPUT" | cut -f1)
 success "Bundle created: $OUTPUT ($ARCHIVE_SIZE)"
 
-# Cleanup
+# Cleanup (trap handles this, but clear it to avoid double-rm)
+trap - EXIT
 rm -rf "$BUNDLE_DIR"
 
 # ----------------------------

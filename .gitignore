@@ -40,3 +40,30 @@ Desktop.ini
 
 # Maturin
 *.whl
+
+# Environment / secrets
+.env
+.env.*
+
+# Model files
+*.gguf
+*.ggml
+*.safetensors
+
+# Air-gap bundles
+swiftllm-airgap-bundle*.tar.gz
+wheels/
+models/
+
+# Cargo
+.cargo/
+
+# Test / lint caches
+.coverage
+htmlcov/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Logs
+*.log

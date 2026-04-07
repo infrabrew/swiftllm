@@ -337,11 +337,112 @@ params = SamplingParams(
 
 ### Environment Variables
 
-| Variable | Description |
-|----------|-------------|
-| `SWIFTLLM_MODEL_DIR` | Default directory for downloaded models (overrides `~/.cache/swiftllm/models`) |
-| `SWIFTLLM_OFFLINE` | Set to `1` to disable all network downloads (air-gapped mode) |
-| `HF_TOKEN` | HuggingFace API token for accessing gated models |
+Every `SWIFTLLM_*` variable maps to a field in `EngineConfig` or `ServerConfig`. Set them in your shell profile, systemd unit, or Docker Compose file — they are read at startup and override coded defaults. Explicit constructor arguments always take final precedence.
+
+#### GPU & Memory
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `SWIFTLLM_GPU_MEMORY_UTILIZATION` | `0.90` | Fraction of GPU VRAM available for model weights + KV cache (0.0–1.0). Raise to ~0.95 on dedicated inference hosts; lower to 0.7 when sharing a GPU. |
+| `SWIFTLLM_GPU_OVERHEAD_MB` | `0` | VRAM (in MB) to reserve for the OS, desktop, and other processes. Subtracted from usable memory before allocation. Useful when `GPU_MEMORY_UTILIZATION` alone isn't precise enough. |
+| `SWIFTLLM_NUM_GPU_LAYERS` | all | Number of model layers to offload to GPU. Set to `0` for CPU-only, `999` for all layers. Partial offload saves VRAM at the cost of speed. |
+| `SWIFTLLM_SWAP_SPACE` | `4.0` | CPU swap space in GiB for KV cache offloading when GPU memory is exhausted. |
+| `SWIFTLLM_CPU_OFFLOAD_GB` | `0.0` | Amount of model weights (in GiB) to keep on CPU RAM instead of GPU. Trades latency for lower VRAM usage. |
+| `SWIFTLLM_KV_CACHE_DTYPE` | `auto` | Data type for the KV cache. `auto` matches model dtype. Set to `fp8_e4m3` or `fp8_e5m2` to halve KV cache memory (with minor quality loss). |
+| `SWIFTLLM_BLOCK_SIZE` | `16` | Number of tokens per block in PagedAttention. Allowed: `8`, `16`, `32`. Smaller blocks waste less memory on short sequences; larger blocks reduce overhead on long ones. |
+| `SWIFTLLM_FLASH_ATTENTION` | `true` | Enable FlashAttention kernels. Disable for debugging or unsupported hardware (`false`). |
+| `SWIFTLLM_ENFORCE_EAGER` | `false` | Disable CUDA graph capture; use eager execution. Set to `true` when CUDA graphs cause OOM or for easier profiling. |
+| `CUDA_VISIBLE_DEVICES` | (all) | Standard CUDA variable. Restrict which GPUs are visible, e.g. `0,2`. |
+| `PYTORCH_CUDA_ALLOC_CONF` | — | PyTorch allocator tuning, e.g. `expandable_segments:True,max_split_size_mb:512`. |
+
+#### Tensor Parallelism & Multi-GPU
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `SWIFTLLM_TENSOR_PARALLEL_SIZE` | `1` | Number of GPUs for tensor parallelism (splits every layer across N GPUs). Must evenly divide attention heads. |
+| `SWIFTLLM_PIPELINE_PARALLEL_SIZE` | `1` | Number of pipeline-parallel stages (splits layers sequentially across GPUs). Combine with tensor parallelism for very large models. |
+| `NCCL_DEBUG` | — | NCCL logging: `INFO`, `WARN`, `TRACE`. Essential for debugging multi-GPU communication. |
+| `NCCL_P2P_DISABLE` | `0` | Set to `1` to disable GPU peer-to-peer. Try `1` if you see hangs on certain PCIe topologies. |
+| `NCCL_IB_DISABLE` | `0` | Set to `1` to disable InfiniBand for multi-node setups. |
+
+#### Scheduling & Batching
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `SWIFTLLM_MAX_NUM_SEQS` | `256` | Maximum number of concurrent sequences (requests) in a batch. Lower values reduce latency; higher values improve throughput. |
+| `SWIFTLLM_MAX_NUM_BATCHED_TOKENS` | `8192` | Maximum total tokens processed in one forward pass (prefill + decode). Directly controls peak GPU compute per step. |
+| `SWIFTLLM_MAX_PADDINGS` | `256` | Maximum padding tokens tolerated per batch. Padding wastes compute — keep low for variable-length workloads. |
+| `SWIFTLLM_SCHEDULER_POLICY` | `fcfs` | Scheduling policy: `fcfs` (first-come-first-served), `sjf` (shortest-job-first), `priority`. |
+| `SWIFTLLM_PREEMPTION_MODE` | `swap` | How to handle preemption when memory is full: `swap` (KV cache to CPU) or `recompute` (re-run prefill). |
+| `SWIFTLLM_ENABLE_PREFIX_CACHING` | `false` | Reuse KV cache across requests sharing the same prompt prefix (system prompt, few-shot examples). Major speedup for chat-style workloads. |
+| `SWIFTLLM_ENABLE_CHUNKED_PREFILL` | `false` | Interleave prefill and decode within the same batch. Reduces time-to-first-token for long prompts. |
+| `SWIFTLLM_NUM_PARALLEL` | `1` | Number of parallel inference slots per loaded model. Each slot allocates its own KV cache. Increase for higher concurrent throughput. |
+| `SWIFTLLM_MAX_LOADED_MODELS` | `1` | Maximum number of models held in GPU memory simultaneously. Excess models are evicted LRU. |
+| `SWIFTLLM_KEEP_ALIVE` | `300` | Seconds a model stays loaded in memory after the last request. Set to `0` to unload immediately, `-1` to keep forever. |
+
+#### Speculative Decoding
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `SWIFTLLM_SPECULATIVE_MODEL` | — | Path or HuggingFace ID of the draft model for speculative decoding. Must share the same vocabulary as the main model. |
+| `SWIFTLLM_NUM_SPECULATIVE_TOKENS` | `5` | Tokens to draft per step. Higher values increase potential speedup but waste compute on rejected tokens. |
+| `SWIFTLLM_SPECULATIVE_MAX_MODEL_LEN` | — | Override max sequence length for the draft model if it differs from the main model. |
+
+#### Model & Weights
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `SWIFTLLM_MODEL_DIR` | `~/.cache/swiftllm/models` | Default directory for downloaded models. All download/resolve calls use this as the cache root. |
+| `SWIFTLLM_OFFLINE` | `false` | Set to `1` / `true` / `yes` to disable all network downloads (air-gapped / offline mode). Only local and cached models are used. |
+| `SWIFTLLM_DTYPE` | `auto` | Data type for model weights: `auto`, `float16`, `bfloat16`, `float32`, `int8`, `int4`, `fp8_e4m3`, `fp8_e5m2`. |
+| `SWIFTLLM_QUANTIZATION` | `none` | Quantization method: `none`, `awq`, `gptq`, `squeezellm`, `gguf`. |
+| `SWIFTLLM_MAX_MODEL_LEN` | (model default) | Override the model's max sequence length. Lowering this reduces memory allocation. |
+| `SWIFTLLM_TRUST_REMOTE_CODE` | `false` | Allow executing custom code from HuggingFace model repos (required by some architectures). |
+| `SWIFTLLM_DEVICE` | `auto` | Device to run on: `auto`, `cuda`, `cpu`, `metal`, `rocm`. |
+| `SWIFTLLM_SEED` | `0` | Global random seed for reproducibility. |
+| `SWIFTLLM_MAX_PARALLEL_LOADING` | `1` | Number of parallel threads for loading model shards from disk. Increase on NVMe for faster startup. |
+| `HF_TOKEN` | — | HuggingFace API token for accessing gated models (e.g. LLaMA, Gemma). |
+
+#### LoRA
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `SWIFTLLM_ENABLE_LORA` | `false` | Enable LoRA adapter support in the inference engine. |
+| `SWIFTLLM_MAX_LORAS` | `1` | Maximum number of LoRA adapters that can be loaded simultaneously. |
+| `SWIFTLLM_MAX_LORA_RANK` | `16` | Maximum LoRA rank supported. Higher ranks use more memory. |
+
+#### Server & Networking
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `SWIFTLLM_HOST` | `0.0.0.0` | Bind address for the HTTP server. Use `127.0.0.1` to restrict to local access only. |
+| `SWIFTLLM_PORT` | `8000` | Port for the HTTP server. |
+| `SWIFTLLM_API_KEY` | — | API key for bearer-token authentication. When set, all requests must include `Authorization: Bearer <key>`. |
+| `SWIFTLLM_CORS_ALLOW_ORIGINS` | `*` | Comma-separated list of allowed CORS origins. Set to specific origins in production. |
+| `SWIFTLLM_SSL_CERTFILE` | — | Path to TLS certificate for HTTPS. |
+| `SWIFTLLM_SSL_KEYFILE` | — | Path to TLS private key for HTTPS. |
+| `SWIFTLLM_ROOT_PATH` | — | URL prefix / root path for reverse-proxy deployments (e.g. `/v1`). |
+| `SWIFTLLM_SERVED_MODEL_NAME` | — | Override the model name returned in API responses (useful for A/B routing). |
+| `SWIFTLLM_MAX_LOG_LEN` | — | Truncate request/response logs to this many characters. Prevents logging large prompts. |
+| `SWIFTLLM_MAX_MODEL_LEN_LIMIT` | — | Hard server-side cap on `max_model_len` regardless of client request. |
+| `SWIFTLLM_MAX_NUM_SEQS_LIMIT` | — | Hard server-side cap on concurrent sequences. |
+| `SWIFTLLM_RESPONSE_ROLE` | `assistant` | Default role name in chat completion responses. |
+
+#### Build & CUDA
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `CUDA_PATH` / `CUDA_HOME` | — | Path to CUDA toolkit. Used by the Rust build to locate `libcuda`, `nvcc`, and headers. |
+| `CUDACXX` | — | Path to `nvcc` binary. Set automatically by `install.sh` for llama-cpp-python GPU builds. |
+| `CMAKE_ARGS` | — | Extra CMake arguments for llama-cpp-python build. Set to `-DGGML_CUDA=on` for GPU support. |
+
+#### Logging & Debug
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `RUST_LOG` | `info` | Rust-side log level for all crates: `trace`, `debug`, `info`, `warn`, `error`. Use `swiftllm_server=debug` for per-crate control. |
+| `SWIFTLLM_LOG_LEVEL` | — | Python-side log level override: `DEBUG`, `INFO`, `WARNING`, `ERROR`. |
+| `SWIFTLLM_NO_USAGE_STATS` | `false` | Set to `1` to disable anonymous telemetry (if applicable). |
 
 ## CLI Commands
 

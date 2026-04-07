@@ -14,7 +14,7 @@
 #
 # ============================================================================
 
-set -e
+set -eo pipefail
 
 # ----------------------------
 # Colors
@@ -57,6 +57,7 @@ while [[ $# -gt 0 ]]; do
             shift
             ;;
         --venv)
+            [[ -z "${2:-}" || "$2" == --* ]] && fail "--venv requires a directory argument"
             VENV_DIR="$2"
             shift 2
             ;;
@@ -65,6 +66,7 @@ while [[ $# -gt 0 ]]; do
             shift
             ;;
         --model-dir)
+            [[ -z "${2:-}" || "$2" == --* ]] && fail "--model-dir requires a directory argument"
             MODEL_DIR="$2"
             # Validate path doesn't contain suspicious characters
             if [[ "$MODEL_DIR" =~ [[:cntrl:]] ]]; then
@@ -135,7 +137,7 @@ for py in python3 python; do
         PY_VERSION=$("$py" -c "import sys; print(f'{sys.version_info.major}.{sys.version_info.minor}')" 2>/dev/null)
         PY_MAJOR=$("$py" -c "import sys; print(sys.version_info.major)" 2>/dev/null)
         PY_MINOR=$("$py" -c "import sys; print(sys.version_info.minor)" 2>/dev/null)
-        if [[ "$PY_MAJOR" -ge 3 ]] && [[ "$PY_MINOR" -ge 8 ]]; then
+        if [[ "$PY_MAJOR" -gt 3 ]] || { [[ "$PY_MAJOR" -eq 3 ]] && [[ "$PY_MINOR" -ge 8 ]]; }; then
             PYTHON="$py"
             break
         fi
@@ -183,7 +185,8 @@ elif [[ -f /usr/lib/cuda/bin/nvcc ]]; then
 fi
 
 if $HAS_CUDA; then
-    CUDA_VERSION=$("$NVCC_PATH" --version 2>/dev/null | grep -oP 'release \K[0-9]+\.[0-9]+' || echo "unknown")
+    CUDA_VERSION=$("$NVCC_PATH" --version 2>/dev/null | sed -n 's/.*release \([0-9]*\.[0-9]*\).*/\1/p' || echo "unknown")
+    [[ -z "$CUDA_VERSION" ]] && CUDA_VERSION="unknown"
     success "Found CUDA toolkit: $CUDA_VERSION ($NVCC_PATH)"
 else
     info "CUDA toolkit (nvcc) not found"
@@ -397,7 +400,7 @@ step "Verifying installation..."
 ERRORS=0
 
 # Check swiftllm CLI
-if command_exists swiftllm || [[ -f "$VENV_DIR/bin/swiftllm" ]]; then
+if command_exists swiftllm || { [[ -n "$VENV_DIR" ]] && [[ -f "$VENV_DIR/bin/swiftllm" ]]; }; then
     SLLM_VERSION=$($PYTHON -c "import swiftllm; print('0.1.0')" 2>/dev/null || echo "unknown")
     success "swiftllm CLI available (v$SLLM_VERSION)"
 else

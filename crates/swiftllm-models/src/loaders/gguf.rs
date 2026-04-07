@@ -278,6 +278,7 @@ impl GgufLoader {
 impl WeightLoader for GgufLoader {
     fn load_weights(&self) -> Result<HashMap<String, Tensor>> {
         let file = File::open(&self.path)?;
+        // SAFETY: Read-only memory map; file handle kept alive by `file` binding.
         let mmap = unsafe { memmap2::Mmap::map(&file) }?;
 
         let mut weights = HashMap::new();
@@ -292,10 +293,12 @@ impl WeightLoader for GgufLoader {
             let bytes_per_elem = dtype.size_bytes();
             let byte_len = numel * bytes_per_elem;
 
-            if offset + byte_len <= mmap.len() {
-                let data = mmap[offset..offset + byte_len].to_vec();
-                let tensor = Tensor::from_data(data, shape, dtype)?;
-                weights.insert(name.clone(), tensor);
+            if let Some(end) = offset.checked_add(byte_len) {
+                if end <= mmap.len() {
+                    let data = mmap[offset..end].to_vec();
+                    let tensor = Tensor::from_data(data, shape, dtype)?;
+                    weights.insert(name.clone(), tensor);
+                }
             }
         }
 
@@ -308,6 +311,7 @@ impl WeightLoader for GgufLoader {
         })?;
 
         let file = File::open(&self.path)?;
+        // SAFETY: Read-only memory map; file handle kept alive by `file` binding.
         let mmap = unsafe { memmap2::Mmap::map(&file) }?;
 
         let offset = (self.data_offset + info.offset) as usize;
@@ -316,7 +320,16 @@ impl WeightLoader for GgufLoader {
         let dtype = info.dtype.to_dtype();
         let byte_len = numel * dtype.size_bytes();
 
-        let data = mmap[offset..offset + byte_len].to_vec();
+        let end = offset.checked_add(byte_len).ok_or_else(|| {
+            Error::ModelLoad(format!("Offset overflow for weight '{}'", name))
+        })?;
+        if end > mmap.len() {
+            return Err(Error::ModelLoad(format!(
+                "Weight '{}' extends beyond file (offset={}, len={}, file={})",
+                name, offset, byte_len, mmap.len()
+            )));
+        }
+        let data = mmap[offset..end].to_vec();
         Tensor::from_data(data, shape, dtype)
     }
 

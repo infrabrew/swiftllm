@@ -61,7 +61,11 @@ impl SafeTensorsLoader {
             }
 
             // First 8 bytes are header length (little-endian u64)
-            let header_len = u64::from_le_bytes(mmap[..8].try_into().unwrap()) as usize;
+            let header_len = u64::from_le_bytes(
+                mmap[..8].try_into().map_err(|_| {
+                    Error::ModelLoad("Failed to read header length".to_string())
+                })?
+            ) as usize;
 
             if mmap.len() < 8 + header_len {
                 return Err(Error::ModelLoad("Invalid header length".to_string()));

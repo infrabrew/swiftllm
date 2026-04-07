@@ -240,7 +240,7 @@ impl TokenSampler {
         logits
             .iter()
             .enumerate()
-            .max_by(|(_, a), (_, b)| a.partial_cmp(b).unwrap())
+            .max_by(|(_, a), (_, b)| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal))
             .map(|(idx, _)| idx as TokenId)
             .unwrap_or(0)
     }
@@ -269,7 +269,7 @@ impl TokenSampler {
 
         // Create sorted indices
         let mut indices: Vec<usize> = (0..vocab_size).collect();
-        indices.sort_by(|&a, &b| logits[b].partial_cmp(&logits[a]).unwrap());
+        indices.sort_by(|&a, &b| logits[b].partial_cmp(&logits[a]).unwrap_or(std::cmp::Ordering::Equal));
 
         // Apply min-p filter
         if self.params.min_p > 0.0 {
@@ -364,10 +364,10 @@ impl TokenSampler {
 
         // Partial sort: only guarantee the top N are correct — O(n) avg vs O(n log n)
         if n < indexed.len() {
-            indexed.select_nth_unstable_by(n, |a, b| b.1.partial_cmp(&a.1).unwrap());
+            indexed.select_nth_unstable_by(n, |a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
             indexed.truncate(n);
         }
-        indexed.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap());
+        indexed.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
         indexed
     }
 
@@ -392,10 +392,10 @@ pub fn sample_top_n(logits: &[f32], n: usize) -> Vec<(TokenId, f32)> {
 
     let n = n.min(indexed.len());
     if n < indexed.len() {
-        indexed.select_nth_unstable_by(n, |a, b| b.1.partial_cmp(&a.1).unwrap());
+        indexed.select_nth_unstable_by(n, |a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
         indexed.truncate(n);
     }
-    indexed.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap());
+    indexed.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
     indexed
 }
 

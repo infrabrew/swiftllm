@@ -100,7 +100,7 @@ impl Sampler for TopKSampler {
         // Use quickselect (O(n) average) instead of full sort (O(n log n))
         let mut indices: Vec<usize> = (0..logits.len()).collect();
         indices.select_nth_unstable_by(self.k, |&a, &b| {
-            logits[b].partial_cmp(&logits[a]).unwrap()
+            logits[b].partial_cmp(&logits[a]).unwrap_or(std::cmp::Ordering::Equal)
         });
         let threshold = logits[indices[self.k - 1]];
 
@@ -145,7 +145,7 @@ impl Sampler for TopPSampler {
 
         // Sort indices by probability (descending)
         let mut indices: Vec<usize> = (0..logits.len()).collect();
-        indices.sort_by(|&a, &b| probs[b].partial_cmp(&probs[a]).unwrap());
+        indices.sort_by(|&a, &b| probs[b].partial_cmp(&probs[a]).unwrap_or(std::cmp::Ordering::Equal));
 
         // Find cutoff
         let mut cumsum = 0.0;
@@ -265,7 +265,7 @@ impl GreedySampler {
         logits
             .iter()
             .enumerate()
-            .max_by(|(_, a), (_, b)| a.partial_cmp(b).unwrap())
+            .max_by(|(_, a), (_, b)| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal))
             .map(|(idx, _)| idx as TokenId)
             .unwrap_or(0)
     }
@@ -277,7 +277,7 @@ impl Sampler for GreedySampler {
         let max_idx = logits
             .iter()
             .enumerate()
-            .max_by(|(_, a), (_, b)| a.partial_cmp(b).unwrap())
+            .max_by(|(_, a), (_, b)| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal))
             .map(|(idx, _)| idx)
             .unwrap_or(0);
 
@@ -324,7 +324,7 @@ impl BeamSearchSampler {
             .map(|(idx, &logit)| (idx as TokenId, logit))
             .collect();
 
-        indexed.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap());
+        indexed.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
         indexed.truncate(self.num_beams);
         indexed
     }
@@ -339,7 +339,7 @@ impl Sampler for BeamSearchSampler {
         // Use quickselect for O(n) average instead of O(n log n) sort
         let mut indices: Vec<usize> = (0..logits.len()).collect();
         indices.select_nth_unstable_by(self.num_beams, |&a, &b| {
-            logits[b].partial_cmp(&logits[a]).unwrap()
+            logits[b].partial_cmp(&logits[a]).unwrap_or(std::cmp::Ordering::Equal)
         });
         let threshold = logits[indices[self.num_beams - 1]];
 

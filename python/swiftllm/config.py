@@ -1,12 +1,59 @@
 """SwiftLLM Configuration Classes
 
 This module provides configuration classes for the SwiftLLM inference engine.
+
+All configuration options can be overridden via environment variables with the
+``SWIFTLLM_`` prefix.  For example, ``SWIFTLLM_GPU_MEMORY_UTILIZATION=0.95``
+overrides ``EngineConfig.gpu_memory_utilization``.  Boolean values accept
+``1/true/yes`` (case-insensitive).
+
+See the README "Environment Variables" section for the full reference.
 """
 
+import os
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import Optional, List, Dict, Any
 from pathlib import Path
+
+
+# ---------------------------------------------------------------------------
+# Environment variable helpers
+# ---------------------------------------------------------------------------
+
+def _env(name: str, default=None):
+    """Read a SWIFTLLM_ environment variable (case-insensitive value)."""
+    return os.environ.get(f"SWIFTLLM_{name}", default)
+
+
+def _env_bool(name: str, default: bool = False) -> bool:
+    """Read a boolean SWIFTLLM_ environment variable."""
+    val = _env(name)
+    if val is None:
+        return default
+    return val.strip().lower() in ("1", "true", "yes")
+
+
+def _env_int(name: str, default: Optional[int] = None) -> Optional[int]:
+    """Read an integer SWIFTLLM_ environment variable."""
+    val = _env(name)
+    if val is None:
+        return default
+    try:
+        return int(val)
+    except ValueError:
+        return default
+
+
+def _env_float(name: str, default: Optional[float] = None) -> Optional[float]:
+    """Read a float SWIFTLLM_ environment variable."""
+    val = _env(name)
+    if val is None:
+        return default
+    try:
+        return float(val)
+    except ValueError:
+        return default
 
 
 class DataType(Enum):
@@ -110,6 +157,10 @@ class SamplingParams:
             raise ValueError(f"best_of must be >= n, got best_of={self.best_of}, n={self.n}")
         if self.use_beam_search and self.temperature != 0:
             raise ValueError("temperature must be 0 when using beam search")
+        if self.min_tokens > self.max_tokens:
+            raise ValueError(
+                f"min_tokens ({self.min_tokens}) must be <= max_tokens ({self.max_tokens})"
+            )
         if self.logprobs is not None and self.logprobs < 0:
             raise ValueError(f"logprobs must be non-negative, got {self.logprobs}")
 
@@ -174,36 +225,48 @@ class EngineConfig:
     """
     model: str = ""
     tokenizer: Optional[str] = None
-    dtype: DataType = DataType.AUTO
-    quantization: QuantizationMethod = QuantizationMethod.NONE
-    max_model_len: Optional[int] = None
-    tensor_parallel_size: int = 1
-    pipeline_parallel_size: int = 1
-    gpu_memory_utilization: float = 0.90
-    block_size: int = 16
-    swap_space: float = 4.0
-    max_num_seqs: int = 256
-    max_num_batched_tokens: Optional[int] = None
-    enable_prefix_caching: bool = False
-    enable_chunked_prefill: bool = False
-    max_paddings: int = 256
-    scheduler_policy: SchedulerPolicy = SchedulerPolicy.FCFS
-    preemption_mode: PreemptionMode = PreemptionMode.SWAP
-    trust_remote_code: bool = False
-    download_dir: Optional[str] = None
-    seed: int = 0
-    device: str = "auto"
+    dtype: DataType = field(default_factory=lambda: DataType(_env("DTYPE", "auto")))
+    quantization: QuantizationMethod = field(default_factory=lambda: QuantizationMethod(_env("QUANTIZATION", "none")))
+    max_model_len: Optional[int] = field(default_factory=lambda: _env_int("MAX_MODEL_LEN"))
+    tensor_parallel_size: int = field(default_factory=lambda: _env_int("TENSOR_PARALLEL_SIZE", 1))
+    pipeline_parallel_size: int = field(default_factory=lambda: _env_int("PIPELINE_PARALLEL_SIZE", 1))
+    gpu_memory_utilization: float = field(default_factory=lambda: _env_float("GPU_MEMORY_UTILIZATION", 0.90))
+    block_size: int = field(default_factory=lambda: _env_int("BLOCK_SIZE", 16))
+    swap_space: float = field(default_factory=lambda: _env_float("SWAP_SPACE", 4.0))
+    max_num_seqs: int = field(default_factory=lambda: _env_int("MAX_NUM_SEQS", 256))
+    max_num_batched_tokens: Optional[int] = field(default_factory=lambda: _env_int("MAX_NUM_BATCHED_TOKENS"))
+    enable_prefix_caching: bool = field(default_factory=lambda: _env_bool("ENABLE_PREFIX_CACHING"))
+    enable_chunked_prefill: bool = field(default_factory=lambda: _env_bool("ENABLE_CHUNKED_PREFILL"))
+    max_paddings: int = field(default_factory=lambda: _env_int("MAX_PADDINGS", 256))
+    scheduler_policy: SchedulerPolicy = field(default_factory=lambda: SchedulerPolicy(_env("SCHEDULER_POLICY", "fcfs")))
+    preemption_mode: PreemptionMode = field(default_factory=lambda: PreemptionMode(_env("PREEMPTION_MODE", "swap")))
+    trust_remote_code: bool = field(default_factory=lambda: _env_bool("TRUST_REMOTE_CODE"))
+    download_dir: Optional[str] = field(default_factory=lambda: _env("MODEL_DIR"))
+    seed: int = field(default_factory=lambda: _env_int("SEED", 0))
+    device: str = field(default_factory=lambda: _env("DEVICE", "auto"))
 
     # Speculative decoding
-    speculative_model: Optional[str] = None
-    num_speculative_tokens: int = 5
-    speculative_max_model_len: Optional[int] = None
+    speculative_model: Optional[str] = field(default_factory=lambda: _env("SPECULATIVE_MODEL"))
+    num_speculative_tokens: int = field(default_factory=lambda: _env_int("NUM_SPECULATIVE_TOKENS", 5))
+    speculative_max_model_len: Optional[int] = field(default_factory=lambda: _env_int("SPECULATIVE_MAX_MODEL_LEN"))
 
     # LoRA
-    enable_lora: bool = False
-    max_loras: int = 1
-    max_lora_rank: int = 16
+    enable_lora: bool = field(default_factory=lambda: _env_bool("ENABLE_LORA"))
+    max_loras: int = field(default_factory=lambda: _env_int("MAX_LORAS", 1))
+    max_lora_rank: int = field(default_factory=lambda: _env_int("MAX_LORA_RANK", 16))
     lora_dtype: Optional[DataType] = None
+
+    # Performance tuning
+    enforce_eager: bool = field(default_factory=lambda: _env_bool("ENFORCE_EAGER"))
+    kv_cache_dtype: str = field(default_factory=lambda: _env("KV_CACHE_DTYPE", "auto"))
+    num_gpu_layers: Optional[int] = field(default_factory=lambda: _env_int("NUM_GPU_LAYERS"))
+    cpu_offload_gb: float = field(default_factory=lambda: _env_float("CPU_OFFLOAD_GB", 0.0))
+    max_parallel_loading: int = field(default_factory=lambda: _env_int("MAX_PARALLEL_LOADING", 1))
+    gpu_overhead_mb: int = field(default_factory=lambda: _env_int("GPU_OVERHEAD_MB", 0))
+    flash_attention: bool = field(default_factory=lambda: _env_bool("FLASH_ATTENTION", True))
+    keep_alive_secs: int = field(default_factory=lambda: _env_int("KEEP_ALIVE", 300))
+    num_parallel_slots: int = field(default_factory=lambda: _env_int("NUM_PARALLEL", 1))
+    max_loaded_models: int = field(default_factory=lambda: _env_int("MAX_LOADED_MODELS", 1))
 
     def __post_init__(self):
         """Validate configuration."""
@@ -222,7 +285,8 @@ class EngineConfig:
 
     @classmethod
     def from_dict(cls, d: Dict[str, Any]) -> "EngineConfig":
-        """Create EngineConfig from a dictionary."""
+        """Create EngineConfig from a dictionary (does not mutate input)."""
+        d = dict(d)  # Avoid mutating caller's dict
         # Convert string enums
         if "dtype" in d and isinstance(d["dtype"], str):
             d["dtype"] = DataType(d["dtype"])
@@ -261,20 +325,20 @@ class ServerConfig:
         response_role: Default role for responses.
         served_model_name: Name to use for the served model.
     """
-    host: str = "0.0.0.0"
-    port: int = 8000
-    api_key: Optional[str] = None
-    root_path: str = ""
-    ssl_keyfile: Optional[str] = None
-    ssl_certfile: Optional[str] = None
-    cors_allow_origins: List[str] = field(default_factory=lambda: ["*"])
-    max_log_len: Optional[int] = None
-    response_role: str = "assistant"
-    served_model_name: Optional[str] = None
+    host: str = field(default_factory=lambda: _env("HOST", "127.0.0.1"))
+    port: int = field(default_factory=lambda: _env_int("PORT", 8000))
+    api_key: Optional[str] = field(default_factory=lambda: _env("API_KEY"))
+    root_path: str = field(default_factory=lambda: _env("ROOT_PATH", ""))
+    ssl_keyfile: Optional[str] = field(default_factory=lambda: _env("SSL_KEYFILE"))
+    ssl_certfile: Optional[str] = field(default_factory=lambda: _env("SSL_CERTFILE"))
+    cors_allow_origins: List[str] = field(default_factory=lambda: (_env("CORS_ALLOW_ORIGINS", "*")).split(","))
+    max_log_len: Optional[int] = field(default_factory=lambda: _env_int("MAX_LOG_LEN"))
+    response_role: str = field(default_factory=lambda: _env("RESPONSE_ROLE", "assistant"))
+    served_model_name: Optional[str] = field(default_factory=lambda: _env("SERVED_MODEL_NAME"))
 
     # Limits
-    max_model_len_limit: Optional[int] = None
-    max_num_seqs_limit: Optional[int] = None
+    max_model_len_limit: Optional[int] = field(default_factory=lambda: _env_int("MAX_MODEL_LEN_LIMIT"))
+    max_num_seqs_limit: Optional[int] = field(default_factory=lambda: _env_int("MAX_NUM_SEQS_LIMIT"))
 
     @classmethod
     def from_dict(cls, d: Dict[str, Any]) -> "ServerConfig":

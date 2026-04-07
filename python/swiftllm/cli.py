@@ -127,8 +127,8 @@ def _add_serve_args(parser: argparse.ArgumentParser):
     )
     parser.add_argument(
         "--host",
-        default="0.0.0.0",
-        help="Host to bind to (default: 0.0.0.0)",
+        default="127.0.0.1",
+        help="Host to bind to (default: 127.0.0.1; use 0.0.0.0 to expose to network)",
     )
     parser.add_argument(
         "-p", "--port",
@@ -497,7 +497,8 @@ def cmd_serve(args: argparse.Namespace):
 
     try:
         import uvicorn
-        from fastapi import FastAPI, HTTPException
+        from fastapi import FastAPI, HTTPException, Request, Depends
+        from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
         from pydantic import BaseModel
     except ImportError:
         print("Error: FastAPI and uvicorn are required for serving.")
@@ -518,6 +519,16 @@ def cmd_serve(args: argparse.Namespace):
     )
 
     app = FastAPI(title="SwiftLLM", version=_get_version())
+
+    # API key authentication
+    api_key = args.api_key or os.environ.get("SWIFTLLM_API_KEY")
+    security = HTTPBearer(auto_error=False)
+
+    async def verify_api_key(credentials: HTTPAuthorizationCredentials = Depends(security)):
+        if api_key is None:
+            return  # No auth required
+        if credentials is None or credentials.credentials != api_key:
+            raise HTTPException(status_code=401, detail="Invalid or missing API key")
 
     class ChatMessage(BaseModel):
         role: str
@@ -553,7 +564,7 @@ def cmd_serve(args: argparse.Namespace):
             "data": [{"id": args.model, "object": "model"}]
         }
 
-    @app.post("/v1/chat/completions")
+    @app.post("/v1/chat/completions", dependencies=[Depends(verify_api_key)])
     def chat_completions(request: ChatRequest):
         # Build prompt from messages
         prompt = ""
@@ -726,9 +737,9 @@ def cmd_benchmark(args: argparse.Namespace):
         "total_time_s": elapsed,
         "total_input_tokens": total_input_tokens,
         "total_output_tokens": total_output_tokens,
-        "throughput_tokens_per_s": total_tokens / elapsed,
-        "latency_per_token_ms": (elapsed / total_output_tokens) * 1000,
-        "requests_per_s": args.num_prompts / elapsed,
+        "throughput_tokens_per_s": total_tokens / max(elapsed, 1e-9),
+        "latency_per_token_ms": (elapsed / max(total_output_tokens, 1)) * 1000,
+        "requests_per_s": args.num_prompts / max(elapsed, 1e-9),
     }
 
     print("\n--- Benchmark Results ---")
