@@ -1,7 +1,7 @@
 # SwiftLLM
 
 <p align="center">
-  <img src="https://img.shields.io/badge/version-2.0.0--alpha-orange.svg" alt="v2.0.0-alpha">
+  <img src="https://img.shields.io/badge/version-2.0.0.1--alpha-orange.svg" alt="v2.0.0.1-alpha">
   <img src="https://img.shields.io/badge/rust-%23000000.svg?style=flat&logo=rust&logoColor=white" alt="Rust">
   <img src="https://img.shields.io/badge/python-3.8+-blue.svg" alt="Python 3.8+">
   <img src="https://img.shields.io/badge/CUDA-11.8+-green.svg" alt="CUDA 11.8+">
@@ -22,6 +22,7 @@
 - **Multiple Formats**: Support for HuggingFace, GGUF, and SafeTensors
 - **Model Downloading**: Download models from HuggingFace Hub by ID or URL
 - **GGUF Inference**: Run quantized GGUF models on GPU via llama-cpp-python
+- **Air-Gapped Install**: Bundle and deploy on networks with no internet access
 - **Secure by Default**: API key authentication, input validation, and security headers
 
 ## Supported Models
@@ -385,37 +386,41 @@ The `-m` / `--model` flag accepts multiple formats:
 ## Architecture
 
 ```
-+----------------------------------------------------------------------+
-|                       SwiftLLM Architecture                          |
-+----------------------------------------------------------------------+
-|  +----------------+  +----------------+  +---------------------+     |
-|  |  OpenAI API    |  |  Python SDK    |  |  CLI Interface      |     |
-|  | (auth, headers)|  | (sync & async) |  | (serve/train/chat)  |     |
-|  +-------+--------+  +-------+--------+  +--------+------------+     |
-|          |                    |                     |                 |
-|  +-------+--------------------+---------------------+---------+      |
-|  |                Model Resolver & Downloader                 |      |
-|  |         (HuggingFace Hub / Local Path / GGUF URL)          |      |
-|  +----------------------------+-------------------------------+      |
-|                               |                                      |
-|  +----------------------------+-------------------------------+      |
-|  |              Inference Backend                              |      |
-|  |    [llama-cpp-python (GGUF)]  [Rust Engine (HF/ST)]        |      |
-|  +----------------------------+-------------------------------+      |
-|                               |                                      |
-|  +----------------------------+-------------------------------+      |
-|  |          PagedAttention Memory Manager                      |      |
-|  +----------------------------+-------------------------------+      |
-|                               |                                      |
-|  +----------------------------+-------------------------------+      |
-|  |          Training & Fine-Tuning Engine                      |      |
-|  |    [LoRA/QLoRA/Full]  [Muon/AdamW/SGD]  [LR Schedulers]    |      |
-|  +----------------------------+-------------------------------+      |
-|                               |                                      |
-|  +----------------------------+-------------------------------+      |
-|  |                    CUDA Kernels                              |      |
-|  +---------------------------------------------------------------+   |
-+----------------------------------------------------------------------+
++---------------------------------------------------------------------+
+|                       SwiftLLM Architecture                         |
++---------------------------------------------------------------------+
+|  +----------------+  +----------------+  +---------------------+    |
+|  |  OpenAI API    |  |  Python SDK    |  |  CLI Interface      |    |
+|  | (auth, headers)|  | (sync & async) |  | (serve/train/chat)  |    |
+|  +-------+--------+  +-------+--------+  +--------+------------+    |
+|          |                    |                     |                |
+|  +-------+--------------------+---------------------+---------+     |
+|  |          Model Resolver & Downloader                       |     |
+|  |   (HuggingFace Hub / Local Path / GGUF URL / Offline)      |     |
+|  +----------------------------+-------------------------------+     |
+|                               |                                     |
+|  +----------------------------+-------------------------------+     |
+|  |              Inference Backend                              |     |
+|  |    [llama-cpp-python (GGUF)]  [Rust Engine (HF/ST)]        |     |
+|  +----------------------------+-------------------------------+     |
+|                               |                                     |
+|  +----------------------------+-------------------------------+     |
+|  |          PagedAttention Memory Manager                      |     |
+|  +----------------------------+-------------------------------+     |
+|                               |                                     |
+|  +----------------------------+-------------------------------+     |
+|  |          Training & Fine-Tuning Engine                      |     |
+|  |    [LoRA/QLoRA/Full]  [Muon/AdamW/SGD]  [LR Schedulers]    |     |
+|  +----------------------------+-------------------------------+     |
+|                               |                                     |
+|  +----------------------------+-------------------------------+     |
+|  |                    CUDA Kernels                             |     |
+|  +------------------------------------------------------------+     |
+|                                                                     |
+|  +------------------------------------------------------------+     |
+|  |  Install & Deploy: install.sh | airgap-bundle.sh | offline  |     |
+|  +------------------------------------------------------------+     |
++---------------------------------------------------------------------+
 ```
 
 ## Multi-GPU Support
@@ -443,23 +448,37 @@ See the [examples/](examples/) directory for more:
 
 ## Security
 
-The SwiftLLM server includes built-in security features:
+SwiftLLM includes built-in security features across the server, installer, and runtime:
 
+**Server**
 - **API Key Authentication**: Protect endpoints with `--api-key` flag
 - **Input Validation**: Request size limits, parameter range checks, content length limits
 - **Security Headers**: HSTS, X-Content-Type-Options, X-Frame-Options, X-Request-ID
 - **Sanitized Errors**: Internal errors are logged server-side but never exposed to clients
 - **Request Size Limits**: 10 MB maximum request body to prevent abuse
+- **Safe JSON Serialization**: SSE streaming uses `serde_json` to prevent injection
+
+**Installer & Runtime**
+- **Supply Chain Verification**: SHA256 checksum verification for `rustup-init` downloads
+- **Input Sanitization**: Platform tags and paths are validated before use in shell commands
+- **Path Traversal Protection**: Checkpoint and cache directory operations validate resolved paths stay within expected boundaries
+- **UTF-8 Safety**: Data loading uses char-boundary-safe truncation to prevent panics on multi-byte input
+- **Numeric Safety**: Optimizer arithmetic guards against division by zero and unbounded iteration
 
 ## Project Structure
 
 ```
 swiftllm/
   src/lib.rs                    # PyO3 Python bindings
+  install.sh                    # Installer (GPU detection, venv, build)
+  airgap-bundle.sh              # Air-gap bundle creator (offline deploy)
   python/swiftllm/              # Python package
-    engine.py                   # LLM inference API
-    training.py                 # Training & fine-tuning API
-    cli.py                      # CLI (serve, train, finetune, chat, ...)
+    engine.py                   #   LLM inference API
+    training.py                 #   Training & fine-tuning API
+    cli.py                      #   CLI (serve, train, finetune, chat, ...)
+    model_resolver.py           #   HuggingFace / local / offline model resolution
+    sampling.py                 #   Sampling strategies (top-k, top-p, beam, ...)
+    config.py                   #   Configuration helpers
   crates/
     swiftllm-core/              # Core engine (scheduler, memory, sampling)
     swiftllm-models/            # Model loading and architectures
@@ -468,7 +487,7 @@ swiftllm/
     swiftllm-training/          # Training engine (Rust)
       src/config.rs             #   Training configuration
       src/data.rs               #   Data loading (JSONL, CSV, text)
-      src/optimizer.rs           #   AdamW, SGD, LR schedulers
+      src/optimizer.rs          #   AdamW, SGD, LR schedulers
       src/muon.rs               #   Muon optimizer (Newton-Schulz orthogonalization)
       src/fine_tuning.rs        #   LoRA, QLoRA, full fine-tuning
       src/metrics.rs            #   Training metrics & logging
@@ -477,6 +496,33 @@ swiftllm/
 ```
 
 ## Changelog
+
+### v2.0.0.1-alpha
+
+**Air-Gapped / Offline Installation**
+- New `airgap-bundle.sh` script to create portable install archives on a connected machine (bundles source, pip wheels, `rustup-init`, and optional models)
+- `install.sh --airgap` flag for fully offline installation from a bundle
+- Runtime offline mode via `SWIFTLLM_OFFLINE=1` — disables all HuggingFace downloads and uses local cache only
+- `scan_local_cache()` walks the model cache directory for exact filename matches
+- `download_file()` and `download_repo()` transparently fall back to cache in offline mode
+
+**Security Hardening**
+- **Critical**: Fixed JSON injection in SSE streaming — replaced raw `format!()` JSON construction with `serde_json::json!()` macro in `streaming.rs`
+- **Critical**: Fixed shell injection in `airgap-bundle.sh` — model names are now passed via `sys.argv` instead of string interpolation into Python code
+- **Critical**: Added SHA256 checksum verification for downloaded `rustup-init` binary in `airgap-bundle.sh`
+- **High**: Fixed word-splitting vulnerability in `install.sh` — `AIRGAP_PIP_FLAGS` converted from string to bash array
+- **High**: Added input validation for `--platform` tag and `--model-dir` path in installer scripts
+- **High**: Capped Muon optimizer Newton-Schulz iterations at 20 to prevent runaway loops; added epsilon floor to AdamW bias correction divisors to prevent division by zero
+- **Medium**: Tightened offline `download_repo()` directory matching from loose substring to exact name match, with symlink traversal protection
+- **Medium**: Added path validation in `Trainer.resume_from_checkpoint()` to prevent directory traversal via `..`
+- **Medium**: Fixed UTF-8 boundary-safe string truncation in `data.rs` — replaced byte-level slicing with `char_indices()` to prevent panics on multi-byte characters
+- **Medium**: Added LoRA buffer size validation in `fine_tuning.rs` `merge_weights()` to prevent out-of-bounds indexing on malformed adapters
+
+**Bug Fixes**
+- Fixed use-after-move in `engine.rs` — `eos_token_id` now extracted before `config` is moved into struct
+- Fixed usize negation in `trainer.rs` — cast to `f64` before negation for exponential decay calculation
+- Fixed missing `mut` on `eval_data` parameter in `trainer.rs` evaluation loop
+- Added missing `tempfile` dev-dependency to `swiftllm-training` Cargo.toml
 
 ### v2.0.0-alpha
 
@@ -546,7 +592,7 @@ swiftllm/
 
 ## Contributing
 
-Contributions are welcome! Please see [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines.
+Contributions are welcome! Please open an issue or pull request on GitHub.
 
 ## License
 
