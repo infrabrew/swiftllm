@@ -1,3 +1,23 @@
+# ==============================================================================
+# PROJECT:   SWIFTLLM
+# FILE:      _core.pyi
+# PATH:      /python/swiftllm/_core.pyi
+# AUTHOR:    Peter A. Aldrich Jr.
+# DATE:      2026
+# ------------------------------------------------------------------------------
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+# ==============================================================================
+
 """Type stubs for SwiftLLM Rust core bindings.
 
 These stubs provide type hints for the PyO3-generated Rust bindings.
@@ -134,3 +154,9 @@ def cuda_get_device_properties(device_id: int) -> Dict[str, Any]:
 def cuda_synchronize() -> None:
     """Synchronize all CUDA devices."""
     ...
+
+# ------------------------------------------------------------------------------
+# END OF FILE: _core.pyi
+# REPO PATH:   /swiftllm/python/swiftllm/_core.pyi
+# (c) 2026 SWIFTLLM | Apache 2.0 License
+# ------------------------------------------------------------------------------

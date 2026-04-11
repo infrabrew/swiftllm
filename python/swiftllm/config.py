@@ -1,3 +1,23 @@
+# ==============================================================================
+# PROJECT:   SWIFTLLM
+# FILE:      config.py
+# PATH:      /python/swiftllm/config.py
+# AUTHOR:    Peter A. Aldrich Jr.
+# DATE:      2026
+# ------------------------------------------------------------------------------
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+# ==============================================================================
+
 """SwiftLLM Configuration Classes
 
 This module provides configuration classes for the SwiftLLM inference engine.
@@ -363,3 +383,9 @@ class LoRARequest:
     def lora_int_id(self) -> int:
         """Return a unique integer ID for this LoRA."""
         return hash(self.lora_name) & 0xFFFFFFFF
+
+# ------------------------------------------------------------------------------
+# END OF FILE: config.py
+# REPO PATH:   /swiftllm/python/swiftllm/config.py
+# (c) 2026 SWIFTLLM | Apache 2.0 License
+# ------------------------------------------------------------------------------
