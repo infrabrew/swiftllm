@@ -248,10 +248,26 @@ fi
 
 # Upgrade pip
 info "Upgrading pip..."
+PIP_EXTRA=()
+# PEP 668: system Python on Debian/Ubuntu 23.04+ is externally-managed.
+# If --no-venv is set, we need --break-system-packages to install anything.
+if $NO_VENV && $PYTHON -c "import sys; sys.exit(0 if hasattr(sys, 'base_prefix') and sys.base_prefix == sys.prefix else 1)" 2>/dev/null; then
+    if $PYTHON -c "
+import sysconfig, os
+p = sysconfig.get_path('stdlib')
+marker = os.path.join(os.path.dirname(p), 'EXTERNALLY-MANAGED')
+import sys
+sys.exit(0 if os.path.exists(marker) else 1)
+" 2>/dev/null; then
+        warn "System Python is externally-managed (PEP 668). Using --break-system-packages."
+        warn "Consider using a virtual environment instead (rerun without --no-venv)."
+        PIP_EXTRA=(--break-system-packages)
+    fi
+fi
 if $AIRGAP; then
-    $PYTHON -m pip install --upgrade pip --no-index --find-links "$BUNDLE_WHEELS" --quiet 2>/dev/null || true
+    $PYTHON -m pip install --upgrade pip --no-index --find-links "$BUNDLE_WHEELS" --quiet "${PIP_EXTRA[@]}" || warn "pip upgrade failed (continuing with bundled pip)"
 else
-    $PYTHON -m pip install --upgrade pip --quiet 2>/dev/null
+    $PYTHON -m pip install --upgrade pip --quiet "${PIP_EXTRA[@]}" || fail "pip upgrade failed. If on Ubuntu 23.04+, use a virtual environment (drop --no-venv)."
 fi
 success "pip is up to date"
 
@@ -296,9 +312,9 @@ fi
 step "Installing build tools..."
 
 if $AIRGAP; then
-    $PIP install --quiet maturin --no-index --find-links "$BUNDLE_WHEELS" 2>/dev/null
+    $PIP install --quiet maturin --no-index --find-links "$BUNDLE_WHEELS" "${PIP_EXTRA[@]}" || fail "maturin install failed"
 else
-    $PIP install --quiet maturin 2>/dev/null
+    $PIP install --quiet maturin "${PIP_EXTRA[@]}" || fail "maturin install failed"
 fi
 success "maturin installed"
 
@@ -309,8 +325,22 @@ step "Building SwiftLLM from source..."
 
 cd "$SCRIPT_DIR"
 
+# Detect host architecture for wheel tagging
+HOST_ARCH=$(uname -m)
+HOST_OS=$(uname -s | tr '[:upper:]' '[:lower:]')
+info "Host: $HOST_OS / $HOST_ARCH"
+
+# Choose build features: CPU by default, CUDA only when explicitly enabled
+if $USE_GPU; then
+    BUILD_FEATURES="cuda"
+    info "Building with CUDA feature"
+else
+    BUILD_FEATURES="cpu"
+    info "Building CPU-only wheel (portable, works on x86_64 and aarch64/arm64)"
+fi
+
 info "Running maturin build (this may take a few minutes)..."
-maturin build --release 2>&1 | tail -5
+maturin build --release --no-default-features --features "$BUILD_FEATURES" 2>&1 | tail -5
 
 # Find the built wheel
 WHEEL=$(ls -t "$SCRIPT_DIR/target/wheels/swiftllm-"*.whl 2>/dev/null | head -1)
@@ -327,9 +357,9 @@ success "Built: $(basename "$WHEEL")"
 step "Installing SwiftLLM..."
 
 if $AIRGAP; then
-    $PIP install --force-reinstall "$WHEEL" --no-index --find-links "$BUNDLE_WHEELS" --quiet 2>/dev/null
+    $PIP install --force-reinstall "$WHEEL" --no-index --find-links "$BUNDLE_WHEELS" --quiet "${PIP_EXTRA[@]}" || fail "SwiftLLM wheel install failed"
 else
-    $PIP install --force-reinstall "$WHEEL" --quiet 2>/dev/null
+    $PIP install --force-reinstall "$WHEEL" --quiet "${PIP_EXTRA[@]}" || fail "SwiftLLM wheel install failed"
 fi
 success "SwiftLLM installed"
 
@@ -342,6 +372,7 @@ AIRGAP_PIP_FLAGS=()
 if $AIRGAP; then
     AIRGAP_PIP_FLAGS=(--no-index --find-links "$BUNDLE_WHEELS")
 fi
+AIRGAP_PIP_FLAGS+=("${PIP_EXTRA[@]}")
 
 if $USE_GPU; then
     info "Building llama-cpp-python with CUDA support..."

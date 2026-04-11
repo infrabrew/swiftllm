@@ -12,9 +12,16 @@ crate-type = ["cdylib"]
 
 [dependencies]
 pyo3 = { version = "0.20", features = ["extension-module", "abi3-py38"] }
-swiftllm-core = { path = "crates/swiftllm-core" }
+swiftllm-core = { path = "crates/swiftllm-core", default-features = false }
 swiftllm-models = { path = "crates/swiftllm-models" }
 tokio = { version = "1.35", features = ["full"] }
+
+[features]
+# Default to CPU-only so the wheel builds on any platform (x86_64, aarch64,
+# Apple Silicon, Linux ARM) without needing CUDA toolkit present.
+default = ["cpu"]
+cpu = ["swiftllm-core/cpu"]
+cuda = ["swiftllm-core/cuda"]
 
 [workspace]
 resolver = "2"
