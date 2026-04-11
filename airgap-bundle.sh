@@ -44,6 +44,7 @@ OUTPUT=""
 MODELS=()
 CPU_ONLY=false
 PLATFORM=""
+TARGET_ARCH=""
 
 # ----------------------------
 # Parse arguments
@@ -60,6 +61,9 @@ while [[ $# -gt 0 ]]; do
         --platform)
             [[ -z "${2:-}" || "$2" == --* ]] && fail "--platform requires a platform tag argument"
             PLATFORM="$2"; shift 2 ;;
+        --arch)
+            [[ -z "${2:-}" || "$2" == --* ]] && fail "--arch requires an argument (x86_64, aarch64, arm64)"
+            TARGET_ARCH="$2"; shift 2 ;;
         -h|--help)
             echo "SwiftLLM Air-Gap Bundle Creator"
             echo ""
@@ -68,7 +72,8 @@ while [[ $# -gt 0 ]]; do
             echo "Options:"
             echo "  --model, -m MODEL   Include a model (repeatable)"
             echo "  --cpu               Download CPU-only wheels"
-            echo "  --platform PLAT     pip platform tag (e.g. manylinux2014_x86_64)"
+            echo "  --arch ARCH         Target architecture: x86_64, aarch64, arm64 (auto)"
+            echo "  --platform PLAT     Explicit pip platform tag (overrides --arch)"
             echo "  -o, --output PATH   Output archive path"
             echo "  -h, --help          Show this help"
             exit 0
@@ -127,13 +132,43 @@ success "Source tree copied"
 # ----------------------------
 step "Downloading Python wheels..."
 
+# If --arch was given but --platform wasn't, map arch → manylinux/macOS platform tag.
+# Users can still pass --platform explicitly to override.
+if [[ -z "$PLATFORM" && -n "$TARGET_ARCH" ]]; then
+    HOST_OS=$(uname -s | tr '[:upper:]' '[:lower:]')
+    case "$TARGET_ARCH" in
+        x86_64)          PIP_ARCH="x86_64" ;;
+        aarch64|arm64)   PIP_ARCH="aarch64" ;;
+        *)               fail "Unsupported --arch '$TARGET_ARCH' (expected x86_64, aarch64, arm64)" ;;
+    esac
+    case "$HOST_OS" in
+        linux)
+            # manylinux2014 covers glibc >=2.17 which is modern enough for
+            # Ubuntu 20.04+, RHEL 8+, Debian 10+.
+            PLATFORM="manylinux2014_${PIP_ARCH}"
+            ;;
+        darwin)
+            # macOS 11+ is the baseline for Apple Silicon; pip uses macosx_11_0_arm64
+            if [[ "$PIP_ARCH" == "aarch64" ]]; then
+                PLATFORM="macosx_11_0_arm64"
+            else
+                PLATFORM="macosx_10_15_x86_64"
+            fi
+            ;;
+        *)
+            warn "Cannot auto-map --arch on OS '$HOST_OS'; pass --platform explicitly."
+            ;;
+    esac
+    [[ -n "$PLATFORM" ]] && info "Auto-selected pip platform: $PLATFORM (from --arch $TARGET_ARCH)"
+fi
+
 PLATFORM_FLAG=()
 if [[ -n "$PLATFORM" ]]; then
     # Validate platform tag: only allow alphanumeric, underscores, dots, hyphens
     if [[ ! "$PLATFORM" =~ ^[a-zA-Z0-9._-]+$ ]]; then
         fail "Invalid platform tag: $PLATFORM"
     fi
-    PLATFORM_FLAG=(--platform "$PLATFORM" --only-binary=:all:)
+    PLATFORM_FLAG=(--platform "$PLATFORM" --only-binary=:all: --python-version "$PY_VERSION")
 fi
 
 # Core build tool
@@ -169,14 +204,24 @@ info "$WHEEL_COUNT wheel(s), $WHEEL_SIZE total"
 # ----------------------------
 step "Downloading Rust installer..."
 
-# Detect target triple
-ARCH=$(uname -m)
+# Detect target triple. Rust uses `aarch64` for 64-bit ARM on both Linux and
+# macOS; `uname -m` reports `arm64` on Apple Silicon, so normalize.
+# If --arch was specified, use that instead of the host arch.
+ARCH="${TARGET_ARCH:-$(uname -m)}"
+case "$ARCH" in
+    arm64)   RUST_ARCH="aarch64" ;;   # Apple Silicon
+    aarch64) RUST_ARCH="aarch64" ;;   # Linux ARM64 (Graviton, RPi, etc.)
+    x86_64)  RUST_ARCH="x86_64" ;;
+    i686|i386) RUST_ARCH="i686" ;;
+    *)       RUST_ARCH="$ARCH" ;;
+esac
 OS=$(uname -s | tr '[:upper:]' '[:lower:]')
 case "$OS" in
-    linux)  RUST_TARGET="${ARCH}-unknown-linux-gnu" ;;
-    darwin) RUST_TARGET="${ARCH}-apple-darwin" ;;
+    linux)  RUST_TARGET="${RUST_ARCH}-unknown-linux-gnu" ;;
+    darwin) RUST_TARGET="${RUST_ARCH}-apple-darwin" ;;
     *)      warn "Unsupported OS ($OS). Skipping Rust installer." ; RUST_TARGET="" ;;
 esac
+info "Target triple: ${RUST_TARGET:-unknown}"
 
 if [[ -n "$RUST_TARGET" ]]; then
     RUSTUP_URL="https://static.rust-lang.org/rustup/dist/${RUST_TARGET}/rustup-init"
@@ -185,7 +230,14 @@ if [[ -n "$RUST_TARGET" ]]; then
         # Verify SHA256 checksum
         if curl -sSfL "$RUSTUP_SHA_URL" -o "$DEST/rust/rustup-init.sha256" 2>/dev/null; then
             EXPECTED_SHA=$(awk '{print $1}' "$DEST/rust/rustup-init.sha256")
-            ACTUAL_SHA=$(shasum -a 256 "$DEST/rust/rustup-init" | awk '{print $1}')
+            # Portable SHA256: sha256sum on Linux, shasum on macOS
+            if command -v sha256sum &>/dev/null; then
+                ACTUAL_SHA=$(sha256sum "$DEST/rust/rustup-init" | awk '{print $1}')
+            elif command -v shasum &>/dev/null; then
+                ACTUAL_SHA=$(shasum -a 256 "$DEST/rust/rustup-init" | awk '{print $1}')
+            else
+                fail "Neither sha256sum nor shasum available — cannot verify rustup-init"
+            fi
             if [[ "$EXPECTED_SHA" != "$ACTUAL_SHA" ]]; then
                 fail "SHA256 checksum mismatch for rustup-init (expected $EXPECTED_SHA, got $ACTUAL_SHA)"
             fi

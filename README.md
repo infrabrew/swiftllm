@@ -1,7 +1,7 @@
 # SwiftLLM
 
 <p align="center">
-  <img src="https://img.shields.io/badge/version-2.0.0.1--alpha-orange.svg" alt="v2.0.0.1-alpha">
+  <img src="https://img.shields.io/badge/version-2.0.0.2--alpha-orange.svg" alt="v2.0.0.2-alpha">
   <img src="https://img.shields.io/badge/rust-%23000000.svg?style=flat&logo=rust&logoColor=white" alt="Rust">
   <img src="https://img.shields.io/badge/python-3.8+-blue.svg" alt="Python 3.8+">
   <img src="https://img.shields.io/badge/CUDA-11.8+-green.svg" alt="CUDA 11.8+">
@@ -50,8 +50,22 @@ The installer automatically:
 - Detects your GPU and CUDA toolkit
 - Creates a Python virtual environment
 - Installs Rust if needed
-- Builds SwiftLLM from source
+- Builds SwiftLLM from source (CPU or CUDA, depending on what's detected)
 - Installs llama-cpp-python with GPU support (if available)
+
+#### Supported Platforms
+
+The wheel builds on any Linux or macOS host, on both Intel and ARM CPUs:
+
+| OS        | x86_64                        | aarch64 / arm64                  |
+| --------- | ----------------------------- | -------------------------------- |
+| Linux     | `manylinux2014_x86_64`        | `manylinux2014_aarch64`          |
+| macOS     | `macosx_10_15_x86_64` (≥10.15)| `macosx_11_0_arm64` (Apple Silicon) |
+
+The wheel is Python-abi3 (`cp38-abi3`), meaning a single wheel works across
+Python 3.8 – 3.12. CUDA is **opt-in** via the `cuda` cargo feature; the default
+build (`./install.sh --cpu` or `./install.sh` on a host with no CUDA) produces
+a portable CPU wheel with no CUDA toolkit dependency.
 
 #### Installer Options
 
@@ -80,7 +94,17 @@ git clone https://github.com/swiftllm/swiftllm.git && cd swiftllm
 
 # CPU-only wheels + custom output path
 ./airgap-bundle.sh --cpu -o /mnt/usb/swiftllm-bundle.tar.gz
+
+# Cross-architecture bundle: build on x86_64, deploy to an ARM64 host
+./airgap-bundle.sh --arch aarch64 -o swiftllm-bundle-arm64.tar.gz
+
+# macOS Apple Silicon bundle (from either host)
+./airgap-bundle.sh --arch arm64 --platform macosx_11_0_arm64
 ```
+
+The `--arch` flag auto-selects the correct pip platform tag and rustup target
+triple, so a bundle built on a developer laptop can target a remote ARM
+server (AWS Graviton, Ampere, Raspberry Pi 4/5, Jetson, Apple Silicon).
 
 Transfer the archive to the air-gapped host, then:
 
@@ -597,6 +621,38 @@ swiftllm/
 ```
 
 ## Changelog
+
+### v2.0.0.2-alpha
+
+**CPU and ARM Wheel Support**
+- **New**: CPU-only build is now the default — `maturin build --release` (or `./install.sh --cpu`) produces a portable wheel with zero CUDA dependencies, buildable on any host including Apple Silicon, AWS Graviton, Raspberry Pi 4/5, Jetson, and Ampere ARM servers
+- **New**: `swiftllm` top-level crate now exposes explicit `cpu` and `cuda` Cargo features; `cpu` is the default, CUDA is opt-in via `./install.sh --gpu` or `cargo build --features cuda`
+- **New**: `swiftllm-core` default features changed from `["cuda"]` to `[]` — the CUDA code paths remain `#[cfg(feature = "cuda")]`-gated and are only compiled when explicitly enabled
+- **New**: `airgap-bundle.sh --arch ARCH` flag (`x86_64`, `aarch64`, `arm64`) auto-maps to the correct pip platform tag (`manylinux2014_aarch64`, `macosx_11_0_arm64`, etc.) and rustup target triple — lets you build a cross-architecture bundle on a dev laptop and ship it to a remote ARM host
+- **New**: `airgap-bundle.sh` now normalizes `arm64` → `aarch64` for rustup targets (Apple Silicon reports `arm64` from `uname -m`, but Rust's target triple is `aarch64-apple-darwin`)
+
+**Installer Portability Fixes**
+- **Fix**: Replaced non-portable `grep -oP 'release \K...'` (GNU PCRE) with portable `sed -n 's/.../\1/p'` for CUDA version detection — now works on macOS and BSD-based systems
+- **Fix**: `install.sh` pip upgrade no longer swallows stderr silently; now fails loudly with a helpful message when `pip install --upgrade` fails
+- **Fix**: PEP 668 handling — when `--no-venv` is used against an externally-managed system Python (Ubuntu 23.04+, Debian 12+), the installer detects the `EXTERNALLY-MANAGED` marker and automatically adds `--break-system-packages` with a warning recommending virtualenv
+- **Fix**: `airgap-bundle.sh` SHA256 verification now prefers `sha256sum` (Linux coreutils) with `shasum` fallback (macOS) — previously only worked on hosts with macOS `shasum`
+- **Fix**: Added `set -o pipefail` to both scripts so piped command failures propagate
+- **Fix**: Added `trap 'rm -rf "$BUNDLE_DIR"' EXIT` to `airgap-bundle.sh` for guaranteed temp-dir cleanup
+- **Fix**: Argument guards on `--venv`, `--model-dir`, `--model`, `-o`, `--platform`, `--arch` — missing values no longer silently consume the next flag
+- **Fix**: Python version check now correctly handles `major > 3` (was `major >= 3 && minor >= 8`, which would have failed for future Python 4.x)
+- **Fix**: `VENV_DIR` reference in verification step is now guarded when `--no-venv` is set
+- **Fix**: rsync in `airgap-bundle.sh` now excludes `.env*`, `*.pem`, `*.key`, `*.log`, and `models/` to prevent accidentally bundling secrets or pre-existing model files
+
+**Rust Code Quality**
+- **Critical**: Fixed 14 `partial_cmp().unwrap()` calls across `sampling/mod.rs`, `sampling/strategies.rs`, and `execution/speculative.rs` — replaced with `unwrap_or(Ordering::Equal)` to prevent panics on NaN logits (could crash inference on numerically unstable models)
+- **Critical**: Added `checked_add` + bounds validation in `gguf.rs` `load_weight()` and `load_weights()` — malformed GGUF files can no longer cause slice panics on mmap'd data
+- **High**: Replaced `try_into().unwrap()` in `safetensors.rs` header parser with proper `Result` propagation
+- Added `// SAFETY:` comments to all `unsafe` memory-map blocks in the loaders
+
+**Documentation**
+- New "Supported Platforms" table showing wheel tags for Linux/macOS × x86_64/aarch64
+- Cross-architecture airgap bundle examples (AWS Graviton, Apple Silicon)
+- Documented the new `cpu` / `cuda` Cargo features
 
 ### v2.0.0.1-alpha
 

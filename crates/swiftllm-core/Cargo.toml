@@ -43,8 +43,9 @@ rand = { workspace = true }
 swiftllm-cuda = { path = "../swiftllm-cuda", optional = true }
 
 [features]
-default = ["cuda"]
+default = []
 cuda = ["dep:swiftllm-cuda"]
+cpu = []
 
 [dev-dependencies]
 criterion = { workspace = true }
