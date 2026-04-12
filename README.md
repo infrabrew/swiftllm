@@ -646,6 +646,12 @@ swiftllm/
 
 ### v2.0.0.2-alpha
 
+**Regression Test Fixes**
+- **Fix**: Added `fastapi>=0.100` and `uvicorn>=0.23` as `[serve]` optional dependency in `pyproject.toml` — `swiftllm serve` previously failed on fresh installs with `Error: FastAPI and uvicorn are required for serving`
+- **Fix**: `install.sh` now installs the wheel with `[serve]` extras so the API server works out of the box after installation
+- **Fix**: `airgap-bundle.sh` now includes `fastapi` and `uvicorn` in the offline wheel downloads so `swiftllm serve` works in air-gapped environments
+- Regression tested end-to-end on Ubuntu 24.04 (Python 3.12, RTX PRO 4000 Blackwell, CUDA 13.0): install → download model → generate → chat → serve + API call — all passing
+
 **CPU and ARM Wheel Support**
 - **New**: CPU-only build is now the default — `maturin build --release` (or `./install.sh --cpu`) produces a portable wheel with zero CUDA dependencies, buildable on any host including Apple Silicon, AWS Graviton, Raspberry Pi 4/5, Jetson, and Ampere ARM servers
 - **New**: `swiftllm` top-level crate now exposes explicit `cpu` and `cuda` Cargo features; `cpu` is the default, CUDA is opt-in via `./install.sh --gpu` or `cargo build --features cuda`
