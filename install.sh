@@ -377,11 +377,11 @@ success "Built: $(basename "$WHEEL")"
 step "Installing SwiftLLM..."
 
 if $AIRGAP; then
-    $PIP install --force-reinstall "$WHEEL" --no-index --find-links "$BUNDLE_WHEELS" --quiet "${PIP_EXTRA[@]}" || fail "SwiftLLM wheel install failed"
+    $PIP install --force-reinstall "$WHEEL[serve]" --no-index --find-links "$BUNDLE_WHEELS" --quiet "${PIP_EXTRA[@]}" || fail "SwiftLLM wheel install failed"
 else
-    $PIP install --force-reinstall "$WHEEL" --quiet "${PIP_EXTRA[@]}" || fail "SwiftLLM wheel install failed"
+    $PIP install --force-reinstall "$WHEEL[serve]" --quiet "${PIP_EXTRA[@]}" || fail "SwiftLLM wheel install failed"
 fi
-success "SwiftLLM installed"
+success "SwiftLLM installed (with serve dependencies)"
 
 # ----------------------------
 # Step 8: Install llama-cpp-python (GGUF support)

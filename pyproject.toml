@@ -62,6 +62,10 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+serve = [
+    "fastapi>=0.100",
+    "uvicorn>=0.23",
+]
 dev = [
     "pytest>=7.0",
     "pytest-asyncio>=0.21",
