@@ -23,7 +23,7 @@
 # SwiftLLM
 
 <p align="center">
-  <img src="https://img.shields.io/badge/version-2.0.0.2--alpha-orange.svg" alt="v2.0.0.2-alpha">
+  <img src="https://img.shields.io/badge/version-2.0.1--beta-yellow.svg" alt="v2.0.1-beta">
   <img src="https://img.shields.io/badge/rust-%23000000.svg?style=flat&logo=rust&logoColor=white" alt="Rust">
   <img src="https://img.shields.io/badge/python-3.8+-blue.svg" alt="Python 3.8+">
   <img src="https://img.shields.io/badge/CUDA-11.8+-green.svg" alt="CUDA 11.8+">
@@ -643,6 +643,17 @@ swiftllm/
 ```
 
 ## Changelog
+
+### v2.0.1-beta
+
+**Training UX Fixes**
+- **Fix**: `Trainer.train()` now prints a visible `[SIMULATED]` banner at the start of every run, making it obvious that the current training loop is a stub (synthetic 100-step loss curve, no weights loaded, no gradients) rather than a real training pass — previously the only indication was an inline code comment, so users running `swiftllm train` / `swiftllm finetune` saw convincing metrics with no way to know real training wasn't wired up
+- **Fix**: `swiftllm train` and `swiftllm finetune` now validate `--train-data` (and `--eval-data`) up front — missing paths raise `FileNotFoundError` with a helpful message, non-regular files (e.g. directories) are rejected, and empty files raise `ValueError`. Previously a bogus path silently "succeeded" all the way through the simulated loop and wrote a final checkpoint
+- Validation also covers the path fields loaded from `--config` JSON so typos in saved configs fail fast
+
+**Regression Coverage**
+- Full regression matrix run on Ubuntu 24.04 + CUDA 13.0 (RTX PRO 4000 Blackwell): install → download → generate (18.61 tok/s) → finetune (LoRA) → train (LoRA / QLoRA / full) → cleanup — all passing
+- Verified checkpoint artifacts written correctly: `training_config.json` + `trainer_state.json` per checkpoint dir, `save_total_limit` rotation behaves as documented
 
 ### v2.0.0.2-alpha
 
