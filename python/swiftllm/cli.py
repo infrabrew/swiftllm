@@ -1107,6 +1107,23 @@ def _add_finetune_args(parser: argparse.ArgumentParser):
     )
 
 
+def _validate_train_data(path: str) -> None:
+    """Validate training data file exists and is readable.
+
+    Raises FileNotFoundError if path does not point to a readable file.
+    """
+    p = Path(path)
+    if not p.exists():
+        raise FileNotFoundError(
+            f"Training data not found: {path}\n"
+            f"Expected a JSONL, CSV, or text file at this path."
+        )
+    if not p.is_file():
+        raise FileNotFoundError(f"Training data path is not a regular file: {path}")
+    if p.stat().st_size == 0:
+        raise ValueError(f"Training data file is empty: {path}")
+
+
 def cmd_train(args: argparse.Namespace):
     """Train or fine-tune a model."""
     from .training import TrainingConfig, LoRAConfig, Trainer, FineTuningMethod, LrScheduler, MixedPrecision
@@ -1114,7 +1131,14 @@ def cmd_train(args: argparse.Namespace):
     if args.config:
         config = TrainingConfig.load(args.config)
         print(f"Loaded config from {args.config}")
+        if config.train_data:
+            _validate_train_data(config.train_data)
+        if config.eval_data:
+            _validate_train_data(config.eval_data)
     else:
+        _validate_train_data(args.train_data)
+        if args.eval_data:
+            _validate_train_data(args.eval_data)
         method = FineTuningMethod(args.method)
         lora = None
         if method in (FineTuningMethod.LORA, FineTuningMethod.QLORA):
@@ -1156,6 +1180,8 @@ def cmd_train(args: argparse.Namespace):
 def cmd_finetune(args: argparse.Namespace):
     """Fine-tune a model with LoRA (convenience command)."""
     from .training import fine_tune
+
+    _validate_train_data(args.train_data)
 
     fine_tune(
         model=args.model,

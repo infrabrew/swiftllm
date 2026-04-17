@@ -287,6 +287,14 @@ class Trainer:
         """
         import math
 
+        print("=" * 70)
+        print("  [SIMULATED] SwiftLLM Training — stub backend")
+        print("  The CUDA training backend is not yet wired up. This run executes")
+        print("  a fixed 100-step simulated loop with synthetic loss curves to")
+        print("  exercise the config, logging, and checkpoint plumbing. No model")
+        print("  weights are loaded and no gradient updates are performed.")
+        print("=" * 70)
+
         print(f"SwiftLLM Training")
         print(f"  Model: {self.config.model}")
         print(f"  Method: {self.config.fine_tuning_method.value}")
