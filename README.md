@@ -20,8 +20,9 @@
     ==============================================================================
 -->
 
-# SwiftLLM
-![Logo](https://github.com/infrabrew/infrabrew.github.io/blob/master/swiftllm/assets/logo-mark-128.png?raw=true)
+# <a href="https://infrabrew.github.io/swiftllm/">SwiftLLM</a>
+[![Logo](https://github.com/infrabrew/infrabrew.github.io/blob/master/swiftllm/assets/logo-mark-128.png?raw=true)](https://infrabrew.github.io/swiftllm/)
+
 <p align="center">
   <img src="https://img.shields.io/badge/version-2.0.1--beta-yellow.svg" alt="v2.0.1-beta">
   <img src="https://img.shields.io/badge/rust-%23000000.svg?style=flat&logo=rust&logoColor=white" alt="Rust">
