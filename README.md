@@ -21,7 +21,7 @@
 -->
 
 # SwiftLLM
-
+![Logo](https://github.com/infrabrew/infrabrew.github.io/blob/master/swiftllm/assets/logo-mark-128.png?raw=true)
 <p align="center">
   <img src="https://img.shields.io/badge/version-2.0.1--beta-yellow.svg" alt="v2.0.1-beta">
   <img src="https://img.shields.io/badge/rust-%23000000.svg?style=flat&logo=rust&logoColor=white" alt="Rust">
