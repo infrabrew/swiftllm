@@ -22,11 +22,16 @@
 //!
 //! This module provides implementations of popular LLM architectures.
 
+pub mod jamba;
 pub mod llama;
 pub mod mistral;
 pub mod phi;
 pub mod qwen;
 
+pub use jamba::{
+    HybridLayerType, HybridRecurrentState, JambaConfig, JambaModel,
+    count_attention_layers, jamba_schedule,
+};
 pub use llama::LlamaModel;
 pub use mistral::MistralModel;
 pub use phi::PhiModel;
@@ -90,6 +95,28 @@ pub fn create_model(
         ModelArchitecture::Mistral => Ok(Box::new(MistralModel::new(config)?)),
         ModelArchitecture::Qwen | ModelArchitecture::Qwen2 => Ok(Box::new(QwenModel::new(config)?)),
         ModelArchitecture::Phi | ModelArchitecture::Phi3 => Ok(Box::new(PhiModel::new(config)?)),
+        ModelArchitecture::Jamba | ModelArchitecture::NemotronH => {
+            // Jamba-style hybrid: build a default schedule, then construct JambaModel
+            let jamba_cfg = JambaConfig::small_hybrid(config.hidden_size, config.num_hidden_layers);
+            Ok(Box::new(JambaModel::new(jamba_cfg)?))
+        }
+        ModelArchitecture::Zamba => {
+            // Zamba uses weight-shared attention; for now route to Jamba with 1:6 ratio
+            let mut jamba_cfg = JambaConfig::small_hybrid(config.hidden_size, config.num_hidden_layers);
+            jamba_cfg.layer_schedule = jamba_schedule(config.num_hidden_layers, 6, 0);
+            Ok(Box::new(JambaModel::new(jamba_cfg)?))
+        }
+        ModelArchitecture::Mamba => {
+            // Pure Mamba: all layers are SSM, no attention
+            let mut jamba_cfg = JambaConfig::small_hybrid(config.hidden_size, config.num_hidden_layers);
+            // attn_period = num_layers + 1 → no attention layer ever fires
+            jamba_cfg.layer_schedule = jamba_schedule(
+                config.num_hidden_layers,
+                config.num_hidden_layers + 1,
+                0,
+            );
+            Ok(Box::new(JambaModel::new(jamba_cfg)?))
+        }
         _ => Err(swiftllm_core::error::Error::UnsupportedArchitecture(
             format!("{:?}", architecture),
         )),

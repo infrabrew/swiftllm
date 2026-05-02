@@ -5,6 +5,16 @@
 # AUTHOR:    Peter A. Aldrich Jr.
 # DATE:      2026
 # ------------------------------------------------------------------------------
+# USES:
+#   - python/swiftllm/config.py   SelfConsistencyConfig, AnswerExtractor
+# USED BY:
+#   - python/swiftllm/__init__.py   SelfConsistencySampler re-export
+#   - python/swiftllm/engine.py     generate_with_self_consistency()
+# SEE ALSO:
+#   - crates/swiftllm-core/src/sampling/self_consistency.rs  Rust implementation
+#   - crates/swiftllm-core/src/sampling/mod.rs               Rust module root
+#   - crates/swiftllm-core/src/inference/verification.rs     downstream verifier
+# ------------------------------------------------------------------------------
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
 # You may obtain a copy of the License at
@@ -20,14 +30,18 @@
 
 """SwiftLLM Sampling Strategies
 
-This module provides various sampling strategies for token generation.
+This module provides various sampling strategies for token generation,
+including the Phase 3 self-consistency majority voting sampler.
 """
 
 from abc import ABC, abstractmethod
+from collections import Counter
 from dataclasses import dataclass
 from typing import Dict, List, Optional, Tuple, Union
 
 import numpy as np
+
+from .config import AnswerExtractor, SelfConsistencyConfig
 
 
 class Sampler(ABC):
@@ -430,6 +444,178 @@ def _log_softmax(x: np.ndarray) -> np.ndarray:
     return shifted - np.log(np.sum(np.exp(shifted)))
 
 
+@dataclass
+class SelfConsistencyResult:
+    """Result from SelfConsistencySampler.
+
+    Attributes:
+        answer: The plurality-majority answer string.
+        vote_fraction: Fraction of samples that agreed on the majority answer.
+        all_answers: All extracted answer strings (one per sample).
+        raw_outputs: Raw generated texts before answer extraction.
+    """
+    answer: Optional[str]
+    vote_fraction: float
+    all_answers: List[Optional[str]]
+    raw_outputs: List[str]
+
+
+class SelfConsistencySampler:
+    """Self-consistency majority voting over multiple independent generations.
+
+    Generates ``config.num_samples`` reasoning chains from the same prompt,
+    extracts an answer from each using the configured ``AnswerExtractor``,
+    and returns the plurality-majority answer.  Ties are broken by the
+    average log-probability of samples that produced each candidate answer.
+
+    This mirrors ``self_consistency_vote()`` in
+    ``crates/swiftllm-core/src/sampling/self_consistency.rs``.
+
+    Example::
+
+        from swiftllm.sampling import SelfConsistencySampler
+        from swiftllm.config import SelfConsistencyConfig, AnswerExtractor
+
+        cfg = SelfConsistencyConfig(
+            num_samples=8,
+            extractor=AnswerExtractor.HEURISTIC,
+            temperature=0.8,
+        )
+        sampler = SelfConsistencySampler(cfg)
+        result = sampler.vote(raw_outputs=["...chain 1...", "...chain 2...", ...])
+        print(result.answer, result.vote_fraction)
+    """
+
+    def __init__(self, config: SelfConsistencyConfig):
+        self.config = config
+
+    def extract_answer(self, text: str) -> Optional[str]:
+        """Extract the final answer from a single generated text.
+
+        Args:
+            text: The full generated reasoning chain.
+
+        Returns:
+            The extracted answer string, or None if extraction failed.
+        """
+        ext = self.config.extractor
+        if ext == AnswerExtractor.HEURISTIC:
+            return self._heuristic_extract(text)
+        elif ext == AnswerExtractor.AFTER_SENTINEL:
+            return self._sentinel_extract(text, self.config.answer_sentinel)
+        elif ext == AnswerExtractor.LAST_LINE:
+            return self._last_line_extract(text)
+        elif ext == AnswerExtractor.XML_TAG:
+            return self._xml_tag_extract(text, self.config.answer_tag)
+        return None
+
+    def vote(
+        self,
+        raw_outputs: List[str],
+        log_probs: Optional[List[float]] = None,
+    ) -> SelfConsistencyResult:
+        """Apply majority voting over a list of generated texts.
+
+        Args:
+            raw_outputs: Generated texts (one per sample).
+            log_probs: Cumulative log-probabilities per sample for tiebreaking.
+                If None, ties are broken by index (first encountered wins).
+
+        Returns:
+            SelfConsistencyResult with the majority answer and vote statistics.
+        """
+        all_answers = [self.extract_answer(t) for t in raw_outputs]
+        non_null = [a for a in all_answers if a is not None]
+
+        if not non_null:
+            return SelfConsistencyResult(
+                answer=None,
+                vote_fraction=0.0,
+                all_answers=all_answers,
+                raw_outputs=raw_outputs,
+            )
+
+        # Count votes
+        counts = Counter(non_null)
+        max_count = max(counts.values())
+        candidates = [a for a, c in counts.items() if c == max_count]
+
+        # Tiebreak by mean log-prob of samples that produced each candidate
+        if len(candidates) > 1 and log_probs is not None:
+            best_answer = None
+            best_score = float("-inf")
+            for cand in candidates:
+                scores = [
+                    log_probs[i]
+                    for i, a in enumerate(all_answers)
+                    if a == cand and log_probs[i] is not None
+                ]
+                mean_score = sum(scores) / len(scores) if scores else float("-inf")
+                if mean_score > best_score:
+                    best_score = mean_score
+                    best_answer = cand
+        else:
+            best_answer = candidates[0]
+
+        return SelfConsistencyResult(
+            answer=best_answer,
+            vote_fraction=max_count / len(non_null),
+            all_answers=all_answers,
+            raw_outputs=raw_outputs,
+        )
+
+    # ------------------------------------------------------------------
+    # Private extraction helpers
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _normalise(text: str) -> str:
+        """Strip, lowercase, remove trailing punctuation."""
+        return text.strip().lower().rstrip(".,;:!?")
+
+    def _heuristic_extract(self, text: str) -> Optional[str]:
+        """Look for a number or boxed expression near the end of the text."""
+        import re
+        # Try \\boxed{...}
+        boxed = re.findall(r"\\boxed\{([^}]+)\}", text)
+        if boxed:
+            return self._normalise(boxed[-1])
+        # Look for "the answer is <X>" (case-insensitive)
+        sentinel_match = re.search(
+            r"the answer is\s+([^\s.,;:!?\n]+)", text, re.IGNORECASE
+        )
+        if sentinel_match:
+            return self._normalise(sentinel_match.group(1))
+        # Fall back to last number
+        numbers = re.findall(r"-?\d+(?:\.\d+)?", text)
+        return self._normalise(numbers[-1]) if numbers else None
+
+    def _sentinel_extract(self, text: str, sentinel: str) -> Optional[str]:
+        """Return the text that follows the sentinel string."""
+        lower = text.lower()
+        idx = lower.rfind(sentinel.lower())
+        if idx == -1:
+            return None
+        remainder = text[idx + len(sentinel):].strip()
+        # Take up to the first newline or sentence end
+        import re
+        match = re.match(r"([^\n.!?]+)", remainder)
+        return self._normalise(match.group(1)) if match else self._normalise(remainder[:80])
+
+    @staticmethod
+    def _last_line_extract(text: str) -> Optional[str]:
+        """Return the last non-empty line."""
+        lines = [l.strip() for l in text.splitlines() if l.strip()]
+        return lines[-1] if lines else None
+
+    @staticmethod
+    def _xml_tag_extract(text: str, tag: str) -> Optional[str]:
+        """Return content inside <tag>…</tag>."""
+        import re
+        matches = re.findall(rf"<{re.escape(tag)}>(.*?)</{re.escape(tag)}>", text, re.DOTALL)
+        return matches[-1].strip() if matches else None
+
+
 def create_sampler(
     temperature: float = 1.0,
     top_k: int = -1,
@@ -460,5 +646,7 @@ def create_sampler(
 # ------------------------------------------------------------------------------
 # END OF FILE: sampling.py
 # REPO PATH:   /swiftllm/python/swiftllm/sampling.py
+# INTEGRATES:  config.py · engine.py · __init__.py
+#              Rust: self_consistency.rs · strategies.rs · mod.rs
 # (c) 2026 SWIFTLLM | Apache 2.0 License
 # ------------------------------------------------------------------------------

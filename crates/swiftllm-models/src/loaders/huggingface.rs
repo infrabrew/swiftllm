@@ -276,6 +276,7 @@ fn convert_hf_config(hf: HfConfig) -> Result<ModelConfig> {
         bos_token_id: hf.bos_token_id.unwrap_or(1),
         eos_token_id: hf.eos_token_id.unwrap_or(2),
         pad_token_id: hf.pad_token_id,
+        ..ModelConfig::default()
     })
 }
 

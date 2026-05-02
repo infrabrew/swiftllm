@@ -21,6 +21,7 @@
 //! Core training loop
 
 use crate::config::{TrainingConfig, WarmupConfig};
+use crate::curriculum::{CurriculumState, CurriculumTick};
 use crate::data::{DataLoader, Dataset, TrainingSample};
 use crate::metrics::TrainingMetrics;
 use crate::optimizer::{LearningRateScheduler, Optimizer, SchedulerType};
@@ -157,6 +158,21 @@ impl Trainer {
         // Create output directory
         std::fs::create_dir_all(&self.config.output_dir)?;
 
+        // Build curriculum state now that total_steps is known.
+        let num_layers = self.config.num_layers;
+        let mut curriculum = match (&self.config.cgar, &self.config.phased_spec) {
+            (Some(cgar_cfg), Some(spec_cfg)) => CurriculumState::hybrid(
+                cgar_cfg.clone(),
+                spec_cfg.clone(),
+                total_steps,
+                num_layers,
+            ),
+            (Some(cgar_cfg), None) => {
+                CurriculumState::cgar_only(cgar_cfg.clone(), total_steps, num_layers)
+            }
+            _ => CurriculumState::none(),
+        };
+
         // Create LR scheduler
         let scheduler_type = match self.config.lr_scheduler {
             crate::config::LrSchedulerType::Linear => SchedulerType::Linear,
@@ -182,8 +198,12 @@ impl Trainer {
                 let lr = lr_scheduler.step();
                 self.state.global_step += 1;
 
+                // Advance curriculum and apply per-component LR scaling.
+                let tick = curriculum.step(num_layers);
+                let effective_lr = apply_curriculum_lr(lr, &tick);
+
                 // Simulate training step (actual implementation would run model forward/backward)
-                let loss = self.train_step(&batch, lr);
+                let loss = self.train_step(&batch, effective_lr);
 
                 let num_tokens: usize = batch.iter().map(|s| s.token_ids.len().max(1)).sum();
                 self.metrics.record_step(loss, lr, num_tokens);
@@ -328,6 +348,13 @@ impl Trainer {
     pub fn state(&self) -> &TrainingState {
         &self.state
     }
+}
+
+/// Apply curriculum LR scaling, choosing the lower of attn/ssm scale for
+/// parameters that don't distinguish between the two (e.g. embeddings).
+fn apply_curriculum_lr(base_lr: f64, tick: &CurriculumTick) -> f64 {
+    let scale = tick.attn_lr_scale.min(tick.ssm_lr_scale) as f64;
+    base_lr * scale
 }
 
 #[cfg(test)]

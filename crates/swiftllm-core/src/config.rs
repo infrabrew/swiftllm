@@ -170,6 +170,15 @@ pub enum ModelArchitecture {
     Gemma,
     /// DeepSeek
     DeepSeek,
+    /// Jamba: Hybrid Mamba-SSM + Transformer + (optional) MoE
+    /// AI21 Labs ICLR 2025 — 1:7 attention ratio, 256K context, single 80GB GPU
+    Jamba,
+    /// Pure Mamba-2/3 SSM architecture (no attention layers)
+    Mamba,
+    /// Zamba: weight-shared attention + Mamba hybrid (Zyphra 2024)
+    Zamba,
+    /// Nemotron-H: NVIDIA hybrid 56B — matches Llama-3.1-70B at 3x throughput
+    NemotronH,
 }
 
 /// Data types for model weights and computation

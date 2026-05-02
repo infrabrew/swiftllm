@@ -25,12 +25,22 @@
 
 pub mod attention;
 pub mod embedding;
+pub mod mamba;
 pub mod mlp;
+pub mod moe;
 pub mod normalization;
 
 pub use attention::{Attention, AttentionConfig, RotaryEmbedding};
 pub use embedding::{Embedding, LMHead};
-pub use mlp::{Mlp, MlpConfig, GatedMlp};
+pub use mamba::{
+    ComplexMambaState, DiscretizationMethod, MambaConfig, MambaConv1d, MambaLayer,
+    MambaRecurrentState, selective_scan_cpu, selective_scan_step_cpu,
+};
+pub use mlp::{GatedMlp, Mlp, MlpConfig};
+pub use moe::{
+    DynamicBiasState, ExpertMlp, LatentMoeConfig, LatentMoeLayer, MoeConfig, MoeLayer,
+    Router, RouterOutput, RoutingStrategy, expert_choice_routing_cpu, top_k_routing_cpu,
+};
 pub use normalization::{LayerNorm, RMSNorm};
 
 use swiftllm_core::config::DataType;

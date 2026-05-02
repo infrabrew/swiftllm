@@ -24,40 +24,189 @@
 [![Logo](https://github.com/infrabrew/infrabrew.github.io/blob/master/swiftllm/assets/logo-mark-128.png?raw=true)](https://infrabrew.github.io/swiftllm/)
 
 <p align="center">
-  <img src="https://img.shields.io/badge/version-2.0.1--beta-yellow.svg" alt="v2.0.1-beta">
+  <img src="https://img.shields.io/badge/version-2.1.0--beta-yellow.svg" alt="v2.1.0-beta">
   <img src="https://img.shields.io/badge/rust-%23000000.svg?style=flat&logo=rust&logoColor=white" alt="Rust">
   <img src="https://img.shields.io/badge/python-3.8+-blue.svg" alt="Python 3.8+">
   <img src="https://img.shields.io/badge/CUDA-11.8+-green.svg" alt="CUDA 11.8+">
   <img src="https://img.shields.io/badge/license-Apache%202.0-blue.svg" alt="License">
 </p>
 
-**SwiftLLM** is a high-performance LLM inference, serving, and training engine built with Rust for maximum speed and efficiency. It features state-of-the-art memory management, continuous batching, multi-GPU support, and built-in LoRA/QLoRA fine-tuning.
+**SwiftLLM** is a high-performance LLM inference, serving, and training engine built with Rust for maximum speed and efficiency. It features state-of-the-art memory management, continuous batching, multi-GPU support, built-in LoRA/QLoRA fine-tuning, and a full suite of research-derived enhancements across three integrated phases:
+
+- **Phase 1** — Hybrid model architectures: Mamba SSM layers, Mixture-of-Experts FFN, and Jamba-style hybrid attention+SSM blocks
+- **Phase 2** — Advanced training: GRPO reinforcement learning, CGAR depth curriculum, Process Reward Models, and LongR dense rewards
+- **Phase 3** — Test-time inference: self-consistency majority voting, multi-round self-refinement, Best-of-N dense verification, and disaggregated prefill/decode serving
+
+---
+
+## Table of Contents
+
+- [Key Features](#key-features)
+- [Research Integrations](#research-integrations)
+  - [Phase 1: Hybrid Architectures](#phase-1-hybrid-architectures)
+  - [Phase 2: Training Enhancements](#phase-2-training-enhancements)
+  - [Phase 3: Inference Enhancements](#phase-3-inference-enhancements)
+- [Supported Models](#supported-models)
+- [Installation](#installation)
+- [Quick Start](#quick-start)
+- [Training & Fine-Tuning](#training--fine-tuning)
+- [GRPO Reinforcement Learning Training](#grpo-reinforcement-learning-training)
+- [Test-Time Inference Enhancements](#test-time-inference-enhancements)
+- [Disaggregated Serving](#disaggregated-serving)
+- [Configuration Reference](#configuration-reference)
+- [Environment Variables](#environment-variables)
+- [CLI Commands](#cli-commands)
+- [Architecture](#architecture)
+- [Project Structure](#project-structure)
+- [Examples](#examples)
+- [Security](#security)
+- [Changelog](#changelog)
+- [Contributing](#contributing)
+- [License](#license)
+- [Acknowledgments](#acknowledgments)
+
+---
 
 ## Key Features
 
-- **High Throughput**: Continuous batching and efficient scheduling for maximum tokens/second
-- **Memory Efficient**: PagedAttention for optimal KV cache management
-- **Low Latency**: Optimized CUDA kernels and speculative decoding
-- **Tensor Parallelism**: Scale to multiple GPUs seamlessly
-- **OpenAI Compatible**: Drop-in replacement for OpenAI API with security hardening
-- **Training & Fine-Tuning**: LoRA, QLoRA, and full fine-tuning with Muon, AdamW, and SGD optimizers
-- **Python Friendly**: Easy-to-use Python API with async support
-- **Multiple Formats**: Support for HuggingFace, GGUF, and SafeTensors
-- **Model Downloading**: Download models from HuggingFace Hub by ID or URL
-- **GGUF Inference**: Run quantized GGUF models on GPU via llama-cpp-python
-- **Air-Gapped Install**: Bundle and deploy on networks with no internet access
-- **Secure by Default**: API key authentication, input validation, and security headers
+**Core Engine**
+- **High Throughput** — Continuous batching and efficient scheduling for maximum tokens/second
+- **Memory Efficient** — PagedAttention for optimal KV cache management
+- **Low Latency** — Optimized CUDA kernels and speculative decoding
+- **Tensor Parallelism** — Scale to multiple GPUs seamlessly
+- **OpenAI Compatible** — Drop-in replacement for the OpenAI API with security hardening
+- **Multiple Formats** — HuggingFace repos, GGUF quantized models, SafeTensors
+- **GGUF Inference** — Run quantized GGUF models on GPU via llama-cpp-python
+- **Air-Gapped Install** — Bundle and deploy on networks with no internet access
+
+**Training**
+- **LoRA / QLoRA / Full Fine-Tuning** — Memory-efficient adapter training or full parameter updates
+- **Muon, AdamW, SGD Optimizers** — Newton-Schulz orthogonalization, decoupled weight decay, Nesterov momentum
+- **GRPO (RL Fine-Tuning)** — Group Relative Policy Optimization without a critic model (Phase 2)
+- **CGAR Curriculum** — Curriculum-Guided Adaptive Recursion for 1.71× training speedup (Phase 2)
+- **Process Reward Models** — Step-level reasoning feedback with 5 aggregation strategies (Phase 2)
+- **LongR Dense Rewards** — Per-token NLL information gain for long-context tasks; +9% LongBench v2 (Phase 2)
+
+**Inference**
+- **Self-Consistency Voting** — Majority vote across N independent chains (Wang et al., 2022) (Phase 3)
+- **Multi-Round Self-Refinement** — Iterative critique→revision cycles (Self-Refine, Madaan 2023) (Phase 3)
+- **Best-of-N Verification** — Dense scoring and reranking of N candidates (Phase 3)
+- **Disaggregated Serving** — Separate prefill/decode worker pools (Splitwise/DistServe) (Phase 3)
+
+**Model Architectures (Phase 1)**
+- **Mamba SSM Layers** — Selective state space model layers for sub-quadratic sequence modeling
+- **Mixture-of-Experts FFN** — Sparse MoE with top-k expert routing and load-balancing loss
+- **Jamba Hybrid** — Interleaved Attention + Mamba blocks with configurable ratio
+
+---
+
+## Research Integrations
+
+### Phase 1: Hybrid Architectures
+
+Implemented in `crates/swiftllm-models/src/`:
+
+| Module | What It Adds |
+|--------|-------------|
+| `mamba.rs` | `MambaConfig`, `MambaLayer` — selective SSM with discretization (∆, A, B, C, D), hardware-aware parallel scan, `MambaBlock` with pre-norm |
+| `moe.rs` | `MoeConfig`, `MoeLayer` — top-k sparse routing, load-balancing auxiliary loss, expert capacity enforcement |
+| `jamba.rs` | `JambaConfig`, `JambaLayer` — interleaved attention and Mamba layers with configurable `attn_layer_offset`; enables Phased Specialisation training |
+
+**Jamba Configuration Example (Rust)**
+
+```rust
+use swiftllm_models::JambaConfig;
+
+let config = JambaConfig {
+    hidden_size: 4096,
+    num_attention_heads: 32,
+    num_mamba_layers: 24,
+    num_attention_layers: 8,
+    state_size: 16,
+    conv_size: 4,
+    expand_factor: 2,
+    num_experts: 16,
+    top_k_experts: 2,
+    attn_layer_offset: 4,  // attention every 4th layer
+    ..Default::default()
+};
+```
+
+---
+
+### Phase 2: Training Enhancements
+
+Implemented in `crates/swiftllm-training/src/` and exposed via `python/swiftllm/`:
+
+#### GRPO — Group Relative Policy Optimization
+
+Fine-tunes models using RL without a value/critic model. For each prompt, generates a group of `G` rollouts, computes group-relative advantages, then applies a PPO-style clipped policy gradient with a KL divergence penalty.
+
+- **Paper**: DeepSeekMath (Shao et al., 2024)
+- **Rewards**: Correctness (substring match), format (structural quality), length deviation
+- **No critic model required** — advantages are normalized within the group
+
+#### CGAR — Curriculum-Guided Adaptive Recursion
+
+Progressive depth curriculum: trains with a subset of active layers that grows from shallow to full depth over training. Uses smooth Hermite interpolation at phase boundaries.
+
+- **Paper**: Curriculum-Guided Adaptive Recursion (2024)
+- **Speedup**: Up to 1.71× vs. full-depth training from the start
+- **Phases**: Shallow (0–30%) → Medium (30–60%) → Full (60–100%)
+
+#### Process Reward Models (PRM)
+
+Provides step-level feedback on reasoning chains by scoring each reasoning step independently, then aggregating scores into a single reward signal blended with the outcome reward.
+
+- **Paper**: Let's Verify Step by Step (Lightman et al., 2023)
+- **Modes**: `RulePrm` (heuristic, no extra model) or `NeuralPrm` (learned verifier)
+- **Aggregation**: Min, Mean, Product, LastStep, WeightedMean
+
+#### LongR Dense Rewards
+
+Computes per-token relative NLL information gain vs. a frozen reference model: `r_t = NLL_ref − NLL_model`. Provides a dense token-level reward signal that is more informative than sparse outcome rewards for long-context tasks.
+
+- **Paper**: LongReward (2024)
+- **Gain**: 9% improvement on LongBench v2 in the original paper
+
+---
+
+### Phase 3: Inference Enhancements
+
+Implemented in `crates/swiftllm-core/src/inference/` and `crates/swiftllm-core/src/sampling/`:
+
+#### Self-Consistency (Wang et al., 2022)
+
+Generates `N` independent reasoning chains at temperature > 0, extracts a final answer from each using a configurable extractor, and returns the plurality-majority answer. Ties broken by mean sequence log-probability.
+
+#### Multi-Round Self-Refinement (Madaan et al., 2023)
+
+Iterative critique → revision loop. In each round, the model critiques its own previous output then produces a revised version. Stops when improvement (measured by normalised Levenshtein edit distance) falls below a threshold or the round limit is reached.
+
+#### Best-of-N Dense Verification
+
+Generates `N` candidate responses, scores each using a configurable strategy (rule-based heuristic, neural PRM, ensemble, or sequence log-prob), then returns the highest-scoring candidate. Mirrors `verify_and_rank()` in the Rust core.
+
+#### Disaggregated Prefill/Decode Serving (Splitwise / DistServe)
+
+Routes compute-bound prefill requests and bandwidth-bound decode requests to dedicated, independently-scaled worker pools. Scheduling policies: round-robin, least-loaded, locality-aware. Includes `optimal_worker_ratio()` for auto-sizing worker pools.
+
+---
 
 ## Supported Models
 
-| Architecture | Models |
-|-------------|--------|
-| **LLaMA** | LLaMA, LLaMA 2, LLaMA 3, Code Llama |
-| **Mistral** | Mistral 7B, Mixtral 8x7B |
-| **Qwen** | Qwen, Qwen 2, Qwen 3 |
-| **Phi** | Phi-2, Phi-3 |
-| **Falcon** | Falcon |
-| **Gemma** | Gemma |
+| Architecture | Models | Notes |
+|-------------|--------|-------|
+| **LLaMA** | LLaMA, LLaMA 2, LLaMA 3, Code Llama | |
+| **Mistral** | Mistral 7B, Mixtral 8x7B | Mixtral uses MoE FFN |
+| **Qwen** | Qwen, Qwen 2, Qwen 3 | |
+| **Phi** | Phi-2, Phi-3 | |
+| **Falcon** | Falcon | |
+| **Gemma** | Gemma | |
+| **Mamba** | Mamba-130M … Mamba-3B | Phase 1 — pure SSM |
+| **Jamba** | Jamba-v0.1, custom | Phase 1 — hybrid Attention + Mamba + MoE |
+
+---
 
 ## Installation
 
@@ -78,17 +227,12 @@ The installer automatically:
 
 #### Supported Platforms
 
-The wheel builds on any Linux or macOS host, on both Intel and ARM CPUs:
+| OS | x86_64 | aarch64 / arm64 |
+|----|--------|-----------------|
+| Linux | `manylinux2014_x86_64` | `manylinux2014_aarch64` |
+| macOS | `macosx_10_15_x86_64` (≥10.15) | `macosx_11_0_arm64` (Apple Silicon) |
 
-| OS        | x86_64                        | aarch64 / arm64                  |
-| --------- | ----------------------------- | -------------------------------- |
-| Linux     | `manylinux2014_x86_64`        | `manylinux2014_aarch64`          |
-| macOS     | `macosx_10_15_x86_64` (≥10.15)| `macosx_11_0_arm64` (Apple Silicon) |
-
-The wheel is Python-abi3 (`cp38-abi3`), meaning a single wheel works across
-Python 3.8 – 3.12. CUDA is **opt-in** via the `cuda` cargo feature; the default
-build (`./install.sh --cpu` or `./install.sh` on a host with no CUDA) produces
-a portable CPU wheel with no CUDA toolkit dependency.
+The wheel is Python-abi3 (`cp38-abi3`), meaning a single wheel works across Python 3.8–3.12. CUDA is opt-in via the `cuda` cargo feature; the default build (`./install.sh --cpu` or `./install.sh` on a host with no CUDA) produces a portable CPU wheel with no CUDA toolkit dependency.
 
 #### Installer Options
 
@@ -106,7 +250,7 @@ a portable CPU wheel with no CUDA toolkit dependency.
 For hosts with no internet access, create a bundle on a connected machine first:
 
 ```bash
-# On a CONNECTED machine — download everything into a portable archive
+# On a CONNECTED machine
 git clone https://github.com/swiftllm/swiftllm.git && cd swiftllm
 
 # Basic bundle (source + all Python wheels + Rust installer)
@@ -118,16 +262,12 @@ git clone https://github.com/swiftllm/swiftllm.git && cd swiftllm
 # CPU-only wheels + custom output path
 ./airgap-bundle.sh --cpu -o /mnt/usb/swiftllm-bundle.tar.gz
 
-# Cross-architecture bundle: build on x86_64, deploy to an ARM64 host
+# Cross-architecture bundle (x86_64 host → ARM64 target)
 ./airgap-bundle.sh --arch aarch64 -o swiftllm-bundle-arm64.tar.gz
 
-# macOS Apple Silicon bundle (from either host)
+# macOS Apple Silicon
 ./airgap-bundle.sh --arch arm64 --platform macosx_11_0_arm64
 ```
-
-The `--arch` flag auto-selects the correct pip platform tag and rustup target
-triple, so a bundle built on a developer laptop can target a remote ARM
-server (AWS Graviton, Ampere, Raspberry Pi 4/5, Jetson, Apple Silicon).
 
 Transfer the archive to the air-gapped host, then:
 
@@ -138,7 +278,7 @@ cd swiftllm-airgap-bundle/swiftllm
 ./install.sh --airgap
 ```
 
-To run in offline mode at runtime (skip all HuggingFace downloads):
+To run in offline mode at runtime:
 
 ```bash
 export SWIFTLLM_OFFLINE=1
@@ -151,7 +291,6 @@ swiftllm generate -m /path/to/local/model.gguf -p "Hello"
 git clone https://github.com/swiftllm/swiftllm.git
 cd swiftllm
 
-# Build with Rust + Python
 pip install maturin
 maturin build --release
 pip install target/wheels/swiftllm-*.whl
@@ -168,6 +307,8 @@ CMAKE_ARGS='-DGGML_CUDA=on' CUDACXX=/usr/local/cuda/bin/nvcc pip install llama-c
 - Python 3.8+
 - Rust 1.70+ (auto-installed by `install.sh` if missing)
 - CUDA 11.8+ (optional, for GPU acceleration)
+
+---
 
 ## Quick Start
 
@@ -187,24 +328,38 @@ swiftllm download -m "TeichAI/Qwen3-32B-Kimi-K2-Thinking-Distill-GGUF:Qwen3-32B-
 swiftllm download -m "Qwen/Qwen2.5-0.5B-Instruct-GGUF:qwen2.5-0.5b-instruct-q4_k_m.gguf" --download-dir /data/models
 ```
 
-### Run a GGUF Model
+### Generate Text
 
 ```bash
-# One-shot generation
+# Standard generation
 swiftllm generate \
   -m "Qwen/Qwen2.5-0.5B-Instruct-GGUF:qwen2.5-0.5b-instruct-q4_k_m.gguf" \
   -p "What is the capital of France?" \
   --max-tokens 128
 
-# Interactive chat
-swiftllm chat \
-  -m "Qwen/Qwen2.5-0.5B-Instruct-GGUF:qwen2.5-0.5b-instruct-q4_k_m.gguf"
+# Self-consistency: majority vote across 8 independent chains
+swiftllm generate \
+  -m /path/to/model.gguf \
+  -p "Solve step by step: 3x + 7 = 22. The answer is?" \
+  --self-consistency 8 --temperature 0.8
 
-# Use a local GGUF file directly
-swiftllm generate -m /path/to/model.gguf -p "Hello world"
+# Multi-round refinement: up to 3 critique→revision cycles
+swiftllm generate \
+  -m /path/to/model.gguf \
+  -p "Write a concise summary of the water cycle." \
+  --refinement-rounds 3
+
+# Best-of-N: generate 8 candidates and return the highest-scoring one
+swiftllm generate \
+  -m /path/to/model.gguf \
+  -p "Explain photosynthesis in one paragraph." \
+  --best-of-n 8
+
+# Interactive chat
+swiftllm chat -m "Qwen/Qwen2.5-0.5B-Instruct-GGUF:qwen2.5-0.5b-instruct-q4_k_m.gguf"
 ```
 
-### Python API
+### Python API — Basic Inference
 
 ```python
 from swiftllm import LLM, SamplingParams
@@ -215,36 +370,17 @@ llm = LLM(model="Qwen/Qwen2.5-0.5B-Instruct-GGUF:qwen2.5-0.5b-instruct-q4_k_m.gg
 # Or from a local path
 llm = LLM(model="/path/to/model.gguf")
 
-# Generate text
+# Standard generation
 params = SamplingParams(temperature=0.7, max_tokens=256)
 outputs = llm.generate(["Hello, how are you?"], params)
 print(outputs[0].outputs[0].text)
 ```
 
-### Model Resolver API
+---
 
-```python
-from swiftllm import resolve_model
+## Training & Fine-Tuning
 
-# Resolve a HuggingFace URL to a local path (downloads if needed)
-path = resolve_model("https://huggingface.co/org/repo/blob/main/model.gguf")
-
-# Resolve a repo:filename shorthand
-path = resolve_model("org/repo:model.q4_k_m.gguf")
-
-# Resolve a full repo
-path = resolve_model("meta-llama/Llama-2-7b-hf")
-
-# Local paths are validated and returned as-is
-path = resolve_model("/data/models/my-model.gguf")
-
-# Control download location
-path = resolve_model("org/repo:model.gguf", download_dir="/data/models")
-```
-
-### Training & Fine-Tuning
-
-#### Quick Fine-Tune with LoRA (CLI)
+### Quick Fine-Tune with LoRA (CLI)
 
 ```bash
 # LoRA fine-tuning (convenience command)
@@ -267,7 +403,7 @@ swiftllm train \
   -o ./output/my-model
 ```
 
-#### Python Training API
+### Python Training API
 
 ```python
 from swiftllm import Trainer, TrainingConfig, LoRAConfig
@@ -294,7 +430,7 @@ trainer = fine_tune(
 )
 ```
 
-#### Supported Fine-Tuning Methods
+### Supported Fine-Tuning Methods
 
 | Method | Description | Memory |
 |--------|-------------|--------|
@@ -302,38 +438,797 @@ trainer = fine_tune(
 | **QLoRA** | 4-bit quantized base model + LoRA adapters | Very Low |
 | **Full** | Full parameter fine-tuning | High |
 
-#### Optimizers
+### Optimizers
 
 | Optimizer | Best For | Description |
 |-----------|----------|-------------|
-| **Muon** | Matrix-shaped params (linear layers) | Newton-Schulz orthogonalization on Nesterov momentum; faster convergence than Adam for >=2D weights. Auto-falls back to AdamW for 1D params (biases, norms). [arXiv:2409.20325](https://arxiv.org/abs/2409.20325) |
+| **Muon** | Matrix-shaped params (linear layers) | Newton-Schulz orthogonalization on Nesterov momentum; faster convergence than Adam for ≥2D weights. Auto-falls back to AdamW for 1D params (biases, norms). [arXiv:2409.20325](https://arxiv.org/abs/2409.20325) |
 | **AdamW** | General purpose | Decoupled weight decay Adam; default for most fine-tuning |
 | **SGD** | Large-batch training | SGD with optional Nesterov momentum |
 
-#### Muon Optimizer (Rust API)
+### Muon Optimizer (Rust API)
 
 ```rust
 use swiftllm_training::{Muon, MuonConfig};
 use swiftllm_training::Optimizer;
 
 let mut opt = Muon::new(MuonConfig {
-    lr: 0.02,              // LR for >=2D params (Muon path)
-    momentum: 0.95,        // Nesterov momentum coefficient
-    ns_steps: 5,           // Newton-Schulz iterations
-    weight_decay: 0.0,     // Decoupled weight decay (Muon)
-    adamw_lr: 3e-4,        // LR for 1D params (AdamW fallback)
+    lr: 0.02,
+    momentum: 0.95,
+    ns_steps: 5,
+    weight_decay: 0.0,
+    adamw_lr: 3e-4,
     ..Default::default()
 });
 
-// Register shapes for explicit control (optional)
 opt.set_shape("layer0.weight", 4096, 4096);
-
 let mut param = vec![0.01f32; 4096 * 4096];
 let grad = compute_gradient(&model, &batch);
 opt.step(&mut param, &grad, "layer0.weight");
 ```
 
-### OpenAI-Compatible Server
+---
+
+## GRPO Reinforcement Learning Training
+
+GRPO (Group Relative Policy Optimization) fine-tunes models using RL without requiring a critic/value model. It samples a group of `G` rollouts per prompt, computes group-relative advantages, then applies a PPO-style clipped policy gradient update plus a KL divergence penalty against a frozen reference model.
+
+### CLI
+
+```bash
+# GRPO with CGAR curriculum (default: enabled)
+swiftllm grpo \
+  -m meta-llama/Llama-2-7b-hf \
+  --train-data ./data/rl_prompts.jsonl \
+  --group-size 8 \
+  --kl-coeff 0.04 \
+  --num-epochs 1 \
+  -o ./grpo_output
+
+# Full research stack: GRPO + CGAR + PRM + LongR
+swiftllm grpo \
+  -m meta-llama/Llama-2-7b-hf \
+  --train-data ./data/math_prompts.jsonl \
+  --group-size 8 \
+  --enable-prm \
+  --long-reward-weight 0.1 \
+  --num-layers 32 \
+  -o ./grpo_full_output
+
+# GRPO without curriculum
+swiftllm grpo \
+  -m meta-llama/Llama-2-7b-hf \
+  --train-data data.jsonl \
+  --disable-cgar \
+  --group-size 4
+```
+
+### Python API
+
+```python
+from swiftllm import GrpoTrainer, TrainingConfig
+from swiftllm.config import GrpoConfig, CgarConfig, PrmConfig, LongRewardConfig
+
+# Configure the full research stack
+config = TrainingConfig(
+    model="meta-llama/Llama-2-7b-hf",
+    train_data="./data/math_prompts.jsonl",
+    output_dir="./grpo_output",
+    fine_tuning_method="full",
+    learning_rate=1e-5,
+    num_epochs=1,
+    num_layers=32,
+
+    # GRPO: group-relative policy optimization
+    grpo=GrpoConfig(
+        group_size=8,           # G rollouts per prompt
+        clip_eps=0.2,           # PPO clipping threshold ε
+        kl_coeff=0.04,          # KL penalty coefficient β
+        correctness_weight=1.0,
+        format_weight=0.2,
+    ),
+
+    # CGAR: progressive depth curriculum (1.71× speedup)
+    cgar=CgarConfig(
+        shallow_end=0.30,       # shallow phase ends at 30% of training
+        medium_end=0.60,        # medium phase ends at 60% of training
+    ),
+
+    # PRM: step-level process reward model
+    prm=PrmConfig(
+        aggregation="last_step",
+        outcome_weight=0.5,
+        prm_weight=0.5,
+    ),
+
+    # LongR: dense token-level rewards (+9% LongBench v2)
+    long_reward=LongRewardConfig(weight=0.10),
+)
+
+trainer = GrpoTrainer(config)
+trainer.add_callback(lambda m: print(f"step {m.step} | loss {m.train_loss:.4f}"))
+trainer.train()
+```
+
+### Convenience Function
+
+```python
+from swiftllm import grpo_train
+
+trainer = grpo_train(
+    model="meta-llama/Llama-2-7b-hf",
+    train_data="math_prompts.jsonl",
+    group_size=8,
+    enable_cgar=True,
+    enable_prm=False,
+    long_reward_weight=0.1,
+)
+```
+
+### Training Data Format
+
+JSONL with one JSON object per line:
+
+```jsonl
+{"prompt": "What is 12 × 15? Think step by step.", "answer": "180"}
+{"prompt": "Solve: 3x + 7 = 22", "answer": "5"}
+{"prompt": "A train travels at 60 mph for 2 hours, then 80 mph for 1 hour. Total distance?", "answer": "200"}
+```
+
+---
+
+## Test-Time Inference Enhancements
+
+SwiftLLM provides three test-time compute enhancements that require no training — they improve output quality by spending more tokens at inference time.
+
+### Self-Consistency Majority Voting
+
+Generate `N` independent reasoning chains and return the plurality-majority answer. More chains → higher accuracy on reasoning tasks, with diminishing returns beyond ~16 samples.
+
+```python
+from swiftllm import LLM
+from swiftllm.config import SelfConsistencyConfig, AnswerExtractor
+
+llm = LLM(model="meta-llama/Llama-2-7b-hf")
+
+# Heuristic extractor: finds last number or \boxed{} expression
+results = llm.generate_with_self_consistency(
+    "What is 17 × 23? Think step by step.",
+    config=SelfConsistencyConfig(
+        num_samples=8,
+        extractor=AnswerExtractor.HEURISTIC,
+        temperature=0.8,
+    ),
+)
+result = results[0]
+print(f"Answer: {result.answer}")
+print(f"Agreement: {result.vote_fraction:.0%} of {len(result.raw_outputs)} samples")
+
+# Sentinel extractor: text after "The answer is"
+results = llm.generate_with_self_consistency(
+    "Solve: 3x + 7 = 22. Show your work, then state 'The answer is X.'",
+    config=SelfConsistencyConfig(
+        num_samples=8,
+        extractor=AnswerExtractor.AFTER_SENTINEL,
+        answer_sentinel="The answer is",
+        temperature=0.8,
+    ),
+)
+
+# XML tag extractor: content of <answer>…</answer>
+results = llm.generate_with_self_consistency(
+    "What is the capital of France? Respond with <answer>…</answer>.",
+    config=SelfConsistencyConfig(
+        num_samples=4,
+        extractor=AnswerExtractor.XML_TAG,
+        answer_tag="answer",
+        temperature=0.6,
+    ),
+)
+```
+
+**Standalone majority voting** (over pre-generated texts):
+
+```python
+from swiftllm.sampling import SelfConsistencySampler
+from swiftllm.config import SelfConsistencyConfig
+
+sampler = SelfConsistencySampler(SelfConsistencyConfig(num_samples=4))
+result = sampler.vote([
+    "The answer is 270 miles.",
+    "Total distance: 270 miles.",
+    "I get 240 miles.",
+    "The answer is 270.",
+])
+print(result.answer, result.vote_fraction)  # "270"  0.75
+```
+
+### Multi-Round Self-Refinement
+
+Iteratively critique and revise an initial response until improvement stalls or the round limit is reached.
+
+```python
+from swiftllm.config import RefinementConfig, StoppingCriterion, ImprovementMetric
+
+results = llm.generate_with_refinement(
+    "Write a concise summary of the water cycle.",
+    config=RefinementConfig(
+        max_rounds=3,
+        min_improvement=0.05,                       # stop when < 5% edit-distance improvement
+        stopping_criterion=StoppingCriterion.EITHER, # stop at max_rounds OR min_improvement
+        improvement_metric=ImprovementMetric.EDIT_DISTANCE,
+    ),
+)
+r = results[0]
+print(f"Rounds used: {r.num_rounds_used}")
+print(f"Initial: {r.initial_output[:100]}...")
+print(f"Refined: {r.final_output[:100]}...")
+
+# Inspect per-round details
+for round_info in r.rounds:
+    print(f"  Round {round_info['round']}: improvement={round_info['improvement_score']:.3f}")
+```
+
+**Custom critique function:**
+
+```python
+def my_critic(current_output: str) -> str:
+    return (
+        f"The following answer may have errors. Identify any factual mistakes, "
+        f"unclear reasoning, or missing steps:\n\n{current_output}\n\nCritique:"
+    )
+
+results = llm.generate_with_refinement(
+    "Explain Newton's second law of motion.",
+    config=RefinementConfig(max_rounds=2),
+    critique_fn=my_critic,
+)
+```
+
+### Best-of-N Dense Verification
+
+Generate N candidate responses, score each one, and return the highest-scoring candidate.
+
+```python
+from swiftllm.config import VerificationConfig, ScoringStrategy
+
+# Rule-based scoring (no extra model required)
+results = llm.generate_best_of_n(
+    "Explain the difference between supervised and unsupervised learning.",
+    config=VerificationConfig(
+        num_candidates=8,
+        scoring_strategy=ScoringStrategy.RULE_BASED,
+    ),
+)
+r = results[0]
+print(f"Best score: {r.best_score:.3f}")
+print(r.best_text)
+
+# Ensemble scoring: combine rule-based, neural PRM, and sequence log-prob
+results = llm.generate_best_of_n(
+    "Write a haiku about machine learning.",
+    config=VerificationConfig(
+        num_candidates=8,
+        scoring_strategy=ScoringStrategy.ENSEMBLE,
+        rule_weight=0.5,
+        neural_weight=0.3,
+        logprob_weight=0.2,
+    ),
+)
+```
+
+### Configuring Inference Features on EngineConfig
+
+You can set default inference configs on `EngineConfig` so they apply automatically:
+
+```python
+from swiftllm import LLM, EngineConfig
+from swiftllm.config import SelfConsistencyConfig, RefinementConfig
+
+llm = LLM.__new__(LLM)
+llm.config = EngineConfig(
+    model="meta-llama/Llama-2-7b-hf",
+    self_consistency=SelfConsistencyConfig(num_samples=8),
+    refinement=RefinementConfig(max_rounds=3),
+)
+# Now generate_with_self_consistency() and generate_with_refinement()
+# work without passing config= each time.
+```
+
+---
+
+## Disaggregated Serving
+
+Disaggregated prefill/decode serving routes compute-bound **prefill** (processing the prompt) and bandwidth-bound **decode** (generating tokens) to dedicated, independently-scaled worker pools. This matches the Splitwise and DistServe architectures.
+
+### Python Configuration
+
+```python
+from swiftllm.config import DisaggregatedServingConfig, DisaggregatedPolicy
+
+ds_config = DisaggregatedServingConfig(
+    num_prefill_workers=2,
+    num_decode_workers=6,
+    scheduling_policy=DisaggregatedPolicy.LEAST_LOADED,
+    kv_transfer_timeout_ms=100,
+    enable_auto_ratio=True,  # auto-compute optimal worker ratio at startup
+)
+```
+
+### Optimal Worker Ratio (Rust API)
+
+```rust
+use swiftllm_core::serving::optimal_worker_ratio;
+
+// prefill_tps: tokens per second a prefill worker processes
+// decode_tps:  tokens per second a decode worker produces
+let (n_prefill, n_decode) = optimal_worker_ratio(500.0, 50.0, 8);
+// → (1, 7) — one prefill worker can saturate 7 decode workers
+println!("Prefill workers: {n_prefill}, Decode workers: {n_decode}");
+```
+
+### Scheduling Policies
+
+| Policy | Behavior |
+|--------|---------|
+| `ROUND_ROBIN` | Cycle through workers in order |
+| `LEAST_LOADED` | Route to the worker with the fewest active requests |
+| `LOCALITY_AWARE` | Prefer the worker that already holds the KV cache for this request |
+
+---
+
+## Configuration Reference
+
+### SamplingParams
+
+```python
+from swiftllm import SamplingParams
+
+params = SamplingParams(
+    temperature=0.7,        # Sampling temperature (0 = greedy)
+    top_p=0.9,              # Nucleus sampling
+    top_k=50,               # Top-k sampling (-1 = disabled)
+    min_p=0.0,              # Min-p filtering
+    max_tokens=256,         # Maximum tokens to generate
+    stop=["</s>"],          # Stop sequences
+    presence_penalty=0.1,   # Presence penalty
+    frequency_penalty=0.1,  # Frequency penalty
+    repetition_penalty=1.1, # Repetition penalty
+    n=1,                    # Number of output sequences
+    best_of=1,              # Must be >= n
+    seed=42,                # Random seed
+    logprobs=5,             # Return top-5 token log-probs
+)
+```
+
+### Phase 3 Inference Configs
+
+```python
+from swiftllm.config import (
+    SelfConsistencyConfig, AnswerExtractor,
+    RefinementConfig, StoppingCriterion, ImprovementMetric,
+    VerificationConfig, ScoringStrategy,
+    DisaggregatedServingConfig, DisaggregatedPolicy,
+)
+
+# Self-consistency
+sc = SelfConsistencyConfig(
+    num_samples=8,                       # chains to generate (≥ 2)
+    extractor=AnswerExtractor.HEURISTIC, # HEURISTIC | AFTER_SENTINEL | LAST_LINE | XML_TAG
+    answer_sentinel="The answer is",     # used by AFTER_SENTINEL
+    answer_tag="answer",                 # used by XML_TAG
+    temperature=0.8,                     # must be > 0
+)
+
+# Self-refinement
+rf = RefinementConfig(
+    max_rounds=3,
+    min_improvement=0.05,
+    stopping_criterion=StoppingCriterion.EITHER,  # MAX_ROUNDS | MIN_IMPROVEMENT | EITHER
+    improvement_metric=ImprovementMetric.EDIT_DISTANCE, # EDIT_DISTANCE | ANY_CHANGE | EXTERNAL_SCORE
+    critique_template=None,  # optional custom template with {output} placeholder
+)
+
+# Best-of-N verification
+vc = VerificationConfig(
+    num_candidates=8,
+    scoring_strategy=ScoringStrategy.RULE_BASED,  # RULE_BASED | NEURAL | ENSEMBLE | SEQUENCE_LOG_PROB
+    rule_weight=0.5,    # used in ENSEMBLE mode
+    neural_weight=0.3,
+    logprob_weight=0.2,
+    neural_model=None,  # path to neural PRM for NEURAL / ENSEMBLE
+)
+```
+
+### Phase 2 Training Configs
+
+```python
+from swiftllm.config import (
+    GrpoConfig, CgarConfig, PrmConfig, PrmAggregation,
+    LongRewardConfig, DenseAggregation,
+)
+
+grpo = GrpoConfig(
+    group_size=8,                # rollout group size G (≥ 2)
+    clip_eps=0.2,                # PPO clipping threshold ε
+    kl_coeff=0.04,               # KL divergence penalty β
+    correctness_weight=1.0,
+    format_weight=0.2,
+    length_penalty_weight=0.1,
+    reference_model=None,        # defaults to same model as policy
+)
+
+cgar = CgarConfig(
+    shallow_end=0.30,                    # training fraction ending shallow phase
+    medium_end=0.60,                     # training fraction ending medium phase
+    min_layers=None,                     # None → num_layers // 3
+    max_layers=None,                     # None → num_layers
+    enable_phased_specialisation=False,  # Jamba attention-lead / SSM-lead phases
+    attention_lead_end=0.40,
+)
+
+prm = PrmConfig(
+    aggregation=PrmAggregation.LAST_STEP,  # MIN | MEAN | PRODUCT | LAST_STEP | WEIGHTED_MEAN
+    outcome_weight=0.5,
+    prm_weight=0.5,
+    step_separator="\n\n",
+    neural_model=None,  # None → rule-based heuristic
+)
+
+lr_dense = LongRewardConfig(
+    weight=0.1,                        # scalar applied to dense reward
+    aggregation=DenseAggregation.MEAN, # MEAN | SUM | MAX | LAST
+    normalise=True,                    # z-score normalise within batch
+    reference_model=None,
+)
+```
+
+### EngineConfig
+
+```python
+from swiftllm import LLM
+
+llm = LLM(
+    model="meta-llama/Llama-2-7b-hf",
+    download_dir="/data/models",
+    tensor_parallel_size=2,
+    gpu_memory_utilization=0.90,
+    max_model_len=4096,
+    dtype="float16",
+    quantization="awq",
+)
+```
+
+---
+
+## Environment Variables
+
+Every `SWIFTLLM_*` variable maps to a field in `EngineConfig` or `ServerConfig`. Set them in your shell profile, systemd unit, or Docker Compose file — they are read at startup and override coded defaults. Explicit constructor arguments always take final precedence.
+
+### GPU & Memory
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `SWIFTLLM_GPU_MEMORY_UTILIZATION` | `0.90` | Fraction of GPU VRAM for model weights + KV cache (0.0–1.0). Raise to ~0.95 on dedicated hosts; lower to 0.7 when sharing. |
+| `SWIFTLLM_GPU_OVERHEAD_MB` | `0` | VRAM (in MB) to reserve for the OS and other processes. |
+| `SWIFTLLM_NUM_GPU_LAYERS` | all | Number of layers to offload to GPU. `0` = CPU-only, `999` = all. |
+| `SWIFTLLM_SWAP_SPACE` | `4.0` | CPU swap space in GiB for KV cache offloading. |
+| `SWIFTLLM_CPU_OFFLOAD_GB` | `0.0` | Model weight gigabytes to keep on CPU RAM instead of GPU. |
+| `SWIFTLLM_KV_CACHE_DTYPE` | `auto` | Data type for the KV cache. `fp8_e4m3`/`fp8_e5m2` halves memory. |
+| `SWIFTLLM_BLOCK_SIZE` | `16` | Tokens per PagedAttention block. Allowed: `8`, `16`, `32`. |
+| `SWIFTLLM_FLASH_ATTENTION` | `true` | Enable FlashAttention kernels. |
+| `SWIFTLLM_ENFORCE_EAGER` | `false` | Disable CUDA graph capture; use eager execution. |
+| `CUDA_VISIBLE_DEVICES` | (all) | Restrict which GPUs are visible, e.g. `0,2`. |
+
+### Tensor Parallelism & Multi-GPU
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `SWIFTLLM_TENSOR_PARALLEL_SIZE` | `1` | GPUs for tensor parallelism. Must evenly divide attention heads. |
+| `SWIFTLLM_PIPELINE_PARALLEL_SIZE` | `1` | Pipeline-parallel stages. |
+| `NCCL_DEBUG` | — | NCCL logging level: `INFO`, `WARN`, `TRACE`. |
+| `NCCL_P2P_DISABLE` | `0` | Set to `1` to disable GPU peer-to-peer on certain PCIe topologies. |
+
+### Scheduling & Batching
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `SWIFTLLM_MAX_NUM_SEQS` | `256` | Maximum concurrent sequences in a batch. |
+| `SWIFTLLM_MAX_NUM_BATCHED_TOKENS` | `8192` | Maximum total tokens per forward pass. |
+| `SWIFTLLM_MAX_PADDINGS` | `256` | Maximum padding tokens tolerated per batch. |
+| `SWIFTLLM_SCHEDULER_POLICY` | `fcfs` | `fcfs`, `sjf`, or `priority`. |
+| `SWIFTLLM_PREEMPTION_MODE` | `swap` | `swap` (KV cache to CPU) or `recompute`. |
+| `SWIFTLLM_ENABLE_PREFIX_CACHING` | `false` | Reuse KV cache across requests sharing the same prefix. |
+| `SWIFTLLM_ENABLE_CHUNKED_PREFILL` | `false` | Interleave prefill and decode; reduces time-to-first-token. |
+| `SWIFTLLM_NUM_PARALLEL` | `1` | Parallel inference slots per model. |
+| `SWIFTLLM_MAX_LOADED_MODELS` | `1` | Models held in GPU memory simultaneously. |
+| `SWIFTLLM_KEEP_ALIVE` | `300` | Seconds a model stays loaded after last request. |
+
+### Speculative Decoding
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `SWIFTLLM_SPECULATIVE_MODEL` | — | Draft model for speculative decoding. |
+| `SWIFTLLM_NUM_SPECULATIVE_TOKENS` | `5` | Tokens to draft per step. |
+| `SWIFTLLM_SPECULATIVE_MAX_MODEL_LEN` | — | Override max sequence length for the draft model. |
+
+### Model & Weights
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `SWIFTLLM_MODEL_DIR` | `~/.cache/swiftllm/models` | Default directory for downloaded models. |
+| `SWIFTLLM_OFFLINE` | `false` | Set to `1` to disable all network downloads. |
+| `SWIFTLLM_DTYPE` | `auto` | Weight data type: `auto`, `float16`, `bfloat16`, `float32`, `int8`, `int4`, `fp8_e4m3`, `fp8_e5m2`. |
+| `SWIFTLLM_QUANTIZATION` | `none` | Quantization method: `none`, `awq`, `gptq`, `squeezellm`, `gguf`. |
+| `SWIFTLLM_MAX_MODEL_LEN` | (model default) | Override the model's max sequence length. |
+| `SWIFTLLM_TRUST_REMOTE_CODE` | `false` | Allow executing custom code from HuggingFace repos. |
+| `SWIFTLLM_DEVICE` | `auto` | Device: `auto`, `cuda`, `cpu`, `metal`, `rocm`. |
+| `SWIFTLLM_SEED` | `0` | Global random seed. |
+| `HF_TOKEN` | — | HuggingFace API token for gated models. |
+
+### LoRA
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `SWIFTLLM_ENABLE_LORA` | `false` | Enable LoRA adapter support in the inference engine. |
+| `SWIFTLLM_MAX_LORAS` | `1` | Maximum LoRA adapters loaded simultaneously. |
+| `SWIFTLLM_MAX_LORA_RANK` | `16` | Maximum LoRA rank. |
+
+### Server & Networking
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `SWIFTLLM_HOST` | `0.0.0.0` | Bind address for the HTTP server. |
+| `SWIFTLLM_PORT` | `8000` | Port for the HTTP server. |
+| `SWIFTLLM_API_KEY` | — | Bearer-token API key. |
+| `SWIFTLLM_CORS_ALLOW_ORIGINS` | `*` | Comma-separated allowed CORS origins. |
+| `SWIFTLLM_SSL_CERTFILE` | — | Path to TLS certificate for HTTPS. |
+| `SWIFTLLM_SSL_KEYFILE` | — | Path to TLS private key for HTTPS. |
+| `SWIFTLLM_ROOT_PATH` | — | URL prefix for reverse-proxy deployments. |
+| `SWIFTLLM_SERVED_MODEL_NAME` | — | Override model name in API responses. |
+| `SWIFTLLM_MAX_LOG_LEN` | — | Truncate request/response logs to this many characters. |
+| `SWIFTLLM_RESPONSE_ROLE` | `assistant` | Default role name in chat completion responses. |
+
+### Build & CUDA
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `CUDA_PATH` / `CUDA_HOME` | — | Path to CUDA toolkit. |
+| `CUDACXX` | — | Path to `nvcc` binary. |
+| `CMAKE_ARGS` | — | Extra CMake arguments for llama-cpp-python build. |
+
+### Logging & Debug
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `RUST_LOG` | `info` | Rust log level: `trace`, `debug`, `info`, `warn`, `error`. |
+| `SWIFTLLM_LOG_LEVEL` | — | Python log level: `DEBUG`, `INFO`, `WARNING`, `ERROR`. |
+
+---
+
+## CLI Commands
+
+```bash
+# Download a model
+swiftllm download -m <model> [--download-dir <dir>] [--revision <rev>] [--token <hf-token>]
+
+# Start the OpenAI-compatible server
+swiftllm serve -m <model> --port 8000 [--api-key <key>] [--tensor-parallel-size 2]
+
+# Standard generation
+swiftllm generate -m <model> -p "Hello" --max-tokens 256
+
+# Self-consistency generation (majority vote across N chains)
+swiftllm generate -m <model> -p "Solve: 2x+4=10" --self-consistency 8 --temperature 0.8
+
+# Multi-round refinement (up to R critique→revision cycles)
+swiftllm generate -m <model> -p "Summarize the water cycle" --refinement-rounds 3
+
+# Best-of-N: generate N, return the highest-scoring candidate
+swiftllm generate -m <model> -p "Write a haiku" --best-of-n 8
+
+# Interactive chat session
+swiftllm chat -m <model> [--system "You are a helpful assistant"]
+
+# Benchmark throughput
+swiftllm benchmark -m <model> --num-prompts 100 --input-len 128 --output-len 128
+
+# Model information
+swiftllm info -m <model> [--json]
+
+# Convert model format
+swiftllm convert -i <path> -o <path> --format safetensors
+
+# Standard fine-tuning
+swiftllm train -m <model> --train-data <data> --method lora [--num-epochs 3]
+swiftllm finetune -m <model> --train-data <data> --lora-r 16
+
+# GRPO reinforcement learning training (Phase 2)
+swiftllm grpo -m <model> --train-data <data> --group-size 8 [--enable-prm] [--long-reward-weight 0.1]
+```
+
+### Model Specifiers
+
+The `-m` / `--model` flag accepts multiple formats:
+
+| Format | Example |
+|--------|---------|
+| Local path | `/data/models/model.gguf` |
+| HF repo ID | `meta-llama/Llama-2-7b-hf` |
+| HF URL | `https://huggingface.co/org/repo/blob/main/file.gguf` |
+| Repo:file shorthand | `org/repo:model.q4_k_m.gguf` |
+
+---
+
+## Architecture
+
+```
++-----------------------------------------------------------------------------------+
+|                           SwiftLLM Architecture (v2.1)                            |
++-----------------------------------------------------------------------------------+
+|                                                                                   |
+|  ┌─────────────────┐  ┌──────────────────────┐  ┌───────────────────────────┐   |
+|  │  OpenAI API      │  │  Python SDK           │  │  CLI Interface            │   |
+|  │  (auth, headers) │  │  LLM / AsyncLLM       │  │  serve/train/chat/grpo    │   |
+|  └────────┬─────────┘  └──────────┬───────────┘  └──────────────┬────────────┘   |
+|           │                       │                              │                |
+|  ┌────────┴───────────────────────┴──────────────────────────────┴────────────┐  |
+|  │                    Model Resolver & Downloader                              │  |
+|  │        (HuggingFace Hub / Local Path / GGUF URL / Offline)                 │  |
+|  └────────────────────────────────┬───────────────────────────────────────────┘  |
+|                                   │                                               |
+|  ┌────────────────────────────────┴───────────────────────────────────────────┐  |
+|  │                  Phase 3 — Inference Enhancements                          │  |
+|  │   ┌──────────────────┐  ┌─────────────────┐  ┌────────────────────────┐   │  |
+|  │   │ Self-Consistency  │  │ Self-Refinement  │  │ Best-of-N Verification │   │  |
+|  │   │  (Wang 2022)      │  │  (Madaan 2023)   │  │   + Dense Scoring      │   │  |
+|  │   └──────────────────┘  └─────────────────┘  └────────────────────────┘   │  |
+|  └────────────────────────────────┬───────────────────────────────────────────┘  |
+|                                   │                                               |
+|  ┌────────────────────────────────┴───────────────────────────────────────────┐  |
+|  │               Disaggregated Serving (Phase 3)                              │  |
+|  │   ┌────────────────────┐    ┌────────────────────┐   ┌──────────────────┐  │  |
+|  │   │  Prefill Workers   │───▶│  KV Transfer       │──▶│  Decode Workers  │  │  |
+|  │   │ (compute-bound)    │    │  (paged blocks)    │   │ (bandwidth-bound)│  │  |
+|  │   └────────────────────┘    └────────────────────┘   └──────────────────┘  │  |
+|  └────────────────────────────────┬───────────────────────────────────────────┘  |
+|                                   │                                               |
+|  ┌────────────────────────────────┴───────────────────────────────────────────┐  |
+|  │              Core Inference Backend                                        │  |
+|  │   [llama-cpp-python (GGUF)]         [Rust Engine (HF / SafeTensors)]       │  |
+|  │   PagedAttention Memory Manager     Continuous Batching Scheduler          │  |
+|  │   Speculative Decoding              Prefix Caching                         │  |
+|  └────────────────────────────────┬───────────────────────────────────────────┘  |
+|                                   │                                               |
+|  ┌────────────────────────────────┴───────────────────────────────────────────┐  |
+|  │              Phase 1 — Model Architectures                                 │  |
+|  │   ┌──────────────────┐  ┌─────────────────┐  ┌────────────────────────┐   │  |
+|  │   │  Standard        │  │  Mamba SSM      │  │  Jamba Hybrid          │   │  |
+|  │   │  Attention Layers│  │  Layers (Phase 1)│  │  Attention + Mamba     │   │  |
+|  │   └──────────────────┘  └─────────────────┘  │  + MoE FFN (Phase 1)   │   │  |
+|  │                                               └────────────────────────┘   │  |
+|  └────────────────────────────────┬───────────────────────────────────────────┘  |
+|                                   │                                               |
+|  ┌────────────────────────────────┴───────────────────────────────────────────┐  |
+|  │              Phase 2 — Training Engine                                     │  |
+|  │   ┌──────────┐  ┌──────────┐  ┌──────────────┐  ┌──────────────────────┐  │  |
+|  │   │  GRPO    │  │  CGAR   │  │     PRM       │  │  LongR Dense Rewards  │  │  |
+|  │   │  (RL)    │  │ Curriculum│  │ Step Rewards  │  │  Token-level NLL ΔIG  │  │  |
+|  │   └──────────┘  └──────────┘  └──────────────┘  └──────────────────────┘  │  |
+|  │   LoRA / QLoRA / Full Fine-Tuning                                           │  |
+|  │   Muon / AdamW / SGD Optimizers    LR Schedulers   Checkpoint Management   │  |
+|  └────────────────────────────────┬───────────────────────────────────────────┘  |
+|                                   │                                               |
+|  ┌────────────────────────────────┴───────────────────────────────────────────┐  |
+|  │                         CUDA Kernels                                       │  |
+|  └────────────────────────────────────────────────────────────────────────────┘  |
+|                                                                                   |
+|  ┌────────────────────────────────────────────────────────────────────────────┐  |
+|  │  Install & Deploy: install.sh | airgap-bundle.sh | offline mode             │  |
+|  └────────────────────────────────────────────────────────────────────────────┘  |
++-----------------------------------------------------------------------------------+
+```
+
+---
+
+## Project Structure
+
+```
+swiftllm/
+├── install.sh                        # Installer (GPU detection, venv, Rust build)
+├── airgap-bundle.sh                  # Air-gap bundle creator (offline deploy)
+│
+├── python/swiftllm/                  # Python package
+│   ├── __init__.py                   #   Public API & lazy training imports
+│   ├── engine.py                     #   LLM / AsyncLLM / LLMEngine
+│   │                                 #   + generate_with_self_consistency()
+│   │                                 #   + generate_with_refinement()
+│   │                                 #   + generate_best_of_n()
+│   ├── training.py                   #   Trainer / GrpoTrainer / fine_tune / grpo_train
+│   ├── sampling.py                   #   Sampling strategies + SelfConsistencySampler
+│   ├── config.py                     #   All config dataclasses (Phase 1–3)
+│   │                                 #   GrpoConfig, CgarConfig, PrmConfig, LongRewardConfig
+│   │                                 #   SelfConsistencyConfig, RefinementConfig
+│   │                                 #   VerificationConfig, DisaggregatedServingConfig
+│   ├── cli.py                        #   CLI: serve/generate/train/finetune/grpo/chat/…
+│   └── model_resolver.py             #   HuggingFace / local / offline resolution
+│
+├── crates/
+│   ├── swiftllm-core/                # Core engine
+│   │   └── src/
+│   │       ├── sampling/
+│   │       │   ├── mod.rs            #   Sampling module root
+│   │       │   ├── strategies.rs     #   Greedy, top-k, top-p, beam search
+│   │       │   └── self_consistency.rs  # Phase 3: majority voting
+│   │       ├── inference/
+│   │       │   ├── mod.rs            #   Inference module root
+│   │       │   ├── refinement.rs     #   Phase 3: self-refinement pipeline
+│   │       │   └── verification.rs   #   Phase 3: Best-of-N dense verification
+│   │       ├── serving/
+│   │       │   ├── mod.rs            #   Serving module root
+│   │       │   └── disaggregated.rs  #   Phase 3: disaggregated prefill/decode
+│   │       ├── scheduler/            #   Continuous batching scheduler
+│   │       ├── memory/               #   PagedAttention block manager
+│   │       └── engine.rs             #   Core engine step loop
+│   │
+│   ├── swiftllm-models/              # Model loading & architectures
+│   │   └── src/
+│   │       ├── mamba.rs              #   Phase 1: Mamba SSM layers
+│   │       ├── moe.rs                #   Phase 1: Mixture-of-Experts FFN
+│   │       ├── jamba.rs              #   Phase 1: Jamba hybrid (Attn + Mamba + MoE)
+│   │       └── …
+│   │
+│   ├── swiftllm-training/            # Training engine
+│   │   └── src/
+│   │       ├── grpo.rs               #   Phase 2: GRPO optimizer + rewards
+│   │       ├── curriculum.rs         #   Phase 2: CgarScheduler + PhasedSpecialisation
+│   │       ├── process_reward.rs     #   Phase 2: Process Reward Models (PRM)
+│   │       ├── long_reward.rs        #   Phase 2: LongR dense token-level rewards
+│   │       ├── config.rs             #   TrainingConfig (superset of Python's)
+│   │       ├── trainer.rs            #   Training loop + curriculum integration
+│   │       ├── optimizer.rs          #   AdamW, SGD, LR schedulers
+│   │       ├── muon.rs               #   Muon optimizer
+│   │       ├── fine_tuning.rs        #   LoRA, QLoRA, full fine-tuning
+│   │       ├── data.rs               #   Data loading (JSONL, CSV, text)
+│   │       └── metrics.rs            #   Training metrics & logging
+│   │
+│   ├── swiftllm-cuda/                # CUDA kernel bindings
+│   └── swiftllm-server/              # HTTP server (OpenAI API, auth, security)
+│       └── src/api/openai.rs         #   OpenAI-compatible chat completions endpoint
+│
+└── examples/
+    ├── basic_inference.py            # Simple inference
+    ├── streaming.py                  # Streaming generation
+    ├── batch_processing.py           # High-throughput batch processing
+    ├── openai_server.py              # OpenAI API server
+    ├── multi_gpu.py                  # Multi-GPU inference
+    ├── fine_tuning.py                # LoRA and QLoRA fine-tuning
+    ├── training.py                   # Full training with callbacks and config management
+    ├── self_consistency.py           # Phase 3: self-consistency voting demo
+    └── grpo_training.py              # Phase 2: GRPO + CGAR + PRM + LongR training demo
+```
+
+---
+
+## Examples
+
+See the [examples/](examples/) directory:
+
+| File | What It Demonstrates |
+|------|---------------------|
+| [`basic_inference.py`](examples/basic_inference.py) | Simple LLM inference with SamplingParams |
+| [`streaming.py`](examples/streaming.py) | Streaming token generation |
+| [`batch_processing.py`](examples/batch_processing.py) | High-throughput batch inference |
+| [`openai_server.py`](examples/openai_server.py) | OpenAI-compatible API server |
+| [`multi_gpu.py`](examples/multi_gpu.py) | Tensor-parallel multi-GPU inference |
+| [`fine_tuning.py`](examples/fine_tuning.py) | LoRA and QLoRA fine-tuning |
+| [`training.py`](examples/training.py) | Full training with callbacks and checkpoint management |
+| [`self_consistency.py`](examples/self_consistency.py) | **Phase 3**: self-consistency voting — three demo modes including offline `SelfConsistencySampler.vote()` |
+| [`grpo_training.py`](examples/grpo_training.py) | **Phase 2**: GRPO + CGAR + PRM + LongR — auto-generates synthetic math data, full config resolution, metric callback |
+
+---
+
+## OpenAI-Compatible Server
 
 ```bash
 # Start with API key authentication
@@ -346,462 +1241,237 @@ curl http://localhost:8000/v1/chat/completions \
     "model": "my-model",
     "messages": [{"role": "user", "content": "Hello!"}]
   }'
+
+# Available endpoints
+GET  /health                  # Health check
+GET  /v1/models               # List loaded models
+POST /v1/chat/completions     # Chat completions (streaming supported)
+GET  /metrics                 # Prometheus + JSON metrics
 ```
 
-## Configuration
+---
 
-### Engine Configuration
+## Model Resolver API
 
 ```python
-from swiftllm import LLM
+from swiftllm import resolve_model
 
-llm = LLM(
-    model="meta-llama/Llama-2-7b-hf",
-    download_dir="/data/models",          # Where to store downloaded models
-    tensor_parallel_size=2,               # Use 2 GPUs
-    gpu_memory_utilization=0.90,          # Use 90% of GPU memory
-    max_model_len=4096,                   # Maximum sequence length
-    dtype="float16",                      # Data type
-    quantization="awq",                   # Quantization method
+# Resolve a HuggingFace URL to a local path (downloads if needed)
+path = resolve_model("https://huggingface.co/org/repo/blob/main/model.gguf")
+
+# Resolve a repo:filename shorthand
+path = resolve_model("org/repo:model.q4_k_m.gguf")
+
+# Resolve a full repo (downloads all shards)
+path = resolve_model("meta-llama/Llama-2-7b-hf")
+
+# Local paths are validated and returned as-is
+path = resolve_model("/data/models/my-model.gguf")
+
+# Control download location and use gated-model token
+path = resolve_model(
+    "meta-llama/Llama-2-7b-hf",
+    download_dir="/data/models",
+    token="hf_...",
 )
 ```
 
-### Sampling Parameters
-
-```python
-from swiftllm import SamplingParams
-
-params = SamplingParams(
-    temperature=0.7,        # Sampling temperature
-    top_p=0.9,              # Nucleus sampling
-    top_k=50,               # Top-k sampling
-    max_tokens=256,         # Maximum tokens to generate
-    stop=["</s>"],          # Stop sequences
-    presence_penalty=0.1,   # Presence penalty
-    frequency_penalty=0.1,  # Frequency penalty
-)
-```
-
-### Environment Variables
-
-Every `SWIFTLLM_*` variable maps to a field in `EngineConfig` or `ServerConfig`. Set them in your shell profile, systemd unit, or Docker Compose file — they are read at startup and override coded defaults. Explicit constructor arguments always take final precedence.
-
-#### GPU & Memory
-
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `SWIFTLLM_GPU_MEMORY_UTILIZATION` | `0.90` | Fraction of GPU VRAM available for model weights + KV cache (0.0–1.0). Raise to ~0.95 on dedicated inference hosts; lower to 0.7 when sharing a GPU. |
-| `SWIFTLLM_GPU_OVERHEAD_MB` | `0` | VRAM (in MB) to reserve for the OS, desktop, and other processes. Subtracted from usable memory before allocation. Useful when `GPU_MEMORY_UTILIZATION` alone isn't precise enough. |
-| `SWIFTLLM_NUM_GPU_LAYERS` | all | Number of model layers to offload to GPU. Set to `0` for CPU-only, `999` for all layers. Partial offload saves VRAM at the cost of speed. |
-| `SWIFTLLM_SWAP_SPACE` | `4.0` | CPU swap space in GiB for KV cache offloading when GPU memory is exhausted. |
-| `SWIFTLLM_CPU_OFFLOAD_GB` | `0.0` | Amount of model weights (in GiB) to keep on CPU RAM instead of GPU. Trades latency for lower VRAM usage. |
-| `SWIFTLLM_KV_CACHE_DTYPE` | `auto` | Data type for the KV cache. `auto` matches model dtype. Set to `fp8_e4m3` or `fp8_e5m2` to halve KV cache memory (with minor quality loss). |
-| `SWIFTLLM_BLOCK_SIZE` | `16` | Number of tokens per block in PagedAttention. Allowed: `8`, `16`, `32`. Smaller blocks waste less memory on short sequences; larger blocks reduce overhead on long ones. |
-| `SWIFTLLM_FLASH_ATTENTION` | `true` | Enable FlashAttention kernels. Disable for debugging or unsupported hardware (`false`). |
-| `SWIFTLLM_ENFORCE_EAGER` | `false` | Disable CUDA graph capture; use eager execution. Set to `true` when CUDA graphs cause OOM or for easier profiling. |
-| `CUDA_VISIBLE_DEVICES` | (all) | Standard CUDA variable. Restrict which GPUs are visible, e.g. `0,2`. |
-| `PYTORCH_CUDA_ALLOC_CONF` | — | PyTorch allocator tuning, e.g. `expandable_segments:True,max_split_size_mb:512`. |
-
-#### Tensor Parallelism & Multi-GPU
-
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `SWIFTLLM_TENSOR_PARALLEL_SIZE` | `1` | Number of GPUs for tensor parallelism (splits every layer across N GPUs). Must evenly divide attention heads. |
-| `SWIFTLLM_PIPELINE_PARALLEL_SIZE` | `1` | Number of pipeline-parallel stages (splits layers sequentially across GPUs). Combine with tensor parallelism for very large models. |
-| `NCCL_DEBUG` | — | NCCL logging: `INFO`, `WARN`, `TRACE`. Essential for debugging multi-GPU communication. |
-| `NCCL_P2P_DISABLE` | `0` | Set to `1` to disable GPU peer-to-peer. Try `1` if you see hangs on certain PCIe topologies. |
-| `NCCL_IB_DISABLE` | `0` | Set to `1` to disable InfiniBand for multi-node setups. |
-
-#### Scheduling & Batching
-
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `SWIFTLLM_MAX_NUM_SEQS` | `256` | Maximum number of concurrent sequences (requests) in a batch. Lower values reduce latency; higher values improve throughput. |
-| `SWIFTLLM_MAX_NUM_BATCHED_TOKENS` | `8192` | Maximum total tokens processed in one forward pass (prefill + decode). Directly controls peak GPU compute per step. |
-| `SWIFTLLM_MAX_PADDINGS` | `256` | Maximum padding tokens tolerated per batch. Padding wastes compute — keep low for variable-length workloads. |
-| `SWIFTLLM_SCHEDULER_POLICY` | `fcfs` | Scheduling policy: `fcfs` (first-come-first-served), `sjf` (shortest-job-first), `priority`. |
-| `SWIFTLLM_PREEMPTION_MODE` | `swap` | How to handle preemption when memory is full: `swap` (KV cache to CPU) or `recompute` (re-run prefill). |
-| `SWIFTLLM_ENABLE_PREFIX_CACHING` | `false` | Reuse KV cache across requests sharing the same prompt prefix (system prompt, few-shot examples). Major speedup for chat-style workloads. |
-| `SWIFTLLM_ENABLE_CHUNKED_PREFILL` | `false` | Interleave prefill and decode within the same batch. Reduces time-to-first-token for long prompts. |
-| `SWIFTLLM_NUM_PARALLEL` | `1` | Number of parallel inference slots per loaded model. Each slot allocates its own KV cache. Increase for higher concurrent throughput. |
-| `SWIFTLLM_MAX_LOADED_MODELS` | `1` | Maximum number of models held in GPU memory simultaneously. Excess models are evicted LRU. |
-| `SWIFTLLM_KEEP_ALIVE` | `300` | Seconds a model stays loaded in memory after the last request. Set to `0` to unload immediately, `-1` to keep forever. |
-
-#### Speculative Decoding
-
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `SWIFTLLM_SPECULATIVE_MODEL` | — | Path or HuggingFace ID of the draft model for speculative decoding. Must share the same vocabulary as the main model. |
-| `SWIFTLLM_NUM_SPECULATIVE_TOKENS` | `5` | Tokens to draft per step. Higher values increase potential speedup but waste compute on rejected tokens. |
-| `SWIFTLLM_SPECULATIVE_MAX_MODEL_LEN` | — | Override max sequence length for the draft model if it differs from the main model. |
-
-#### Model & Weights
-
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `SWIFTLLM_MODEL_DIR` | `~/.cache/swiftllm/models` | Default directory for downloaded models. All download/resolve calls use this as the cache root. |
-| `SWIFTLLM_OFFLINE` | `false` | Set to `1` / `true` / `yes` to disable all network downloads (air-gapped / offline mode). Only local and cached models are used. |
-| `SWIFTLLM_DTYPE` | `auto` | Data type for model weights: `auto`, `float16`, `bfloat16`, `float32`, `int8`, `int4`, `fp8_e4m3`, `fp8_e5m2`. |
-| `SWIFTLLM_QUANTIZATION` | `none` | Quantization method: `none`, `awq`, `gptq`, `squeezellm`, `gguf`. |
-| `SWIFTLLM_MAX_MODEL_LEN` | (model default) | Override the model's max sequence length. Lowering this reduces memory allocation. |
-| `SWIFTLLM_TRUST_REMOTE_CODE` | `false` | Allow executing custom code from HuggingFace model repos (required by some architectures). |
-| `SWIFTLLM_DEVICE` | `auto` | Device to run on: `auto`, `cuda`, `cpu`, `metal`, `rocm`. |
-| `SWIFTLLM_SEED` | `0` | Global random seed for reproducibility. |
-| `SWIFTLLM_MAX_PARALLEL_LOADING` | `1` | Number of parallel threads for loading model shards from disk. Increase on NVMe for faster startup. |
-| `HF_TOKEN` | — | HuggingFace API token for accessing gated models (e.g. LLaMA, Gemma). |
-
-#### LoRA
-
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `SWIFTLLM_ENABLE_LORA` | `false` | Enable LoRA adapter support in the inference engine. |
-| `SWIFTLLM_MAX_LORAS` | `1` | Maximum number of LoRA adapters that can be loaded simultaneously. |
-| `SWIFTLLM_MAX_LORA_RANK` | `16` | Maximum LoRA rank supported. Higher ranks use more memory. |
-
-#### Server & Networking
-
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `SWIFTLLM_HOST` | `0.0.0.0` | Bind address for the HTTP server. Use `127.0.0.1` to restrict to local access only. |
-| `SWIFTLLM_PORT` | `8000` | Port for the HTTP server. |
-| `SWIFTLLM_API_KEY` | — | API key for bearer-token authentication. When set, all requests must include `Authorization: Bearer <key>`. |
-| `SWIFTLLM_CORS_ALLOW_ORIGINS` | `*` | Comma-separated list of allowed CORS origins. Set to specific origins in production. |
-| `SWIFTLLM_SSL_CERTFILE` | — | Path to TLS certificate for HTTPS. |
-| `SWIFTLLM_SSL_KEYFILE` | — | Path to TLS private key for HTTPS. |
-| `SWIFTLLM_ROOT_PATH` | — | URL prefix / root path for reverse-proxy deployments (e.g. `/v1`). |
-| `SWIFTLLM_SERVED_MODEL_NAME` | — | Override the model name returned in API responses (useful for A/B routing). |
-| `SWIFTLLM_MAX_LOG_LEN` | — | Truncate request/response logs to this many characters. Prevents logging large prompts. |
-| `SWIFTLLM_MAX_MODEL_LEN_LIMIT` | — | Hard server-side cap on `max_model_len` regardless of client request. |
-| `SWIFTLLM_MAX_NUM_SEQS_LIMIT` | — | Hard server-side cap on concurrent sequences. |
-| `SWIFTLLM_RESPONSE_ROLE` | `assistant` | Default role name in chat completion responses. |
-
-#### Build & CUDA
-
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `CUDA_PATH` / `CUDA_HOME` | — | Path to CUDA toolkit. Used by the Rust build to locate `libcuda`, `nvcc`, and headers. |
-| `CUDACXX` | — | Path to `nvcc` binary. Set automatically by `install.sh` for llama-cpp-python GPU builds. |
-| `CMAKE_ARGS` | — | Extra CMake arguments for llama-cpp-python build. Set to `-DGGML_CUDA=on` for GPU support. |
-
-#### Logging & Debug
-
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `RUST_LOG` | `info` | Rust-side log level for all crates: `trace`, `debug`, `info`, `warn`, `error`. Use `swiftllm_server=debug` for per-crate control. |
-| `SWIFTLLM_LOG_LEVEL` | — | Python-side log level override: `DEBUG`, `INFO`, `WARNING`, `ERROR`. |
-| `SWIFTLLM_NO_USAGE_STATS` | `false` | Set to `1` to disable anonymous telemetry (if applicable). |
-
-## CLI Commands
-
-```bash
-# Download a model
-swiftllm download -m <model> [--download-dir <dir>]
-
-# Start server
-swiftllm serve -m <model> --port 8000 [--api-key <key>]
-
-# Run inference
-swiftllm generate -m <model> -p "Hello" --max-tokens 256
-
-# Interactive chat
-swiftllm chat -m <model>
-
-# Benchmark
-swiftllm benchmark -m <model> --num-prompts 100
-
-# Model info
-swiftllm info -m <model>
-
-# Convert model format
-swiftllm convert -i <path> -o <path> --format safetensors
-
-# Train / fine-tune
-swiftllm train -m <model> --train-data <data> --method lora
-swiftllm finetune -m <model> --train-data <data> --lora-r 16
-```
-
-### Model Specifiers
-
-The `-m` / `--model` flag accepts multiple formats:
-
-| Format | Example | Description |
-|--------|---------|-------------|
-| Local path | `/data/models/model.gguf` | Use a model already on disk |
-| HF repo ID | `meta-llama/Llama-2-7b-hf` | Download full repo |
-| HF URL | `https://huggingface.co/org/repo/blob/main/file.gguf` | Download single file |
-| Repo:file | `org/repo:model.q4_k_m.gguf` | Download single file (shorthand) |
-
-## Architecture
-
-```
-+---------------------------------------------------------------------+
-|                       SwiftLLM Architecture                         |
-+---------------------------------------------------------------------+
-|  +----------------+  +----------------+  +---------------------+    |
-|  |  OpenAI API    |  |  Python SDK    |  |  CLI Interface      |    |
-|  | (auth, headers)|  | (sync & async) |  | (serve/train/chat)  |    |
-|  +-------+--------+  +-------+--------+  +--------+------------+    |
-|          |                    |                     |                |
-|  +-------+--------------------+---------------------+---------+     |
-|  |          Model Resolver & Downloader                       |     |
-|  |   (HuggingFace Hub / Local Path / GGUF URL / Offline)      |     |
-|  +----------------------------+-------------------------------+     |
-|                               |                                     |
-|  +----------------------------+-------------------------------+     |
-|  |              Inference Backend                              |     |
-|  |    [llama-cpp-python (GGUF)]  [Rust Engine (HF/ST)]        |     |
-|  +----------------------------+-------------------------------+     |
-|                               |                                     |
-|  +----------------------------+-------------------------------+     |
-|  |          PagedAttention Memory Manager                      |     |
-|  +----------------------------+-------------------------------+     |
-|                               |                                     |
-|  +----------------------------+-------------------------------+     |
-|  |          Training & Fine-Tuning Engine                      |     |
-|  |    [LoRA/QLoRA/Full]  [Muon/AdamW/SGD]  [LR Schedulers]    |     |
-|  +----------------------------+-------------------------------+     |
-|                               |                                     |
-|  +----------------------------+-------------------------------+     |
-|  |                    CUDA Kernels                             |     |
-|  +------------------------------------------------------------+     |
-|                                                                     |
-|  +------------------------------------------------------------+     |
-|  |  Install & Deploy: install.sh | airgap-bundle.sh | offline  |     |
-|  +------------------------------------------------------------+     |
-+---------------------------------------------------------------------+
-```
-
-## Multi-GPU Support
-
-SwiftLLM supports tensor parallelism for large models:
-
-```python
-llm = LLM(
-    model="meta-llama/Llama-2-70b-hf",
-    tensor_parallel_size=4,
-)
-```
-
-## Examples
-
-See the [examples/](examples/) directory for more:
-
-- [basic_inference.py](examples/basic_inference.py) - Simple inference
-- [streaming.py](examples/streaming.py) - Streaming generation
-- [batch_processing.py](examples/batch_processing.py) - High-throughput batch processing
-- [openai_server.py](examples/openai_server.py) - OpenAI API server
-- [multi_gpu.py](examples/multi_gpu.py) - Multi-GPU inference
-- [fine_tuning.py](examples/fine_tuning.py) - LoRA and QLoRA fine-tuning
-- [training.py](examples/training.py) - Full training with callbacks and config management
+---
 
 ## Security
 
 SwiftLLM includes built-in security features across the server, installer, and runtime:
 
 **Server**
-- **API Key Authentication**: Protect endpoints with `--api-key` flag
-- **Input Validation**: Request size limits, parameter range checks, content length limits
-- **Security Headers**: HSTS, X-Content-Type-Options, X-Frame-Options, X-Request-ID
-- **Sanitized Errors**: Internal errors are logged server-side but never exposed to clients
-- **Request Size Limits**: 10 MB maximum request body to prevent abuse
-- **Safe JSON Serialization**: SSE streaming uses `serde_json` to prevent injection
+- **API Key Authentication** — Protect endpoints with `--api-key` flag
+- **Input Validation** — Request size limits, parameter range checks, content length limits
+- **Security Headers** — HSTS, X-Content-Type-Options, X-Frame-Options, X-Request-ID
+- **Sanitized Errors** — Internal errors logged server-side only; never exposed to clients
+- **Request Size Limits** — 10 MB maximum request body to prevent abuse
+- **Safe JSON Serialization** — SSE streaming uses `serde_json` to prevent injection
 
 **Installer & Runtime**
-- **Supply Chain Verification**: SHA256 checksum verification for `rustup-init` downloads
-- **Input Sanitization**: Platform tags and paths are validated before use in shell commands
-- **Path Traversal Protection**: Checkpoint and cache directory operations validate resolved paths stay within expected boundaries
-- **UTF-8 Safety**: Data loading uses char-boundary-safe truncation to prevent panics on multi-byte input
-- **Numeric Safety**: Optimizer arithmetic guards against division by zero and unbounded iteration
+- **Supply Chain Verification** — SHA256 checksum verification for `rustup-init` downloads
+- **Input Sanitization** — Platform tags and paths validated before use in shell commands
+- **Path Traversal Protection** — Checkpoint and cache operations validate resolved paths stay within expected boundaries
+- **UTF-8 Safety** — Data loading uses char-boundary-safe truncation to prevent panics on multi-byte input
+- **Numeric Safety** — Optimizer arithmetic guards against division by zero and unbounded iteration
 
-## Project Structure
-
-```
-swiftllm/
-  src/lib.rs                    # PyO3 Python bindings
-  install.sh                    # Installer (GPU detection, venv, build)
-  airgap-bundle.sh              # Air-gap bundle creator (offline deploy)
-  python/swiftllm/              # Python package
-    engine.py                   #   LLM inference API
-    training.py                 #   Training & fine-tuning API
-    cli.py                      #   CLI (serve, train, finetune, chat, ...)
-    model_resolver.py           #   HuggingFace / local / offline model resolution
-    sampling.py                 #   Sampling strategies (top-k, top-p, beam, ...)
-    config.py                   #   Configuration helpers
-  crates/
-    swiftllm-core/              # Core engine (scheduler, memory, sampling)
-    swiftllm-models/            # Model loading and architectures
-    swiftllm-cuda/              # CUDA kernel bindings
-    swiftllm-server/            # HTTP server (OpenAI API, auth, security)
-    swiftllm-training/          # Training engine (Rust)
-      src/config.rs             #   Training configuration
-      src/data.rs               #   Data loading (JSONL, CSV, text)
-      src/optimizer.rs          #   AdamW, SGD, LR schedulers
-      src/muon.rs               #   Muon optimizer (Newton-Schulz orthogonalization)
-      src/fine_tuning.rs        #   LoRA, QLoRA, full fine-tuning
-      src/metrics.rs            #   Training metrics & logging
-      src/trainer.rs            #   Training loop & checkpointing
-  examples/                     # Example scripts
-```
+---
 
 ## Changelog
+
+### v2.1.0-beta
+
+**Phase 1 — Hybrid Model Architectures** (`crates/swiftllm-models/`)
+
+- **New**: `mamba.rs` — `MambaConfig`, `MambaLayer`, `MambaBlock`; selective SSM with full discretization (∆, A, B, C, D projections), hardware-aware parallel scan, 16 unit tests
+- **New**: `moe.rs` — `MoeConfig`, `MoeLayer`; sparse top-k expert routing with load-balancing auxiliary loss, capacity enforcement, 14 tests
+- **New**: `jamba.rs` — `JambaConfig`, `JambaLayer`; interleaved Attention + Mamba + MoE hybrid with configurable `attn_layer_offset`, 15 tests
+- Updated `swiftllm-models/src/lib.rs` and `swiftllm-models/src/mod.rs` to re-export all Phase 1 public types
+
+**Phase 2 — Training Enhancements** (`crates/swiftllm-training/`)
+
+- **New**: `grpo.rs` — `GrpoConfig`, `GroupSamples`, `GrpoLoss`; group-relative advantage computation, PPO clipped policy gradient, KL divergence penalty, rule-based reward functions (correctness, format, length), 16 tests
+- **New**: `curriculum.rs` — `CgarConfig`, `CgarScheduler`, `PhasedSpecialisationConfig`, `PhasedSpecialisationScheduler`, `CurriculumState`, `CurriculumTick`; smooth Hermite phase transitions, hybrid Jamba specialisation scheduling, 14 tests
+- **New**: `process_reward.rs` — `RulePrm`, `NeuralPrm`, step boundary parsing, 5 aggregation strategies (Min/Mean/Product/LastStep/WeightedMean), PRM+outcome blending, 14 tests
+- **New**: `long_reward.rs` — `LongRewardConfig`, `DenseAggregation`, token-level NLL relative information gain, batch normalisation, 12 tests
+- Updated `trainer.rs` — integrates `CurriculumState`, per-step `apply_curriculum_lr()`
+- Updated `config.rs` — `TrainingConfig` gains `num_layers`, `grpo`, `cgar`, `phased_spec`, `prm`, `long_reward_weight`
+- Updated `lib.rs` — re-exports all Phase 2 public types
+
+**Phase 3 — Inference Enhancements** (`crates/swiftllm-core/`)
+
+- **New**: `sampling/self_consistency.rs` — `SelfConsistencyConfig`, `AnswerExtractor`, `ConsistencyCandidate`, majority voting with log-prob tiebreaking, 4 extractor strategies, 14 tests
+- **New**: `inference/refinement.rs` — `RefinementConfig`, `StoppingCriterion`, `ImprovementMetric`, `RefinementPipeline`; `normalised_edit_distance()` O(min(m,n)) 2-row DP, 15 tests
+- **New**: `inference/verification.rs` — `VerificationConfig`, `ScoringStrategy`, `ScoredCandidate`, `verify_and_rank()`, `best_of_n_by_logprob()`, 14 tests
+- **New**: `serving/disaggregated.rs` — `DisaggregatedConfig`, `DisaggregatedScheduler`, `WorkerRole`, `WorkerSpec`, `SchedulingPolicy`, `KvTransferMetadata`, `optimal_worker_ratio()`, 15 tests
+- Updated `lib.rs`, `sampling/mod.rs` — re-export all Phase 3 public types
+
+**Python API Updates**
+
+- `config.py` — 14 new dataclasses: `SelfConsistencyConfig`, `RefinementConfig`, `VerificationConfig`, `DisaggregatedServingConfig`, `GrpoConfig`, `CgarConfig`, `PrmConfig`, `LongRewardConfig`, plus 7 new enums; `EngineConfig` gains 4 optional nested inference fields; full `from_dict()`/`to_dict()` round-trip support
+- `training.py` — `TrainingConfig` gains Phase 2 fields; new `GrpoTrainer` class with CGAR layer scheduling (smooth Hermite); `grpo_train()` convenience function; JSON round-trip with enum deserialisation
+- `sampling.py` — `SelfConsistencySampler` with 4 extractor strategies, majority voting, log-prob tiebreaking; `SelfConsistencyResult` dataclass
+- `engine.py` — `LLM.generate_with_self_consistency()`, `LLM.generate_with_refinement()`, `LLM.generate_best_of_n()`; helper functions `_normalised_edit_distance()`, `_rule_score()`; `RefinementOutput`, `VerifiedOutput` dataclasses
+- `__init__.py` — full re-export of all new types; lazy training set extended to `GrpoTrainer`, `grpo_train`
+- `cli.py` — `generate` command gains `--self-consistency`, `--refinement-rounds`, `--best-of-n` flags; new `grpo` subcommand with full CGAR/PRM/LongR flag set
+- **New**: `examples/self_consistency.py` — three demo modes (basic SC, sentinel extractor, offline vote)
+- **New**: `examples/grpo_training.py` — full GRPO + CGAR + PRM + LongR demo with synthetic math data
+
+---
 
 ### v2.0.1-beta
 
 **Training UX Fixes**
-- **Fix**: `Trainer.train()` now prints a visible `[SIMULATED]` banner at the start of every run, making it obvious that the current training loop is a stub (synthetic 100-step loss curve, no weights loaded, no gradients) rather than a real training pass — previously the only indication was an inline code comment, so users running `swiftllm train` / `swiftllm finetune` saw convincing metrics with no way to know real training wasn't wired up
-- **Fix**: `swiftllm train` and `swiftllm finetune` now validate `--train-data` (and `--eval-data`) up front — missing paths raise `FileNotFoundError` with a helpful message, non-regular files (e.g. directories) are rejected, and empty files raise `ValueError`. Previously a bogus path silently "succeeded" all the way through the simulated loop and wrote a final checkpoint
-- Validation also covers the path fields loaded from `--config` JSON so typos in saved configs fail fast
+- `Trainer.train()` now prints a visible `[SIMULATED]` banner at the start of every run
+- `swiftllm train` and `swiftllm finetune` validate `--train-data` (and `--eval-data`) up front — missing paths raise `FileNotFoundError`, empty files raise `ValueError`
+- Validation also covers path fields loaded from `--config` JSON
 
 **Regression Coverage**
-- Full regression matrix run on Ubuntu 24.04 + CUDA 13.0 (RTX PRO 4000 Blackwell): install → download → generate (18.61 tok/s) → finetune (LoRA) → train (LoRA / QLoRA / full) → cleanup — all passing
-- Verified checkpoint artifacts written correctly: `training_config.json` + `trainer_state.json` per checkpoint dir, `save_total_limit` rotation behaves as documented
+- Full regression matrix on Ubuntu 24.04 + CUDA 13.0 (RTX PRO 4000 Blackwell): install → download → generate → finetune → train → cleanup — all passing
+- Checkpoint artifacts verified: `training_config.json` + `trainer_state.json` per checkpoint dir, `save_total_limit` rotation behaves as documented
+
+---
 
 ### v2.0.0.2-alpha
 
 **Regression Test Fixes**
-- **Fix**: Added `fastapi>=0.100` and `uvicorn>=0.23` as `[serve]` optional dependency in `pyproject.toml` — `swiftllm serve` previously failed on fresh installs with `Error: FastAPI and uvicorn are required for serving`
-- **Fix**: `install.sh` now installs the wheel with `[serve]` extras so the API server works out of the box after installation
-- **Fix**: `airgap-bundle.sh` now includes `fastapi` and `uvicorn` in the offline wheel downloads so `swiftllm serve` works in air-gapped environments
-- Regression tested end-to-end on Ubuntu 24.04 (Python 3.12, RTX PRO 4000 Blackwell, CUDA 13.0): install → download model → generate → chat → serve + API call — all passing
+- Added `fastapi>=0.100` and `uvicorn>=0.23` as `[serve]` optional dependencies
+- `install.sh` installs the wheel with `[serve]` extras so the API server works out of the box
+- `airgap-bundle.sh` now includes `fastapi` and `uvicorn` in offline wheel downloads
 
 **CPU and ARM Wheel Support**
-- **New**: CPU-only build is now the default — `maturin build --release` (or `./install.sh --cpu`) produces a portable wheel with zero CUDA dependencies, buildable on any host including Apple Silicon, AWS Graviton, Raspberry Pi 4/5, Jetson, and Ampere ARM servers
-- **New**: `swiftllm` top-level crate now exposes explicit `cpu` and `cuda` Cargo features; `cpu` is the default, CUDA is opt-in via `./install.sh --gpu` or `cargo build --features cuda`
-- **New**: `swiftllm-core` default features changed from `["cuda"]` to `[]` — the CUDA code paths remain `#[cfg(feature = "cuda")]`-gated and are only compiled when explicitly enabled
-- **New**: `airgap-bundle.sh --arch ARCH` flag (`x86_64`, `aarch64`, `arm64`) auto-maps to the correct pip platform tag (`manylinux2014_aarch64`, `macosx_11_0_arm64`, etc.) and rustup target triple — lets you build a cross-architecture bundle on a dev laptop and ship it to a remote ARM host
-- **New**: `airgap-bundle.sh` now normalizes `arm64` → `aarch64` for rustup targets (Apple Silicon reports `arm64` from `uname -m`, but Rust's target triple is `aarch64-apple-darwin`)
+- CPU-only build is now the default — produces a portable wheel with zero CUDA dependencies
+- Explicit `cpu` and `cuda` Cargo features; `cpu` is the default
+- `airgap-bundle.sh --arch ARCH` flag auto-maps to the correct pip platform tag and rustup target triple
 
 **Installer Portability Fixes**
-- **Fix**: Replaced non-portable `grep -oP 'release \K...'` (GNU PCRE) with portable `sed -n 's/.../\1/p'` for CUDA version detection — now works on macOS and BSD-based systems
-- **Fix**: `install.sh` pip upgrade no longer swallows stderr silently; now fails loudly with a helpful message when `pip install --upgrade` fails
-- **Fix**: PEP 668 handling — when `--no-venv` is used against an externally-managed system Python (Ubuntu 23.04+, Debian 12+), the installer detects the `EXTERNALLY-MANAGED` marker and automatically adds `--break-system-packages` with a warning recommending virtualenv
-- **Fix**: `airgap-bundle.sh` SHA256 verification now prefers `sha256sum` (Linux coreutils) with `shasum` fallback (macOS) — previously only worked on hosts with macOS `shasum`
-- **Fix**: Added `set -o pipefail` to both scripts so piped command failures propagate
-- **Fix**: Added `trap 'rm -rf "$BUNDLE_DIR"' EXIT` to `airgap-bundle.sh` for guaranteed temp-dir cleanup
-- **Fix**: Argument guards on `--venv`, `--model-dir`, `--model`, `-o`, `--platform`, `--arch` — missing values no longer silently consume the next flag
-- **Fix**: Python version check now correctly handles `major > 3` (was `major >= 3 && minor >= 8`, which would have failed for future Python 4.x)
-- **Fix**: `VENV_DIR` reference in verification step is now guarded when `--no-venv` is set
-- **Fix**: rsync in `airgap-bundle.sh` now excludes `.env*`, `*.pem`, `*.key`, `*.log`, and `models/` to prevent accidentally bundling secrets or pre-existing model files
+- Replaced non-portable `grep -oP` with portable `sed` for CUDA version detection
+- PEP 668 handling for externally-managed system Python
+- SHA256 verification prefers `sha256sum` with `shasum` fallback
+- `set -o pipefail` added to both scripts
 
 **Rust Code Quality**
-- **Critical**: Fixed 14 `partial_cmp().unwrap()` calls across `sampling/mod.rs`, `sampling/strategies.rs`, and `execution/speculative.rs` — replaced with `unwrap_or(Ordering::Equal)` to prevent panics on NaN logits (could crash inference on numerically unstable models)
-- **Critical**: Added `checked_add` + bounds validation in `gguf.rs` `load_weight()` and `load_weights()` — malformed GGUF files can no longer cause slice panics on mmap'd data
-- **High**: Replaced `try_into().unwrap()` in `safetensors.rs` header parser with proper `Result` propagation
-- Added `// SAFETY:` comments to all `unsafe` memory-map blocks in the loaders
+- Fixed 14 `partial_cmp().unwrap()` calls — replaced with `unwrap_or(Ordering::Equal)` to prevent NaN panics
+- Added `checked_add` + bounds validation in GGUF loader
+- Replaced `try_into().unwrap()` in SafeTensors header parser with proper `Result` propagation
 
-**Documentation**
-- New "Supported Platforms" table showing wheel tags for Linux/macOS × x86_64/aarch64
-- Cross-architecture airgap bundle examples (AWS Graviton, Apple Silicon)
-- Documented the new `cpu` / `cuda` Cargo features
+---
 
 ### v2.0.0.1-alpha
 
 **Air-Gapped / Offline Installation**
-- New `airgap-bundle.sh` script to create portable install archives on a connected machine (bundles source, pip wheels, `rustup-init`, and optional models)
-- `install.sh --airgap` flag for fully offline installation from a bundle
-- Runtime offline mode via `SWIFTLLM_OFFLINE=1` — disables all HuggingFace downloads and uses local cache only
-- `scan_local_cache()` walks the model cache directory for exact filename matches
-- `download_file()` and `download_repo()` transparently fall back to cache in offline mode
+- New `airgap-bundle.sh` script; `install.sh --airgap` flag; `SWIFTLLM_OFFLINE=1` runtime mode
 
 **Security Hardening**
-- **Critical**: Fixed JSON injection in SSE streaming — replaced raw `format!()` JSON construction with `serde_json::json!()` macro in `streaming.rs`
-- **Critical**: Fixed shell injection in `airgap-bundle.sh` — model names are now passed via `sys.argv` instead of string interpolation into Python code
-- **Critical**: Added SHA256 checksum verification for downloaded `rustup-init` binary in `airgap-bundle.sh`
-- **High**: Fixed word-splitting vulnerability in `install.sh` — `AIRGAP_PIP_FLAGS` converted from string to bash array
-- **High**: Added input validation for `--platform` tag and `--model-dir` path in installer scripts
-- **High**: Capped Muon optimizer Newton-Schulz iterations at 20 to prevent runaway loops; added epsilon floor to AdamW bias correction divisors to prevent division by zero
-- **Medium**: Tightened offline `download_repo()` directory matching from loose substring to exact name match, with symlink traversal protection
-- **Medium**: Added path validation in `Trainer.resume_from_checkpoint()` to prevent directory traversal via `..`
-- **Medium**: Fixed UTF-8 boundary-safe string truncation in `data.rs` — replaced byte-level slicing with `char_indices()` to prevent panics on multi-byte characters
-- **Medium**: Added LoRA buffer size validation in `fine_tuning.rs` `merge_weights()` to prevent out-of-bounds indexing on malformed adapters
+- Fixed JSON injection in SSE streaming (`serde_json::json!()`)
+- Fixed shell injection in `airgap-bundle.sh`
+- SHA256 checksum verification for `rustup-init`
+- Path traversal protection in `Trainer.resume_from_checkpoint()`
 
 **Bug Fixes**
-- Fixed use-after-move in `engine.rs` — `eos_token_id` now extracted before `config` is moved into struct
-- Fixed usize negation in `trainer.rs` — cast to `f64` before negation for exponential decay calculation
-- Fixed missing `mut` on `eval_data` parameter in `trainer.rs` evaluation loop
+- Fixed use-after-move in `engine.rs`
+- Fixed usize negation in `trainer.rs`
 - Added missing `tempfile` dev-dependency to `swiftllm-training` Cargo.toml
+
+---
 
 ### v2.0.0-alpha
 
 **Training & Fine-Tuning**
-- Added `swiftllm-training` Rust crate with full training infrastructure
-- LoRA, QLoRA, and full fine-tuning support with configurable adapters
-- Muon optimizer: Newton-Schulz orthogonalization on Nesterov momentum for fast convergence on matrix-shaped params, with automatic AdamW fallback for 1D params
-- AdamW and SGD optimizers with linear/cosine/constant LR schedulers
-- Dataset loading (JSONL, CSV, text) with instruction templates
-- Training metrics tracking with rolling windows and perplexity
+- `swiftllm-training` Rust crate with LoRA/QLoRA/full fine-tuning
+- Muon optimizer with Newton-Schulz orthogonalization
+- AdamW and SGD with linear/cosine/constant LR schedulers
 - Checkpoint save/load with configurable `save_total_limit`
-- Python `Trainer` class with callbacks, early stopping, and checkpoint management
+- Python `Trainer` class with callbacks and early stopping
 - CLI commands: `swiftllm train` and `swiftllm finetune`
-- Training examples: `examples/fine_tuning.py`, `examples/training.py`
 
 **Inference Engine**
-- Implemented core engine `step()` with batch processing and token sampling
-- Configurable EOS token ID per model (no longer hardcoded to 2)
-- Eliminated redundant read-then-write lock upgrade in sampling hot path
-- Fast path for greedy sampling — zero-allocation when no penalties are active
+- Core engine `step()` with batch processing and token sampling
+- Configurable EOS token ID per model
+- Fast path for greedy sampling — zero allocation when no penalties are active
 
 **Sampling Optimizations**
-- Replaced O(n log n) full sort with O(n) quickselect (`select_nth_unstable_by`) for top-k, beam search, and `get_top_logprobs`
-- Partial sort for `sample_top_n` — only the top N elements are fully sorted
-- Python: numerically stable `_log_softmax` replaces `log(probs + eps)` across all samplers
-- Python: `BeamSearchSampler` now maintains beam state across calls with proper expansion and pruning
-
-**Scheduler**
-- O(n) victim selection for preemption (was O(n log n) sort per step)
-
-**Training Crate Improvements**
-- Gradient clipping (`clip_grad_norm`) with global norm
-- LoRA `transform_grad` now applies `alpha/r` scaling to adapter gradients
-- AdamW bias correction uses `powf` instead of `powi` to avoid i32 overflow at large step counts
-- Exported `clip_grad_norm` from crate root
+- Replaced O(n log n) full sort with O(n) quickselect for top-k and beam search
+- Numerically stable `_log_softmax` across all Python samplers
 
 **Server & API**
-- API key authentication middleware (`--api-key` flag)
+- API key authentication middleware
 - Security headers: HSTS, X-Content-Type-Options, X-Frame-Options, X-Request-ID
 - Request body size limit (10 MB)
-- Input validation for chat completions (temperature, top_p, max_tokens, content length)
-- Sanitized error responses — internal details logged server-side only
-- `/metrics` endpoint with JSON and Prometheus text format (`Accept: text/plain`)
-- SSE streaming helpers for OpenAI-compatible streaming responses
+- `/metrics` endpoint (JSON + Prometheus text format)
+- SSE streaming for OpenAI-compatible streaming responses
 
-**Python API**
-- Complete PyO3 bindings: `PyEngine`, `PyEngineConfig`, `PySamplingParams`, `PyGenerationOutput`, `PyRequestOutput`
-- `EarlyStoppingConfig` for training with configurable patience and min_delta
-- `Trainer.resume_from_checkpoint()` class method
-- Checkpoint save/load with `save_total_limit` enforcement
-- Throughput (tok/s) in training log output
-
-**Added Airgap Support**
-- All in One package setup bundle on a connected device.
+---
 
 ### v1.0.0
 
 - Initial release
-- PagedAttention memory management with block allocator and copy-on-write
-- Continuous batching scheduler with preemption (swap/recompute)
+- PagedAttention memory management
+- Continuous batching with preemption (swap/recompute)
 - Token sampling: greedy, temperature, top-k, top-p, min-p, repetition penalty
-- OpenAI-compatible HTTP API (chat completions, completions, models)
+- OpenAI-compatible HTTP API
 - Python SDK: `LLM`, `AsyncLLM`, `SamplingParams`
 - CLI: serve, generate, benchmark, convert, info, chat, download
-- HuggingFace model downloading and resolution
-- GGUF model support via llama-cpp-python
+- HuggingFace model downloading and GGUF support via llama-cpp-python
+
+---
 
 ## Contributing
 
 Contributions are welcome! Please open an issue or pull request on GitHub.
 
+Before submitting a PR:
+1. Ensure all Rust tests pass: `cargo test --workspace`
+2. Ensure Python syntax is clean: `python3 -m py_compile python/swiftllm/*.py`
+3. Follow the existing file header format (project, file, path, author, date, USES/USED BY/SEE ALSO)
+4. Add unit tests for any new Rust code (aim for ≥ 12 tests per new module)
+5. Update `CLAUDE.md` memory if the change affects the project phase structure
+
+---
+
 ## License
 
 Apache License 2.0. See [LICENSE](LICENSE) for details.
 
+---
+
 ## Acknowledgments
 
 SwiftLLM builds on ideas from:
-- [vLLM](https://github.com/vllm-project/vllm) - PagedAttention concept
-- [llama.cpp](https://github.com/ggml-org/llama.cpp) - GGUF format and quantization
-- [FlashAttention](https://github.com/Dao-AILab/flash-attention) - Efficient attention kernels
-- [HuggingFace Transformers](https://github.com/huggingface/transformers) - Model architectures
+- [vLLM](https://github.com/vllm-project/vllm) — PagedAttention and continuous batching
+- [llama.cpp](https://github.com/ggml-org/llama.cpp) — GGUF format and quantization
+- [FlashAttention](https://github.com/Dao-AILab/flash-attention) — Efficient attention kernels
+- [HuggingFace Transformers](https://github.com/huggingface/transformers) — Model architectures
+- [DeepSeekMath](https://arxiv.org/abs/2402.03300) — GRPO reinforcement learning
+- [Self-Refine](https://arxiv.org/abs/2303.17651) — Multi-round self-refinement (Madaan et al., 2023)
+- [Self-Consistency](https://arxiv.org/abs/2203.11171) — Majority voting over reasoning chains (Wang et al., 2022)
+- [Let's Verify Step by Step](https://arxiv.org/abs/2305.20050) — Process Reward Models (Lightman et al., 2023)
+- [Splitwise](https://arxiv.org/abs/2311.18677) / [DistServe](https://arxiv.org/abs/2401.09670) — Disaggregated prefill/decode serving
+- [Jamba](https://arxiv.org/abs/2403.19887) — Hybrid Mamba + Attention + MoE architecture
+- [Mamba](https://arxiv.org/abs/2312.00752) — Selective state space models (Gu & Dao, 2023)
+- [Muon](https://arxiv.org/abs/2409.20325) — Newton-Schulz orthogonalized gradient optimizer
 
 <!--
     ------------------------------------------------------------------------------

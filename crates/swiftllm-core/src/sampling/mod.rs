@@ -25,10 +25,15 @@
 //! and other advanced techniques.
 
 mod strategies;
+pub mod self_consistency;
 
 pub use strategies::{
     BeamSearchSampler, GreedySampler, MinPSampler, RepetitionPenalty, Sampler, SamplerChain,
     TemperatureSampler, TopKSampler, TopPSampler,
+};
+pub use self_consistency::{
+    build_candidates, majority_vote, normalise_answer, self_consistency_vote, AnswerExtractor,
+    ConsistencyCandidate, ConsistencyResult, SelfConsistencyConfig,
 };
 
 use crate::config::SamplingConfig;

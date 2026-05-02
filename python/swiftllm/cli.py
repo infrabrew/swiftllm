@@ -23,12 +23,15 @@
 
 This module provides the CLI for SwiftLLM, supporting:
 - serve: Start the inference server
-- generate: Run offline batch generation
+- generate: Run offline batch generation (with --self-consistency, --refinement, --best-of-n)
 - benchmark: Run performance benchmarks
 - convert: Convert model formats
 - info: Display model information
+- chat: Interactive chat session
+- download: Download a model from HuggingFace
 - train: Train or fine-tune a model
 - finetune: Fine-tune with LoRA (convenience command)
+- grpo: GRPO RL fine-tuning with optional CGAR curriculum
 """
 
 import argparse
@@ -100,6 +103,13 @@ def main():
     finetune_parser = subparsers.add_parser("finetune", help="Fine-tune a model with LoRA")
     _add_finetune_args(finetune_parser)
 
+    # GRPO command
+    grpo_parser = subparsers.add_parser(
+        "grpo",
+        help="GRPO RL fine-tuning with optional CGAR curriculum and PRM",
+    )
+    _add_grpo_args(grpo_parser)
+
     args = parser.parse_args()
 
     if args.command is None:
@@ -117,6 +127,7 @@ def main():
         "download": cmd_download,
         "train": cmd_train,
         "finetune": cmd_finetune,
+        "grpo": cmd_grpo,
     }
 
     try:
@@ -293,6 +304,31 @@ def _add_generate_args(parser: argparse.ArgumentParser):
         default=None,
         help="Directory for downloading models (default: ~/.cache/swiftllm/models, "
              "or set SWIFTLLM_MODEL_DIR env var)",
+    )
+    # Phase 3 inference enhancement flags
+    parser.add_argument(
+        "--self-consistency",
+        type=int,
+        default=0,
+        metavar="N",
+        help="Enable self-consistency with N independent samples (0 = disabled). "
+             "Returns the plurality-majority answer across all samples.",
+    )
+    parser.add_argument(
+        "--refinement-rounds",
+        type=int,
+        default=0,
+        metavar="R",
+        help="Enable iterative self-refinement with up to R critique→revision rounds "
+             "(0 = disabled).",
+    )
+    parser.add_argument(
+        "--best-of-n",
+        type=int,
+        default=0,
+        metavar="N",
+        help="Enable Best-of-N: generate N candidates and return the highest-scoring "
+             "one via rule-based verification (0 = disabled).",
     )
 
 
@@ -623,7 +659,7 @@ def cmd_serve(args: argparse.Namespace):
 
 
 def cmd_generate(args: argparse.Namespace):
-    """Run offline generation."""
+    """Run offline generation (with optional self-consistency / refinement / best-of-n)."""
     LLM, _ = get_engine()
     SamplingParams, _, _ = get_config()
 
@@ -643,7 +679,27 @@ def cmd_generate(args: argparse.Namespace):
         print("No prompts provided", file=sys.stderr)
         sys.exit(1)
 
-    print(f"Generating {len(prompts)} prompt(s)...")
+    # Determine generation mode
+    use_sc = getattr(args, "self_consistency", 0) > 0
+    use_rf = getattr(args, "refinement_rounds", 0) > 0
+    use_bn = getattr(args, "best_of_n", 0) > 0
+
+    mode_count = sum([use_sc, use_rf, use_bn])
+    if mode_count > 1:
+        print("Error: --self-consistency, --refinement-rounds, and --best-of-n are mutually exclusive.",
+              file=sys.stderr)
+        sys.exit(1)
+
+    if use_sc:
+        mode = "self-consistency"
+    elif use_rf:
+        mode = "refinement"
+    elif use_bn:
+        mode = "best-of-n"
+    else:
+        mode = "standard"
+
+    print(f"Generating {len(prompts)} prompt(s) [mode: {mode}]...")
 
     # Initialize engine
     llm = LLM(
@@ -661,21 +717,61 @@ def cmd_generate(args: argparse.Namespace):
         n=args.num_sequences,
     )
 
-    # Generate
     start_time = time.time()
-    outputs = llm.generate(prompts, params)
-    elapsed = time.time() - start_time
-
-    # Output results
     results = []
-    for output in outputs:
-        for completion in output.outputs:
-            result = {
-                "prompt": output.prompt,
-                "generated_text": completion.text,
-                "finish_reason": completion.finish_reason.value if completion.finish_reason else None,
-            }
-            results.append(result)
+
+    if use_sc:
+        from .config import SelfConsistencyConfig
+        sc_cfg = SelfConsistencyConfig(
+            num_samples=args.self_consistency,
+            temperature=max(args.temperature, 0.1),
+        )
+        sc_results = llm.generate_with_self_consistency(prompts, config=sc_cfg, base_params=params)
+        elapsed = time.time() - start_time
+        for prompt, r in zip(prompts, sc_results):
+            results.append({
+                "prompt": prompt,
+                "generated_text": r.answer or "(no answer extracted)",
+                "vote_fraction": r.vote_fraction,
+                "num_samples": len(r.raw_outputs),
+            })
+
+    elif use_rf:
+        from .config import RefinementConfig
+        rf_cfg = RefinementConfig(max_rounds=args.refinement_rounds)
+        rf_results = llm.generate_with_refinement(prompts, config=rf_cfg, base_params=params)
+        elapsed = time.time() - start_time
+        for r in rf_results:
+            results.append({
+                "prompt": r.prompt,
+                "generated_text": r.final_output,
+                "num_rounds": r.num_rounds_used,
+                "initial_output": r.initial_output,
+            })
+
+    elif use_bn:
+        from .config import VerificationConfig
+        bn_cfg = VerificationConfig(num_candidates=args.best_of_n)
+        bn_results = llm.generate_best_of_n(prompts, config=bn_cfg, base_params=params)
+        elapsed = time.time() - start_time
+        for r in bn_results:
+            results.append({
+                "prompt": r.prompt,
+                "generated_text": r.best_text,
+                "best_score": r.best_score,
+                "num_candidates": len(r.candidates),
+            })
+
+    else:
+        outputs = llm.generate(prompts, params)
+        elapsed = time.time() - start_time
+        for output in outputs:
+            for completion in output.outputs:
+                results.append({
+                    "prompt": output.prompt,
+                    "generated_text": completion.text,
+                    "finish_reason": completion.finish_reason.value if completion.finish_reason else None,
+                })
 
     if args.json:
         output_text = json.dumps(results, indent=2)
@@ -686,6 +782,14 @@ def cmd_generate(args: argparse.Namespace):
             output_text += f"Prompt {i+1}: {result['prompt']}\n"
             output_text += f"{'='*60}\n"
             output_text += f"{result['generated_text']}\n"
+            if "vote_fraction" in result:
+                output_text += f"(Self-consistency: {result['vote_fraction']:.0%} agreement, "
+                output_text += f"{result['num_samples']} samples)\n"
+            elif "num_rounds" in result:
+                output_text += f"(Refined over {result['num_rounds']} rounds)\n"
+            elif "best_score" in result:
+                output_text += (f"(Best-of-{result['num_candidates']}, "
+                                f"score={result['best_score']:.3f})\n")
 
     if args.output:
         with open(args.output, "w") as f:
@@ -695,11 +799,9 @@ def cmd_generate(args: argparse.Namespace):
         print(output_text)
 
     # Print stats
-    total_tokens = sum(len(o.outputs[0].token_ids) for o in outputs)
     print(f"\n--- Statistics ---")
     print(f"Time: {elapsed:.2f}s")
-    print(f"Tokens: {total_tokens}")
-    print(f"Throughput: {total_tokens/elapsed:.2f} tokens/s")
+    print(f"Mode: {mode}")
 
 
 def cmd_benchmark(args: argparse.Namespace):
@@ -1197,6 +1299,153 @@ def cmd_finetune(args: argparse.Namespace):
     )
 
 
+def _add_grpo_args(parser: argparse.ArgumentParser):
+    """Add arguments for the grpo command."""
+    parser.add_argument(
+        "-m", "--model",
+        required=True,
+        help="Path to the model or HuggingFace model ID",
+    )
+    parser.add_argument(
+        "--train-data",
+        required=True,
+        help="Path to training prompts (JSONL format)",
+    )
+    parser.add_argument(
+        "-o", "--output-dir",
+        default="./grpo_output",
+        help="Output directory for checkpoints (default: ./grpo_output)",
+    )
+    parser.add_argument(
+        "--group-size",
+        type=int,
+        default=8,
+        help="Number of rollout samples per prompt (G, default: 8)",
+    )
+    parser.add_argument(
+        "--clip-eps",
+        type=float,
+        default=0.2,
+        help="PPO clipping threshold ε (default: 0.2)",
+    )
+    parser.add_argument(
+        "--kl-coeff",
+        type=float,
+        default=0.04,
+        help="KL divergence penalty coefficient β (default: 0.04)",
+    )
+    parser.add_argument(
+        "--learning-rate", "--lr",
+        type=float,
+        default=1e-5,
+        help="Learning rate (default: 1e-5)",
+    )
+    parser.add_argument(
+        "--num-epochs",
+        type=int,
+        default=1,
+        help="Number of training epochs (default: 1)",
+    )
+    parser.add_argument(
+        "--num-layers",
+        type=int,
+        default=32,
+        help="Total model layers (required for CGAR, default: 32)",
+    )
+    parser.add_argument(
+        "--enable-cgar",
+        action="store_true",
+        default=True,
+        help="Enable CGAR depth curriculum (default: enabled)",
+    )
+    parser.add_argument(
+        "--disable-cgar",
+        dest="enable_cgar",
+        action="store_false",
+        help="Disable CGAR depth curriculum",
+    )
+    parser.add_argument(
+        "--enable-prm",
+        action="store_true",
+        default=False,
+        help="Enable rule-based Process Reward Model (default: disabled)",
+    )
+    parser.add_argument(
+        "--long-reward-weight",
+        type=float,
+        default=0.0,
+        help="Weight for LongR dense token-level rewards (0.0 = disabled)",
+    )
+    parser.add_argument(
+        "--batch-size",
+        type=int,
+        default=2,
+        help="Per-device batch size (default: 2; effective = batch_size × group_size)",
+    )
+    parser.add_argument(
+        "--max-seq-len",
+        type=int,
+        default=2048,
+        help="Maximum sequence length (default: 2048)",
+    )
+    parser.add_argument(
+        "--logging-steps",
+        type=int,
+        default=10,
+        help="Log every N steps (default: 10)",
+    )
+    parser.add_argument(
+        "--seed",
+        type=int,
+        default=42,
+        help="Random seed (default: 42)",
+    )
+    parser.add_argument(
+        "--config",
+        default=None,
+        help="Path to training config JSON (overrides other args)",
+    )
+
+
+def cmd_grpo(args: argparse.Namespace):
+    """Run GRPO RL fine-tuning with optional CGAR curriculum and PRM."""
+    from .training import GrpoTrainer, TrainingConfig, FineTuningMethod
+    from .config import GrpoConfig, CgarConfig, PrmConfig
+
+    if args.config:
+        config = TrainingConfig.load(args.config)
+        print(f"Loaded config from {args.config}")
+        if config.train_data:
+            _validate_train_data(config.train_data)
+    else:
+        _validate_train_data(args.train_data)
+
+        config = TrainingConfig(
+            model=args.model,
+            train_data=args.train_data,
+            output_dir=args.output_dir,
+            fine_tuning_method=FineTuningMethod.FULL,
+            learning_rate=args.learning_rate,
+            num_epochs=args.num_epochs,
+            per_device_batch_size=args.batch_size,
+            max_seq_len=args.max_seq_len,
+            logging_steps=args.logging_steps,
+            seed=args.seed,
+            num_layers=args.num_layers,
+            grpo=GrpoConfig(
+                group_size=args.group_size,
+                clip_eps=args.clip_eps,
+                kl_coeff=args.kl_coeff,
+            ),
+            cgar=CgarConfig() if args.enable_cgar else None,
+            prm=PrmConfig() if args.enable_prm else None,
+            long_reward_weight=args.long_reward_weight,
+        )
+
+    trainer = GrpoTrainer(config)
+    trainer.train()
+
+
 def _estimate_params(info: dict) -> int:
     """Estimate model parameters from config."""
     hidden = info.get("hidden_size", 0)
@@ -1239,5 +1488,7 @@ if __name__ == "__main__":
 # ------------------------------------------------------------------------------
 # END OF FILE: cli.py
 # REPO PATH:   /swiftllm/python/swiftllm/cli.py
+# INTEGRATES:  engine.py · training.py · config.py · sampling.py · model_resolver.py
+#              Rust: swiftllm-server/src/api/openai.rs · swiftllm-core · swiftllm-training
 # (c) 2026 SWIFTLLM | Apache 2.0 License
 # ------------------------------------------------------------------------------

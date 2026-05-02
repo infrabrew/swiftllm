@@ -483,9 +483,9 @@ mod tests {
         // Only top 2 (indices 1 and 3) should remain
         assert!(logits[1].is_finite());
         assert!(logits[3].is_finite());
-        assert!(logits[0].is_neg_infinity());
-        assert!(logits[2].is_neg_infinity());
-        assert!(logits[4].is_neg_infinity());
+        assert_eq!(logits[0], f32::NEG_INFINITY);
+        assert_eq!(logits[2], f32::NEG_INFINITY);
+        assert_eq!(logits[4], f32::NEG_INFINITY);
     }
 
     #[test]
