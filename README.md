@@ -24,18 +24,19 @@
 [![Logo](https://github.com/infrabrew/infrabrew.github.io/blob/master/swiftllm/assets/logo-mark-128.png?raw=true)](https://infrabrew.github.io/swiftllm/)
 
 <p align="center">
-  <img src="https://img.shields.io/badge/version-2.1.0--beta-yellow.svg" alt="v2.1.0-beta">
+  <img src="https://img.shields.io/badge/version-2.2.0--beta-yellow.svg" alt="v2.2.0-beta">
   <img src="https://img.shields.io/badge/rust-%23000000.svg?style=flat&logo=rust&logoColor=white" alt="Rust">
   <img src="https://img.shields.io/badge/python-3.8+-blue.svg" alt="Python 3.8+">
   <img src="https://img.shields.io/badge/CUDA-11.8+-green.svg" alt="CUDA 11.8+">
   <img src="https://img.shields.io/badge/license-Apache%202.0-blue.svg" alt="License">
 </p>
 
-**SwiftLLM** is a high-performance LLM inference, serving, and training engine built with Rust for maximum speed and efficiency. It features state-of-the-art memory management, continuous batching, multi-GPU support, built-in LoRA/QLoRA fine-tuning, and a full suite of research-derived enhancements across three integrated phases:
+**SwiftLLM** is a high-performance LLM inference, serving, and training engine built with Rust for maximum speed and efficiency. It features state-of-the-art memory management, continuous batching, multi-GPU support, built-in LoRA/QLoRA fine-tuning, multi-format dataset ingestion, and a full suite of research-derived enhancements across three integrated phases:
 
 - **Phase 1** — Hybrid model architectures: Mamba SSM layers (with MIMO multi-head scan), LatentMoE with dynamic-bias load balancing, and Jamba-style hybrid attention+SSM blocks
 - **Phase 2** — Advanced training: GRPO reinforcement learning, CGAR depth curriculum, Process Reward Models, and LongR dense rewards
 - **Phase 3** — Test-time inference: self-consistency majority voting, multi-round self-refinement, Best-of-N dense verification, disaggregated prefill/decode serving, **Recursive Language Model (RLM)** with REPL sandbox, and **Dense Verification Layer** with cross-attention token scoring
+- **Dataset Ingestion** — Convert directories of text, code, PDF, DOCX, CSV, HTML, and JSON files into JSONL training data in one command; auto-ingest fires inside `Trainer` and `fine_tune()` transparently
 
 ---
 
@@ -49,6 +50,20 @@
   - [Phase 3: Model-Level Reasoning — RLM & Dense Verification](#phase-3-model-level-reasoning--rlm--dense-verification)
 - [Supported Models](#supported-models)
 - [Installation](#installation)
+- [Beginner's Guide — Start Here](#beginners-guide--start-here)
+  - [What is SwiftLLM?](#what-is-swiftllm-plain-english)
+  - [What Can I Do With It?](#what-can-i-do-with-it)
+  - [What You Need](#what-you-need)
+  - [Step 1 — Install](#step-1--install-swiftllm)
+  - [Step 2 — Pick a Model](#step-2--pick-a-model)
+  - [Step 3 — Download Your Model](#step-3--download-your-model)
+  - [Chat With the AI](#chat-with-the-ai)
+  - [Ask a Single Question](#ask-a-single-question)
+  - [Run a Local AI Server](#run-a-local-ai-server)
+  - [Teach It Your Own Documents](#teach-it-your-own-documents)
+  - [Plain-English Glossary](#plain-english-glossary)
+  - [Common Questions](#common-questions)
+  - [Troubleshooting](#troubleshooting)
 - [Quick Start](#quick-start)
 - [Dataset Ingestion](#dataset-ingestion)
   - [Supported Input Formats](#supported-input-formats)
@@ -106,7 +121,8 @@
 - **GGUF Inference** — Run quantized GGUF models on GPU via llama-cpp-python
 - **Air-Gapped Install** — Bundle and deploy on networks with no internet access
 
-**Training**
+**Training & Data**
+- **Dataset Ingestion** — One command converts any directory of `.txt`, `.md`, `.py`, `.rs`, `.pdf`, `.docx`, `.csv`, `.html`, `.jsonl` (and 40+ more) into JSONL; 4 output schemas; SHA-256 dedup; auto-fires inside `Trainer` and `fine_tune()`
 - **LoRA / QLoRA / Full Fine-Tuning** — Memory-efficient adapter training or full parameter updates
 - **Muon, AdamW, SGD Optimizers** — Newton-Schulz orthogonalization, decoupled weight decay, Nesterov momentum
 - **GRPO (RL Fine-Tuning)** — Group Relative Policy Optimization without a critic model (Phase 2)
@@ -364,6 +380,331 @@ CMAKE_ARGS='-DGGML_CUDA=on' CUDACXX=/usr/local/cuda/bin/nvcc pip install llama-c
 - Python 3.8+
 - Rust 1.70+ (auto-installed by `install.sh` if missing)
 - CUDA 11.8+ (optional, for GPU acceleration)
+
+---
+
+## Beginner's Guide — Start Here
+
+> **This section uses plain English throughout.** No prior programming experience is required.
+> If you are already comfortable with the command line and Python, feel free to jump straight to [Quick Start](#quick-start).
+
+---
+
+### What is SwiftLLM? (Plain English)
+
+SwiftLLM is a tool that lets you run AI language models — the same kind of technology behind ChatGPT — **on your own computer**, for free, without sending anything to the internet.
+
+Once a model is downloaded, everything runs locally. Your questions, documents, and responses never leave your machine. You can use it from a chat window in your terminal, call it from a Python script, or run it as a server that other apps can talk to.
+
+You can also **teach it your own content**: point it at a folder of PDFs, Word documents, notes, or code files and SwiftLLM will train a version of the model that knows your specific material.
+
+---
+
+### What Can I Do With It?
+
+| I want to… | How |
+|------------|-----|
+| Chat with an AI privately on my computer | `swiftllm chat` |
+| Ask a question from the command line | `swiftllm generate` |
+| Run a local AI server for other apps | `swiftllm serve` |
+| Train the AI on my own PDFs / docs / code | `swiftllm dataset` then `swiftllm finetune` |
+| Use it in a Python script | `from swiftllm import LLM` |
+
+---
+
+### What You Need
+
+| Requirement | Details |
+|-------------|---------|
+| Operating system | Linux or macOS. Windows users: install [WSL 2](https://learn.microsoft.com/en-us/windows/wsl/install) first (free, built into Windows 10/11) |
+| RAM | 8 GB minimum · 16 GB recommended for best experience |
+| Disk space | 500 MB for SwiftLLM itself · 400 MB – 40 GB per model (you choose the size) |
+| Internet | Only needed once to download SwiftLLM and your model |
+| GPU | Optional — SwiftLLM works without one, but a GPU makes it 10–100× faster |
+
+> **No coding knowledge is required** for the chat, generate, and serve features. A little familiarity with a terminal (typing commands) is all you need.
+
+---
+
+### Step 1 — Install SwiftLLM
+
+Open a terminal and run these two commands one at a time:
+
+```bash
+git clone https://github.com/swiftllm/swiftllm.git
+cd swiftllm
+./install.sh
+```
+
+The installer automatically detects your GPU, sets up a Python environment, and builds everything. When it finishes you will see a success message. Close and reopen your terminal so the `swiftllm` command becomes available.
+
+> **Don't have `git` installed?**
+> - **macOS**: run `xcode-select --install` in your terminal, then try again
+> - **Ubuntu / Debian Linux**: run `sudo apt install git` then try again
+
+---
+
+### Step 2 — Pick a Model
+
+A **model** is the AI's "brain" — a large file it uses to generate text. Bigger models produce smarter, more detailed responses but need more memory and disk space. Start small and work up.
+
+| Model name | Download size | RAM needed | Best for |
+|------------|--------------|-----------|----------|
+| **Qwen 2.5 0.5B** ← *great starting point* | ~400 MB | 2 GB | Testing, learning, fast replies |
+| **Qwen 2.5 7B** | ~5 GB | 8 GB | General chat, Q&A, writing, summaries |
+| **LLaMA 3 8B** | ~6 GB | 10 GB | Writing assistance, coding help, analysis |
+| **LLaMA 2 13B** | ~10 GB | 16 GB | Complex reasoning, detailed long answers |
+| **LLaMA 2 70B** | ~40 GB | 48 GB+ | Highest quality — needs a powerful machine |
+
+> 💡 **Not sure which to pick?** Start with **Qwen 2.5 0.5B** — it downloads in under a minute and runs on almost any computer. You can always download a larger model later.
+
+---
+
+### Step 3 — Download Your Model
+
+Copy and paste this command to download the recommended starter model:
+
+```bash
+swiftllm download -m "Qwen/Qwen2.5-0.5B-Instruct-GGUF:qwen2.5-0.5b-instruct-q4_k_m.gguf"
+```
+
+SwiftLLM downloads the model and stores it in a cache folder (`~/.cache/swiftllm/models`). The next time you use it the model loads instantly — no internet connection needed.
+
+> **Want a different model?** Replace the model name with any of the sizes from the table above, or any model ID from [HuggingFace](https://huggingface.co/models).
+
+---
+
+### Chat With the AI
+
+This opens an interactive chat session — just like a messaging app, but running entirely on your computer:
+
+```bash
+swiftllm chat -m "Qwen/Qwen2.5-0.5B-Instruct-GGUF:qwen2.5-0.5b-instruct-q4_k_m.gguf"
+```
+
+Type your message and press **Enter**. The AI replies. Keep the conversation going as long as you like. Press **Ctrl + C** or type `exit` to quit.
+
+**Example conversation:**
+```
+You: Can you explain what machine learning is in simple terms?
+
+AI: Machine learning is a way of teaching computers to learn from examples
+    rather than following a fixed set of rules. Instead of programming every
+    possible situation, you show the computer thousands of examples and it
+    figures out the patterns on its own...
+
+You: Can you give me a real-world example?
+
+AI: Sure! Think of a spam filter for email. Instead of manually writing rules
+    like "if the email contains the word 'lottery' then it's spam", you show
+    the filter thousands of emails labelled "spam" and "not spam"...
+```
+
+---
+
+### Ask a Single Question
+
+Use this when you want a quick one-off answer without starting a full chat session:
+
+```bash
+swiftllm generate \
+  -m "Qwen/Qwen2.5-0.5B-Instruct-GGUF:qwen2.5-0.5b-instruct-q4_k_m.gguf" \
+  -p "Summarise the water cycle in three bullet points." \
+  --max-tokens 200
+```
+
+| Option | What it does |
+|--------|-------------|
+| `-m` | Which model to use |
+| `-p` | Your question or instruction (the "prompt") |
+| `--max-tokens 200` | Maximum length of the reply (200 tokens ≈ 150 words) |
+| `--temperature 0.7` | How creative the response is (0.0 = focused, 1.0 = more varied) |
+
+---
+
+### Run a Local AI Server
+
+This starts SwiftLLM as a background server. Any app that supports the OpenAI API — Open WebUI, LangChain, your own scripts — can then send requests to it:
+
+```bash
+swiftllm serve \
+  -m "Qwen/Qwen2.5-0.5B-Instruct-GGUF:qwen2.5-0.5b-instruct-q4_k_m.gguf" \
+  --port 8000
+```
+
+Leave that terminal running. Open a second terminal and test it:
+
+```bash
+curl http://localhost:8000/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "my-model",
+    "messages": [{"role": "user", "content": "Hello! Who are you?"}]
+  }'
+```
+
+You can also open a browser-based chat UI by pointing [Open WebUI](https://github.com/open-webui/open-webui) at `http://localhost:8000`.
+
+> **Want to add a password?** Add `--api-key my-secret-key` to the serve command, then include `-H "Authorization: Bearer my-secret-key"` in your requests.
+
+---
+
+### Teach It Your Own Documents
+
+This is where SwiftLLM becomes really powerful. You can take any existing AI model and train it on **your own files** — company documents, research papers, code, notes, anything — so it becomes an expert in your specific content.
+
+**The whole process has three steps:**
+
+#### Step A — Put your files in a folder
+
+Organise your files however you like. SwiftLLM reads sub-folders automatically:
+
+```
+my_documents/
+├── handbook.pdf
+├── product_specs.docx
+├── meeting_notes.txt
+├── research/
+│   ├── paper1.pdf
+│   └── paper2.pdf
+└── codebase/
+    ├── main.py
+    └── utils.py
+```
+
+Supported file types: `.txt` `.md` `.pdf` `.docx` `.csv` `.py` `.js` `.ts` `.rs` `.go` `.java` `.html` and many more — see [Supported Input Formats](#supported-input-formats) for the full list.
+
+> **PDF / Word support needs one extra step** — run these once:
+> ```bash
+> pip install pdfplumber   # for PDF files
+> pip install python-docx  # for Word (.docx) files
+> ```
+
+#### Step B — Convert your files to training data (one command)
+
+```bash
+swiftllm dataset \
+  --input ./my_documents/ \
+  --output ./training_data.jsonl \
+  --format pretraining
+```
+
+SwiftLLM reads every file, extracts the text, and packages it into a single training file called `training_data.jsonl`. You'll see a summary when it finishes:
+
+```
+Dataset ingestion complete
+  Output          : ./training_data.jsonl
+  Files scanned   : 12
+  Files processed : 12
+  Chunks written  : 847
+  Total chars     : 1,204,392
+  By extension    :
+    .pdf               410 chunks
+    .txt               280 chunks
+    .docx              110 chunks
+    .py                 47 chunks
+```
+
+#### Step C — Fine-tune the model on your data
+
+```bash
+swiftllm finetune \
+  -m "Qwen/Qwen2.5-0.5B-Instruct-GGUF:qwen2.5-0.5b-instruct-q4_k_m.gguf" \
+  --train-data ./training_data.jsonl \
+  --output-dir ./my-custom-model/
+```
+
+This trains the model on your documents. When it finishes, your custom model is saved in `./my-custom-model/final/`.
+
+#### Step D — Use your custom model
+
+```bash
+swiftllm chat -m ./my-custom-model/final/
+```
+
+The model now has knowledge of your specific documents on top of its general training.
+
+> **How long does this take?**
+> - With a GPU: roughly 20–60 minutes for a few hundred pages of documents
+> - Without a GPU: a few hours — run it overnight
+>
+> **What does "fine-tuning" actually mean?** It's like giving a smart new employee your company handbook to study. They already know how to speak, reason, and answer questions — fine-tuning adds your specific knowledge on top of that without changing everything they already know.
+
+---
+
+### Plain-English Glossary
+
+These words appear throughout the documentation. Here's what they mean in plain language:
+
+| Term | Plain-English meaning |
+|------|-----------------------|
+| **Model** | The AI's "brain" — a large file containing billions of learned connections that generate text |
+| **GGUF** | A compressed model file format. The `.gguf` extension means the model is stored in this efficient format — smaller file size, faster to load |
+| **Parameter / B** | "B" stands for billion. A 7B model has 7 billion internal connections. More parameters = smarter but needs more memory |
+| **Fine-tuning** | Taking an existing AI model and giving it extra training on your own documents so it learns your specific content |
+| **LoRA** | A clever fine-tuning shortcut. Instead of retraining the entire model (which needs enormous compute power), LoRA trains only small "adapter" pieces. Same quality improvement, much less time and memory |
+| **JSONL** | A simple data file format — one JSON record per line. SwiftLLM reads and writes these for training data. You don't need to create them manually — `swiftllm dataset` does it for you |
+| **GPU** | A graphics card (e.g. NVIDIA RTX). Originally designed for video games, GPUs are also excellent at AI calculations — 10–100× faster than a regular CPU for model inference and training |
+| **CPU** | Your computer's main processor. SwiftLLM works on CPU — it's just slower than GPU |
+| **Inference** | Asking the model a question and getting a response (as opposed to training it) |
+| **Token** | A unit of text roughly equal to 4 characters or ¾ of a word. `--max-tokens 200` means the response can be at most 200 tokens, about 150 words |
+| **Temperature** | How random or creative the AI's responses are. `0.0` = very consistent and focused. `1.0` = more varied and creative. Start at `0.7` for general use |
+| **Prompt** | The text you send to the AI — your question, instruction, or starting sentence |
+| **Chunk** | When SwiftLLM reads a long document, it breaks it into smaller pieces called chunks. Each chunk becomes one training record |
+| **Pretraining** | Teaching a model from scratch on massive amounts of text — already done for you by the model's original creators |
+| **HuggingFace** | A popular website (`huggingface.co`) where thousands of free AI models are shared and downloaded from |
+| **CUDA** | NVIDIA's software layer that lets programs use GPU acceleration. SwiftLLM uses it automatically if you have an NVIDIA card |
+
+---
+
+### Common Questions
+
+**Do I need a GPU?**
+No. SwiftLLM works entirely on CPU. A GPU (NVIDIA card) makes inference 10–100× faster and fine-tuning much quicker, but it is completely optional. Smaller models (0.5B–7B) are very usable on CPU for non-time-sensitive work.
+
+**Is my data private?**
+Yes, completely. Everything runs on your own machine. Your prompts, documents, training data, and model outputs never leave your computer. There is no cloud component, no telemetry, and no data collection.
+
+**Can I use any model from HuggingFace?**
+Yes. Pass any HuggingFace model ID directly with `-m`, for example: `-m meta-llama/Llama-2-7b-hf`. SwiftLLM downloads and caches it automatically.
+
+**What file types can I train on?**
+Plain text, Markdown, all major code languages, PDF (needs `pdfplumber`), Word documents (needs `python-docx`), HTML, CSV, JSON, and JSONL. See [Supported Input Formats](#supported-input-formats) for the full list.
+
+**How long does fine-tuning take?**
+For a 7B model with LoRA on a few hundred pages of documents: roughly 20–60 minutes with a mid-range GPU, or 4–8 hours on CPU. You can run it overnight and the result will be waiting for you in the morning.
+
+**What if my computer runs out of memory?**
+Switch to a smaller model, or add `--max-seq-len 512` to reduce how much text is processed at once. The [Memory Requirements](#memory-requirements) table in the Training section shows exactly how much RAM each model size needs.
+
+**Can I use SwiftLLM with a chat UI in my browser?**
+Yes. Run `swiftllm serve` then connect [Open WebUI](https://github.com/open-webui/open-webui) to `http://localhost:8000`. Open WebUI is a free, open-source chat interface that looks and works like ChatGPT.
+
+**Does fine-tuning change the original model?**
+No. The original model file is never modified. Fine-tuning creates a separate small adapter file that sits alongside the original model. You can always go back to using the base model.
+
+**My fine-tuned model doesn't seem to know my documents. What happened?**
+A few things to check: (1) Make sure your documents were actually processed — run `swiftllm dataset` with `--verbose` to see each file being read. (2) Try more training epochs: add `--num-epochs 3`. (3) More data helps — the more document content you provide, the better the results.
+
+---
+
+### Troubleshooting
+
+| Symptom | What to try |
+|---------|------------|
+| `command not found: swiftllm` | Close and reopen your terminal after install. If still missing, run `source ~/.bashrc` (Linux) or `source ~/.zshrc` (macOS) |
+| Model download is very slow | Downloads range from 400 MB to 40 GB depending on the model — this is normal. It only downloads once and is cached locally afterward |
+| `CUDA out of memory` error | Switch to a smaller model, or add `--max-seq-len 512` to limit memory usage |
+| `out of memory` on CPU | Add `--max-seq-len 512`, or try the 0.5B model instead of a larger one |
+| PDF files are not being read | Run `pip install pdfplumber` then try again |
+| Word (.docx) files are not being read | Run `pip install python-docx` then try again |
+| Responses are too short | Increase `--max-tokens`, e.g. `--max-tokens 512` |
+| Responses feel repetitive or boring | Add `--temperature 0.7` to introduce more variation |
+| Responses are too random or off-topic | Lower temperature: `--temperature 0.3` |
+| Fine-tuning seems to be doing nothing | Add `--num-epochs 3` for more training passes, and make sure your input files actually contain text |
+| `FileNotFoundError` on `--train-data` | Check the path — use `ls ./training_data.jsonl` to confirm the file exists |
+| Chat session is very slow | You are likely running on CPU — this is normal. Consider a smaller model or adding a GPU |
+| I don't know which model to use | Start with `Qwen/Qwen2.5-0.5B-Instruct-GGUF:qwen2.5-0.5b-instruct-q4_k_m.gguf` — it works on almost any computer |
 
 ---
 
@@ -695,12 +1036,17 @@ pip install pdfplumber python-docx beautifulsoup4
 ### Quick Fine-Tune with LoRA (CLI)
 
 ```bash
-# LoRA fine-tuning (convenience command)
+# LoRA fine-tuning from an existing JSONL file
 swiftllm finetune \
   -m meta-llama/Llama-2-7b-hf \
   --train-data ./data/train.jsonl \
   --lora-r 16 --lora-alpha 32 \
   --learning-rate 2e-4
+
+# Fine-tune directly from a directory of files — ingestion is automatic
+# (any mix of .txt, .md, .py, .rs, .pdf, .docx, .csv, .json, .html, …)
+swiftllm dataset -i ./my_corpus/ -o ./data/train.jsonl --format sft_completion
+swiftllm finetune -m meta-llama/Llama-2-7b-hf --train-data ./data/train.jsonl --lora-r 16
 
 # Full training command with all options
 swiftllm train \
@@ -720,7 +1066,7 @@ swiftllm train \
 ```python
 from swiftllm import Trainer, TrainingConfig, LoRAConfig
 
-# LoRA fine-tuning
+# Fine-tune from an existing JSONL file
 config = TrainingConfig(
     model="meta-llama/Llama-2-7b-hf",
     train_data="./data/train.jsonl",
@@ -729,15 +1075,41 @@ config = TrainingConfig(
     learning_rate=2e-4,
     lora=LoRAConfig(r=16, alpha=32),
 )
-trainer = Trainer(config)
-trainer.train()
+Trainer(config).train()
 
-# Or use the convenience function
+# Fine-tune from a directory — DatasetIngester runs automatically,
+# writes output_dir/auto_train.jsonl, then training begins
+config = TrainingConfig(
+    model="meta-llama/Llama-2-7b-hf",
+    train_data="./my_corpus/",       # any directory of source files
+    output_dir="./output",
+)
+Trainer(config).train()
+
+# Fine-tune from a mixed list of paths (files + directories)
 from swiftllm import fine_tune
 
 trainer = fine_tune(
     model="meta-llama/Llama-2-7b-hf",
-    train_data="data.jsonl",
+    train_data=["paper.pdf", "qa_pairs.csv", "./notes/"],
+    dataset_format="sft_completion",
+    lora_r=16,
+    num_epochs=3,
+)
+
+# Explicit two-step: ingest first, then train
+from swiftllm.training import prepare_dataset
+
+result = prepare_dataset(
+    input_paths=["./docs/", "paper.pdf"],
+    output_path="./data/train.jsonl",
+    format="sft_messages",
+)
+print(result.summary())   # files processed, chunks written, etc.
+
+trainer = fine_tune(
+    model="meta-llama/Llama-2-7b-hf",
+    train_data="./data/train.jsonl",
     lora_r=16,
 )
 ```
@@ -782,6 +1154,8 @@ opt.step(&mut param, &grad, "layer0.weight");
 ---
 
 ### Training Data Formats
+
+> **Have raw files instead of JSONL?**  See [Dataset Ingestion](#dataset-ingestion) — one command converts directories of `.txt`, `.md`, `.py`, `.pdf`, `.docx`, `.csv`, `.html`, and more into any of the formats below.
 
 SwiftLLM accepts three input formats for supervised fine-tuning.
 
@@ -2279,12 +2653,13 @@ The `-m` / `--model` flag accepts multiple formats:
 
 ```
 +-----------------------------------------------------------------------------------+
-|                           SwiftLLM Architecture (v2.1)                            |
+|                           SwiftLLM Architecture (v2.2)                            |
 +-----------------------------------------------------------------------------------+
 |                                                                                   |
 |  ┌─────────────────┐  ┌──────────────────────┐  ┌───────────────────────────┐   |
 |  │  OpenAI API      │  │  Python SDK           │  │  CLI Interface            │   |
-|  │  (auth, headers) │  │  LLM / AsyncLLM       │  │  serve/train/chat/grpo    │   |
+|  │  (auth, headers) │  │  LLM / AsyncLLM       │  │  serve/generate/train     │   |
+|  │                  │  │                       │  │  finetune/grpo/dataset    │   |
 |  └────────┬─────────┘  └──────────┬───────────┘  └──────────────┬────────────┘   |
 |           │                       │                              │                |
 |  ┌────────┴───────────────────────┴──────────────────────────────┴────────────┐  |
@@ -2332,6 +2707,10 @@ The `-m` / `--model` flag accepts multiple formats:
 |  │   └──────────┘  └──────────┘  └──────────────┘  └──────────────────────┘  │  |
 |  │   LoRA / QLoRA / Full Fine-Tuning                                           │  |
 |  │   Muon / AdamW / SGD Optimizers    LR Schedulers   Checkpoint Management   │  |
+|  │   ┌──────────────────────────────────────────────────────────────────────┐  │  |
+|  │   │  Dataset Ingestion — .txt .md .py .rs .pdf .docx .csv .html .jsonl   │  │  |
+|  │   │  pretraining | sft_messages | sft_completion | code  (auto-ingest)   │  │  |
+|  │   └──────────────────────────────────────────────────────────────────────┘  │  |
 |  └────────────────────────────────┬───────────────────────────────────────────┘  |
 |                                   │                                               |
 |  ┌────────────────────────────────┴───────────────────────────────────────────┐  |
@@ -2589,7 +2968,30 @@ SwiftLLM includes built-in security features across the server, installer, and r
 - **New**: `examples/grpo_training.py` — full GRPO + CGAR + PRM + LongR demo with synthetic math data
 - **New** (this release): `examples/rlm_inference.py` — SHALLOW / REASONING / AGENTIC modes, variable-binding demo, no-REPL variant
 - **New** (this release): `examples/dense_verification_inference.py` — all four strategies, multi-prompt batch scoring, confidence calibration demo
-- **New** (this release): `dataset.py` — `DatasetIngester`, `IngestionConfig`, `IngestionResult`, `DatasetFormat`; reads `.txt`, `.md`, `.py`, `.rs`, `.go`, `.java`, `.c`, `.cpp`, `.cs`, `.rb`, `.sql`, `.yaml` + 30 more code extensions; `.pdf` (pdfplumber/pypdf), `.docx` (python-docx), `.html`/`.xml` (beautifulsoup4 or regex fallback), `.csv`, `.json`, `.jsonl`; 4 output schemas (pretraining / sft_messages / sft_completion / code); SHA-256 chunk deduplication; code boundary-aware splitting; `ingest_dataset()` convenience function; `prepare_dataset()` in `training.py`; `Trainer`/`fine_tune()`/`GrpoTrainer` auto-ingest directories and lists; `swiftllm dataset` CLI subcommand; `examples/dataset_ingestion.py` with 6 demo modes
+
+---
+
+### v2.2.0-beta
+
+**Dataset Ingestion** (`python/swiftllm/dataset.py`)
+
+- **New**: `dataset.py` — full multi-format dataset ingestion pipeline
+  - **Formats read**: `.txt` `.md` `.rst` `.log` `.tex` · `.py` `.js` `.ts` `.rs` `.go` `.java` `.c` `.cpp` `.cs` `.rb` `.php` `.swift` `.kt` `.sql` `.yaml` `.toml` `.sh` and 20+ more code extensions · `.pdf` (pdfplumber → pypdf → PyPDF2 cascade) · `.docx` (python-docx) · `.html`/`.xml` (BeautifulSoup4 or regex fallback) · `.csv` · `.json` · `.jsonl`
+  - **Output schemas**: `pretraining` `{"text":"…"}` · `sft_messages` `{"messages":[…]}` · `sft_completion` `{"prompt":"…","completion":"…"}` · `code` `{"prompt":"# lang\n# File: …","completion":code}`
+  - **Smart parsing**: CSV auto-detects `prompt`/`completion`/`messages`/`text` columns and passes structured data through directly; JSONL records remapped to output format
+  - **Code-aware chunking**: splits at `def`/`class`/`fn`/`func`/`impl` boundaries before falling back to character-level chunking
+  - **SHA-256 deduplication**: skips exact-duplicate chunks across the entire run
+  - **Size guard**: skips files above configurable `max_file_size_mb` limit
+  - **Metadata attachment**: optional `_source` / `_ext` keys per record
+  - **`ingest_dataset()`** convenience one-liner function
+- **New**: `prepare_dataset()` in `training.py` — full docstring with format examples, forwards to `DatasetIngester`
+- **Updated**: `Trainer._auto_ingest_if_needed()` — if `train_data` is a directory path or a list of paths, `DatasetIngester` runs automatically before training and writes `<output_dir>/auto_train.jsonl`
+- **Updated**: `fine_tune()` — `train_data` now accepts `str | List[str]`; added `dataset_format` parameter
+- **Updated**: `__init__.py` — exports `DatasetIngester`, `DatasetFormat`, `IngestionConfig`, `IngestionResult`, `ingest_dataset`, `prepare_dataset`, `ALL_EXTENSIONS`, `CODE_EXTENSIONS`, `TEXT_EXTENSIONS`, `DOCUMENT_EXTENSIONS`
+- **Updated**: `cli.py` — new `swiftllm dataset` subcommand with 15 flags; `dataset` added to dispatch table
+- **New**: `examples/dataset_ingestion.py` — 6 demo modes: pretraining, sft_messages, sft_completion, code, mixed sources, and auto-ingest through `fine_tune()`
+- **Updated**: README — new **Dataset Ingestion** section (supported formats table, output schema table, full CLI flag reference, Python API examples, auto-ingest patterns, optional dependencies); Key Features, intro, Training API, architecture diagram, and CLI Commands updated to reflect dataset ingestion throughout
+- **Version bump**: `2.1.0-beta` → `2.2.0-beta`
 
 ---
 
