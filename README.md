@@ -66,10 +66,14 @@
   - [Troubleshooting](#troubleshooting)
 - [Quick Start](#quick-start)
 - [Dataset Ingestion](#dataset-ingestion)
-  - [Supported Input Formats](#supported-input-formats)
+  - [Supported Input Sources](#supported-input-sources)
+  - [HuggingFace Datasets](#huggingface-datasets)
   - [Output Formats](#output-formats-jsonl)
+  - [Three Usage Modes](#three-usage-modes)
   - [CLI — swiftllm dataset](#cli--swiftllm-dataset)
-  - [Python API](#python-api-dataset)
+  - [Python API — HuggingFaceSource](#python-api--huggingfacesource)
+  - [Python API — ingest_dataset()](#python-api-dataset)
+  - [Python API — DatasetIngester](#python-api--datasetingester)
   - [Auto-Ingest in Trainer](#auto-ingest-in-trainer)
   - [Optional Dependencies](#optional-dependencies-for-dataset-ingestion)
 - [Training & Fine-Tuning](#training--fine-tuning)
@@ -123,6 +127,7 @@
 
 **Training & Data**
 - **Dataset Ingestion** — One command converts any directory of `.txt`, `.md`, `.py`, `.rs`, `.pdf`, `.docx`, `.csv`, `.html`, `.jsonl` (and 40+ more) into JSONL; 4 output schemas; SHA-256 dedup; auto-fires inside `Trainer` and `fine_tune()`
+- **HuggingFace Dataset Support** — Pull any dataset from the HuggingFace Hub with `--hf-dataset` (CLI) or `HuggingFaceSource` (Python); combine with local files in one command; auto-detects Alpaca, ShareGPT, OpenAI-messages, prompt/completion, Q&A, and plain-text schemas; streaming mode for large corpora
 - **LoRA / QLoRA / Full Fine-Tuning** — Memory-efficient adapter training or full parameter updates
 - **Muon, AdamW, SGD Optimizers** — Newton-Schulz orthogonalization, decoupled weight decay, Nesterov momentum
 - **GRPO (RL Fine-Tuning)** — Group Relative Policy Optimization without a critic model (Phase 2)
@@ -551,11 +556,22 @@ You can also open a browser-based chat UI by pointing [Open WebUI](https://githu
 
 ### Teach It Your Own Documents
 
-This is where SwiftLLM becomes really powerful. You can take any existing AI model and train it on **your own files** — company documents, research papers, code, notes, anything — so it becomes an expert in your specific content.
+This is where SwiftLLM becomes really powerful. You can take any existing AI model and train it on **your own files**, on **ready-made public datasets from the internet**, or on **both at the same time** — so it becomes an expert in exactly the content you care about.
 
-**The whole process has three steps:**
+You have two ways to bring in training data:
 
-#### Step A — Put your files in a folder
+| Source | What it is | Example |
+|--------|-----------|---------|
+| **Your own files** | PDFs, Word docs, text files, code, spreadsheets on your computer | Company handbook, research papers, your codebase |
+| **HuggingFace datasets** | Free, ready-made datasets from [huggingface.co/datasets](https://huggingface.co/datasets) | `tatsu-lab/alpaca` (52 k instructions), `HuggingFaceFW/fineweb` (billions of web pages) |
+
+You can use either one alone, or mix them together.
+
+---
+
+**Option A — Train on your own files**
+
+#### Step 1 — Put your files in a folder
 
 Organise your files however you like. SwiftLLM reads sub-folders automatically:
 
@@ -572,15 +588,15 @@ my_documents/
     └── utils.py
 ```
 
-Supported file types: `.txt` `.md` `.pdf` `.docx` `.csv` `.py` `.js` `.ts` `.rs` `.go` `.java` `.html` and many more — see [Supported Input Formats](#supported-input-formats) for the full list.
+Supported file types: `.txt` `.md` `.pdf` `.docx` `.csv` `.py` `.js` `.ts` `.rs` `.go` `.java` `.html` and many more.
 
-> **PDF / Word support needs one extra step** — run these once:
+> **PDF / Word support needs one extra install** — run once:
 > ```bash
 > pip install pdfplumber   # for PDF files
 > pip install python-docx  # for Word (.docx) files
 > ```
 
-#### Step B — Convert your files to training data (one command)
+#### Step 2 — Convert your files to training data
 
 ```bash
 swiftllm dataset \
@@ -589,12 +605,12 @@ swiftllm dataset \
   --format pretraining
 ```
 
-SwiftLLM reads every file, extracts the text, and packages it into a single training file called `training_data.jsonl`. You'll see a summary when it finishes:
+You'll see a summary when it finishes:
 
 ```
 Dataset ingestion complete
-  Output          : ./training_data.jsonl
-  Files scanned   : 12
+  Total chunks    : 847
+  ── Local files ──────────────────
   Files processed : 12
   Chunks written  : 847
   Total chars     : 1,204,392
@@ -605,7 +621,61 @@ Dataset ingestion complete
     .py                 47 chunks
 ```
 
-#### Step C — Fine-tune the model on your data
+---
+
+**Option B — Train on a public HuggingFace dataset**
+
+No files to organise — just pick a dataset name from [huggingface.co/datasets](https://huggingface.co/datasets) and SwiftLLM downloads and converts it automatically.
+
+#### Step 1 — Install the HuggingFace datasets library (once)
+
+```bash
+pip install datasets
+```
+
+#### Step 2 — Pull the dataset and convert it
+
+```bash
+swiftllm dataset \
+  --hf-dataset tatsu-lab/alpaca \
+  --format sft_completion \
+  --output ./training_data.jsonl
+```
+
+SwiftLLM downloads the dataset, auto-detects its format (question/answer, instruction/output, plain text, etc.), and converts it to training-ready JSONL.
+
+---
+
+**Option C — Mix your files with a public dataset (most powerful)**
+
+Combine your own documents with a public dataset in one command — SwiftLLM merges them and removes any duplicates automatically.
+
+```bash
+swiftllm dataset \
+  --input ./my_documents/ \
+  --hf-dataset tatsu-lab/alpaca \
+  --hf-max-samples 10000 \
+  --format sft_completion \
+  --output ./training_data.jsonl
+```
+
+You'll see both sources in the summary:
+
+```
+Dataset ingestion complete
+  Total chunks    : 10,847
+  ── Local files ──────────────────
+  Files processed : 12
+  Chunks written  : 847
+  ── HuggingFace datasets ─────────
+  Rows consumed   : 10,000
+  Chunks written  : 10,000
+    tatsu-lab/alpaca               10000 chunks
+```
+
+---
+
+#### Step 3 — Fine-tune the model on your data
 
 ```bash
 swiftllm finetune \
@@ -614,15 +684,15 @@ swiftllm finetune \
   --output-dir ./my-custom-model/
 ```
 
-This trains the model on your documents. When it finishes, your custom model is saved in `./my-custom-model/final/`.
+This trains the model on your data. When it finishes, your custom model is saved in `./my-custom-model/final/`.
 
-#### Step D — Use your custom model
+#### Step 4 — Use your custom model
 
 ```bash
 swiftllm chat -m ./my-custom-model/final/
 ```
 
-The model now has knowledge of your specific documents on top of its general training.
+The model now has knowledge of your specific content on top of its general training.
 
 > **How long does this take?**
 > - With a GPU: roughly 20–60 minutes for a few hundred pages of documents
@@ -778,12 +848,13 @@ print(outputs[0].outputs[0].text)
 
 ## Dataset Ingestion
 
-SwiftLLM can convert a directory tree or collection of files in any supported
-format into a JSONL training dataset ready for `fine_tune()`, `Trainer`, or
-`grpo_train()`.  Just point at your source files — no custom data-prep scripts
-needed.
+SwiftLLM can build a JSONL training dataset from **three sources** — your own local files, public datasets from the HuggingFace Hub, or both combined in a single command.  No custom data-prep scripts needed; just point at what you have and pick an output format.
 
-### Supported Input Formats
+---
+
+### Supported Input Sources
+
+#### Local Files
 
 | Category  | Extensions |
 |-----------|-----------|
@@ -796,6 +867,28 @@ needed.
 CSV and JSONL files are auto-detected: if they already contain
 `prompt`/`completion`, `messages`, or `text` columns/keys they are passed
 through directly; otherwise the values are concatenated as plain text.
+
+---
+
+### HuggingFace Datasets
+
+Pull any public (or private, with a token) dataset directly from the
+[HuggingFace Hub](https://huggingface.co/datasets) using the `--hf-dataset`
+CLI flag or the `HuggingFaceSource` Python class.
+
+**Auto-detected schemas** — no field mapping needed for common formats:
+
+| Schema | Detected columns | Example datasets |
+|--------|-----------------|-----------------|
+| Alpaca instruction | `instruction` + `output` (+ optional `input`) | `tatsu-lab/alpaca`, `yahma/alpaca-cleaned` |
+| ShareGPT conversations | `conversations` with `from`/`value` keys | `WizardLM/WizardLM_evol_instruct_70k` |
+| OpenAI messages | `messages` with `role`/`content` keys | `HuggingFaceH4/ultrachat_200k` |
+| Prompt + completion | `prompt`/`completion` or `question`/`answer` | `openai/gsm8k`, `truthful_qa` |
+| Plain text | `text` or `content` | `HuggingFaceFW/fineweb`, `EleutherAI/pile` |
+
+All sources share the same SHA-256 deduplication pool — a chunk that appears in both a local file and an HF dataset is written only once.
+
+---
 
 ### Output Formats (JSONL)
 
@@ -810,84 +903,243 @@ For raw text files in `sft_messages` / `sft_completion` mode, each chunk is
 split ~75 / 25 into a user prompt and assistant completion so the model learns
 both document style and continuation.
 
+---
+
+### Three Usage Modes
+
+```
+Mode 1: Local files only       → --input ./my_docs/
+Mode 2: HuggingFace only       → --hf-dataset tatsu-lab/alpaca
+Mode 3: Both combined          → --input ./my_docs/ --hf-dataset tatsu-lab/alpaca
+```
+
+All three modes write a single merged, deduplicated `.jsonl` file.
+
+---
+
 ### CLI — `swiftllm dataset`
 
+**Mode 1 — Local files:**
+
 ```bash
-# Ingest an entire documentation tree (pretraining)
+# Pretraining from a documentation tree
 swiftllm dataset \
   --input ./docs/ \
   --output ./data/train.jsonl
 
-# Code fine-tuning from a source tree (Python + Rust only)
+# Code fine-tuning (Python + Rust only)
 swiftllm dataset \
   --input ./src/ ./tests/ \
   --output ./data/code_train.jsonl \
   --format code \
   --extensions .py,.rs
 
-# SFT from mixed sources: PDF + CSV + notes directory
+# SFT from mixed local sources: PDF + CSV + notes directory
 swiftllm dataset \
   --input paper.pdf qa_pairs.csv ./notes/ \
   --output ./data/sft.jsonl \
   --format sft_completion \
   --chunk-size 1024
-
-# Inspect statistics without writing any file
-swiftllm dataset \
-  --input ./my_corpus/ \
-  --output /dev/null \
-  --stats-only
-
-# Full options
-swiftllm dataset \
-  --input ./data/ \
-  --output train.jsonl \
-  --format sft_messages \
-  --chunk-size 2048 \
-  --chunk-overlap 128 \
-  --min-length 50 \
-  --max-file-size-mb 50 \
-  --extensions .py,.md,.txt \
-  --system-prompt "You are a helpful assistant." \
-  --no-dedup \
-  --include-metadata \
-  --verbose
 ```
 
-**Key flags:**
+**Mode 2 — HuggingFace datasets:**
+
+```bash
+# Pull the Alpaca instruction dataset from HuggingFace
+swiftllm dataset \
+  --hf-dataset tatsu-lab/alpaca \
+  --format sft_completion \
+  --output ./data/alpaca_train.jsonl
+
+# Multiple HF datasets in one run
+swiftllm dataset \
+  --hf-dataset tatsu-lab/alpaca HuggingFaceH4/ultrachat_200k \
+  --format sft_messages \
+  --output ./data/combined_hf.jsonl
+
+# Large corpus with streaming (avoids full download)
+swiftllm dataset \
+  --hf-dataset HuggingFaceFW/fineweb \
+  --hf-subset sample-10BT \
+  --hf-streaming \
+  --hf-max-samples 100000 \
+  --format pretraining \
+  --output ./data/fineweb_100k.jsonl
+```
+
+**Mode 3 — Local files + HuggingFace combined:**
+
+```bash
+# Your documents + a public HF dataset, merged into one file
+swiftllm dataset \
+  --input ./my_docs/ ./research_papers/ \
+  --hf-dataset tatsu-lab/alpaca \
+  --hf-max-samples 10000 \
+  --format sft_completion \
+  --output ./data/combined_train.jsonl
+
+# Custom field mapping for non-standard schemas
+swiftllm dataset \
+  --hf-dataset my-org/my-dataset \
+  --hf-prompt-field query \
+  --hf-completion-field answer \
+  --format sft_completion \
+  --output ./data/custom.jsonl
+```
+
+**Statistics only (dry-run):**
+
+```bash
+swiftllm dataset \
+  --input ./my_corpus/ \
+  --hf-dataset tatsu-lab/alpaca \
+  --output /dev/null \
+  --stats-only
+```
+
+**All flags:**
+
+*Local file flags:*
 
 | Flag | Default | Description |
 |------|---------|-------------|
-| `--input PATH …` | *(required)* | Files or directories (space-separated) |
+| `--input PATH …` | *(optional)* | Files or directories; omit when using `--hf-dataset` only |
 | `--output FILE` | *(required)* | Destination `.jsonl` |
-| `--format` | `pretraining` | Output schema (see table above) |
+| `--format` | `pretraining` | Output schema: `pretraining` `sft_messages` `sft_completion` `code` |
 | `--chunk-size N` | `2048` | Max characters per record |
 | `--chunk-overlap N` | `128` | Overlap between consecutive chunks |
 | `--min-length N` | `50` | Discard chunks shorter than N chars |
-| `--max-file-size-mb MB` | `50` | Skip files larger than this |
+| `--max-file-size-mb MB` | `50` | Skip local files larger than this |
 | `--extensions .ext[,…]` | all supported | Whitelist specific extensions |
 | `--no-recursive` | off | Don't walk directories recursively |
 | `--no-dedup` | off | Allow duplicate chunks |
 | `--include-metadata` | off | Add `_source` / `_ext` keys to records |
 | `--system-prompt TEXT` | `"You are a helpful assistant."` | System turn for `sft_messages` |
 | `--stats-only` | off | Print statistics; skip writing output |
-| `--verbose` | off | Print per-file progress |
+| `--verbose` | off | Print per-file / per-dataset progress |
+
+*HuggingFace flags:*
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--hf-dataset NAME …` | *(optional)* | HuggingFace dataset name(s); use multiple for several datasets |
+| `--hf-split SPLIT` | `train` | Split to load; slice syntax supported: `train[:5000]` |
+| `--hf-subset NAME` | — | Dataset config/subset, e.g. `sample-10BT` for FineWeb |
+| `--hf-max-samples N` | all | Maximum rows to consume per dataset |
+| `--hf-streaming` | off | Stream rows without full download (saves disk space) |
+| `--hf-shuffle` | off | Shuffle before slicing (uses `--hf-seed`) |
+| `--hf-seed N` | `42` | Random seed for shuffle |
+| `--hf-trust-remote-code` | off | Required by some community datasets |
+| `--hf-text-field COL` | auto | Override: column containing plain text |
+| `--hf-prompt-field COL` | auto | Override: column containing prompt / question |
+| `--hf-completion-field COL` | auto | Override: column containing completion / answer |
+| `--hf-messages-field COL` | auto | Override: column containing a messages list |
+| `--hf-instruction-field COL` | auto | Override: Alpaca-style instruction column |
+| `--hf-output-field COL` | auto | Override: Alpaca-style output column |
+
+---
+
+### Python API — HuggingFaceSource
+
+`HuggingFaceSource` describes one HuggingFace dataset to pull in.  Combine multiple in a list for multi-dataset runs.
+
+```python
+from swiftllm import HuggingFaceSource, ingest_dataset
+
+# Minimal — auto-detects all fields
+src = HuggingFaceSource("tatsu-lab/alpaca")
+
+# Large corpus with streaming (avoids downloading to disk)
+src_large = HuggingFaceSource(
+    dataset_name="HuggingFaceFW/fineweb",
+    subset="sample-10BT",
+    split="train",
+    streaming=True,
+    max_samples=100_000,
+)
+
+# Explicit field mapping for a non-standard schema
+src_custom = HuggingFaceSource(
+    dataset_name="my-org/my-private-dataset",
+    prompt_field="query",
+    completion_field="response",
+    split="train[:50%]",
+    trust_remote_code=True,
+)
+```
+
+**`HuggingFaceSource` parameters:**
+
+| Parameter | Default | Description |
+|-----------|---------|-------------|
+| `dataset_name` | *(required)* | HuggingFace dataset ID, e.g. `"tatsu-lab/alpaca"` |
+| `split` | `"train"` | Split or slice, e.g. `"train[:5000]"` |
+| `subset` | `None` | Config/subset name (second arg to `load_dataset`) |
+| `text_field` | auto | Column containing plain text |
+| `prompt_field` | auto | Column containing prompt / question |
+| `completion_field` | auto | Column containing completion / answer |
+| `messages_field` | auto | Column containing a messages list |
+| `instruction_field` | auto | Alpaca-style instruction column |
+| `input_field` | auto | Alpaca-style optional context column |
+| `output_field` | auto | Alpaca-style output column |
+| `max_samples` | all | Cap rows per dataset |
+| `shuffle` | `False` | Shuffle before slicing |
+| `seed` | `42` | Seed for shuffle |
+| `streaming` | `False` | HuggingFace streaming mode |
+| `trust_remote_code` | `False` | Required by some community datasets |
+| `cache_dir` | system default | Override local cache directory |
+
+---
 
 ### Python API (Dataset)
 
-**Convenience function — one liner:**
+**`ingest_dataset()` — one-liner for all three modes:**
 
 ```python
-from swiftllm.dataset import ingest_dataset
+from swiftllm import ingest_dataset, HuggingFaceSource
 
-# Pretraining from a docs directory
+# Mode 1 — local files only
 result = ingest_dataset(
     input_paths="./docs/",
     output_path="./data/train.jsonl",
 )
 print(result.summary())
 
-# Code fine-tuning from a repo
+# Mode 2 — HuggingFace only
+result = ingest_dataset(
+    hf_sources=[HuggingFaceSource("tatsu-lab/alpaca")],
+    output_path="./data/alpaca.jsonl",
+    format="sft_completion",
+)
+
+# Mode 3 — local files + HuggingFace combined
+result = ingest_dataset(
+    input_paths=["./my_docs/", "domain_notes.pdf"],
+    hf_sources=[
+        HuggingFaceSource("tatsu-lab/alpaca"),
+        HuggingFaceSource(
+            "HuggingFaceFW/fineweb",
+            subset="sample-10BT",
+            streaming=True,
+            max_samples=20_000,
+        ),
+    ],
+    output_path="./data/combined.jsonl",
+    format="sft_completion",
+)
+print(result.summary())
+# Dataset ingestion complete
+#   Total chunks    : 32,847
+#   ── Local files ──────────────────
+#   Files processed : 14
+#   Chunks written  : 12,847
+#   ── HuggingFace datasets ─────────
+#   Rows consumed   : 52,002
+#   Chunks written  : 20,000
+#     tatsu-lab/alpaca               52002 chunks
+#     HuggingFaceFW/fineweb          20000 chunks
+
+# Code fine-tuning from a source tree
 result = ingest_dataset(
     input_paths=["./src/", "./tests/"],
     output_path="./data/code_train.jsonl",
@@ -895,64 +1147,21 @@ result = ingest_dataset(
     file_extensions=[".py", ".rs", ".go"],
     chunk_size=1500,
 )
-
-# SFT from heterogeneous sources
-result = ingest_dataset(
-    input_paths=["research.pdf", "qa_pairs.csv", "./notes/"],
-    output_path="./data/sft.jsonl",
-    format="sft_completion",
-    chunk_size=1024,
-    chunk_overlap=64,
-)
 ```
 
-**Full-control API — `DatasetIngester` + `IngestionConfig`:**
-
-```python
-from swiftllm.dataset import DatasetIngester, DatasetFormat, IngestionConfig
-
-cfg = IngestionConfig(
-    input_paths=["./src/", "paper.pdf", "qa_pairs.csv"],
-    output_path="./data/train.jsonl",
-    format=DatasetFormat.SFT_MESSAGES,
-    chunk_size=2048,
-    chunk_overlap=128,
-    min_length=50,
-    max_file_size_mb=100.0,
-    file_extensions=[".py", ".md", ".pdf", ".csv"],
-    recursive=True,
-    system_prompt="You are a helpful coding assistant.",
-    sft_user_template="Continue the following code:\n\n{text}",
-    deduplicate=True,
-    include_metadata=True,    # adds _source, _ext
-    verbose=True,
-)
-
-result = DatasetIngester(cfg).ingest()
-print(result.summary())
-# result.total_files_scanned
-# result.total_files_processed
-# result.total_chunks
-# result.total_chars
-# result.skipped_files    → list of (path, reason) tuples
-# result.format_counts    → {".py": 80, ".md": 40, ".pdf": 12}
-```
-
-**`prepare_dataset()` in `training.py`:**
+**`prepare_dataset()` — two-step ingest-then-train:**
 
 ```python
 from swiftllm.training import prepare_dataset, Trainer, TrainingConfig
 
-# Step 1 — convert files to JSONL
 result = prepare_dataset(
-    input_paths=["./docs/", "paper.pdf", "qa_pairs.csv"],
+    input_paths=["./docs/", "paper.pdf"],
     output_path="./data/train.jsonl",
     format="sft_completion",
     chunk_size=1024,
 )
 print(result.summary())
 
-# Step 2 — train on the result
 config = TrainingConfig(
     model="meta-llama/Llama-2-7b-hf",
     train_data="./data/train.jsonl",
@@ -962,72 +1171,152 @@ config = TrainingConfig(
 Trainer(config).train()
 ```
 
+---
+
+### Python API — DatasetIngester
+
+Full control via `DatasetIngester` + `IngestionConfig`:
+
+```python
+from swiftllm import (
+    DatasetIngester, DatasetFormat, IngestionConfig, HuggingFaceSource
+)
+
+cfg = IngestionConfig(
+    output_path="./data/train.jsonl",
+    # Local sources (optional if hf_sources provided)
+    input_paths=["./src/", "paper.pdf", "qa_pairs.csv"],
+    # HuggingFace sources (optional if input_paths provided)
+    hf_sources=[
+        HuggingFaceSource("tatsu-lab/alpaca"),
+        HuggingFaceSource(
+            "HuggingFaceFW/fineweb",
+            subset="sample-10BT",
+            streaming=True,
+            max_samples=50_000,
+        ),
+    ],
+    format=DatasetFormat.SFT_MESSAGES,
+    chunk_size=2048,
+    chunk_overlap=128,
+    min_length=50,
+    max_file_size_mb=100.0,
+    file_extensions=[".py", ".md", ".pdf", ".csv"],
+    recursive=True,
+    system_prompt="You are a helpful coding assistant.",
+    deduplicate=True,       # shared across local + HF sources
+    include_metadata=True,  # adds _source, _ext
+    verbose=True,
+)
+
+result = DatasetIngester(cfg).ingest()
+print(result.summary())
+```
+
 **`IngestionResult` fields:**
 
 | Field | Type | Description |
 |-------|------|-------------|
-| `total_files_scanned` | `int` | All files visited (including skipped) |
-| `total_files_processed` | `int` | Files that produced ≥1 chunk |
-| `total_chunks` | `int` | Total JSONL records written |
-| `total_chars` | `int` | Total raw characters extracted |
-| `skipped_files` | `list[(str, str)]` | `(path, reason)` for each skipped file |
+| `total_chunks` | `int` | Total JSONL records written (local + HF) |
+| `total_files_scanned` | `int` | Local files visited (including skipped) |
+| `total_files_processed` | `int` | Local files that produced ≥1 chunk |
+| `total_chars` | `int` | Raw characters extracted from local files |
+| `format_counts` | `dict[str, int]` | Local records per extension, e.g. `{".py": 80}` |
+| `total_hf_rows` | `int` | Rows consumed from all HuggingFace sources |
+| `total_hf_chunks` | `int` | Records written from HuggingFace sources |
+| `hf_dataset_counts` | `dict[str, int]` | Records per HF dataset, e.g. `{"tatsu-lab/alpaca": 52000}` |
+| `skipped_files` | `list[(str, str)]` | `(path, reason)` for each skipped local file |
 | `output_path` | `str` | Absolute path of the written `.jsonl` |
-| `format_counts` | `dict[str, int]` | Records per extension, e.g. `{".py": 80}` |
+
+---
 
 ### Auto-Ingest in Trainer
 
-`Trainer`, `fine_tune()`, and `GrpoTrainer` automatically ingest a directory
-or list of paths when `train_data` is not a `.jsonl` file.  The produced JSONL
-is written to `<output_dir>/auto_train.jsonl` and persists alongside checkpoints.
+`Trainer`, `fine_tune()`, and `GrpoTrainer` automatically ingest any non-JSONL `train_data` before training begins.  The produced JSONL is written to `<output_dir>/auto_train.jsonl` and persists alongside checkpoints.
 
 ```python
 from swiftllm.training import fine_tune
 
-# Pass a directory — ingestion fires automatically
+# Mode 1 — directory of local files (existing behaviour)
 trainer = fine_tune(
     model="meta-llama/Llama-2-7b-hf",
-    train_data="./my_codebase/",     # ← directory, not a .jsonl!
+    train_data="./my_codebase/",
     output_dir="./output",
     lora_r=16,
     num_epochs=3,
 )
 
-# Pass a mixed list of paths
+# Mode 2 — HuggingFace only (new)
+trainer = fine_tune(
+    model="meta-llama/Llama-2-7b-hf",
+    hf_dataset="tatsu-lab/alpaca",
+    dataset_format="sft_completion",
+    output_dir="./output",
+    lora_r=32,
+    num_epochs=3,
+)
+
+# Mode 3 — local files + HuggingFace combined (new)
+trainer = fine_tune(
+    model="meta-llama/Llama-2-7b-hf",
+    train_data="./my_docs/",           # local files
+    hf_dataset="tatsu-lab/alpaca",     # HF dataset merged in
+    hf_max_samples=10_000,
+    dataset_format="sft_completion",
+    output_dir="./output",
+    lora_r=16,
+)
+
+# Pass a mixed list of local paths
 trainer = fine_tune(
     model="meta-llama/Llama-2-7b-hf",
     train_data=["paper.pdf", "qa_pairs.csv", "./notes/"],
-    output_dir="./output",
     dataset_format="sft_completion",
+    output_dir="./output",
 )
 
-# Trainer class — same behaviour
+# "hf:" prefix shorthand inside TrainingConfig
 from swiftllm.training import Trainer, TrainingConfig
 config = TrainingConfig(
     model="meta-llama/Llama-2-7b-hf",
-    train_data="./data/raw/",        # ← directory auto-ingested
+    train_data="hf:tatsu-lab/alpaca",   # ← auto-ingested from HF Hub
     output_dir="./output",
 )
 Trainer(config).train()
 ```
 
+**`fine_tune()` HuggingFace parameters:**
+
+| Parameter | Default | Description |
+|-----------|---------|-------------|
+| `hf_dataset` | `None` | HuggingFace dataset name to pull in |
+| `hf_split` | `"train"` | Dataset split |
+| `hf_subset` | `None` | Config/subset name |
+| `hf_max_samples` | all | Maximum rows to consume |
+| `hf_streaming` | `False` | Streaming mode (no full download) |
+
+---
+
 ### Optional Dependencies for Dataset Ingestion
 
-| Format | Package | Install |
-|--------|---------|---------|
+| Format / Feature | Package | Install |
+|------------------|---------|---------|
+| HuggingFace datasets | `datasets` | `pip install datasets` |
 | PDF | `pdfplumber` *(recommended)* | `pip install pdfplumber` |
 | PDF *(fallback)* | `pypdf` | `pip install pypdf` |
 | DOCX | `python-docx` | `pip install python-docx` |
 | HTML/XML *(improved)* | `beautifulsoup4` | `pip install beautifulsoup4` |
 
-HTML and XML work without `beautifulsoup4` via a regex fallback, but the
-output quality is better with the full parser installed.  PDF and DOCX require
-their respective libraries; an `ImportError` with install instructions is raised
-if neither is available when a matching file is encountered.
+Install all at once:
 
-Install all optional dependencies at once:
 ```bash
-pip install pdfplumber python-docx beautifulsoup4
+pip install datasets pdfplumber python-docx beautifulsoup4
 ```
+
+HTML and XML work without `beautifulsoup4` via a regex fallback, but the output
+quality is better with the full parser installed.  PDF and DOCX require their
+respective libraries; a clear `ImportError` with install instructions is raised
+if neither is available when a matching file is encountered.
 
 ---
 
@@ -1036,17 +1325,29 @@ pip install pdfplumber python-docx beautifulsoup4
 ### Quick Fine-Tune with LoRA (CLI)
 
 ```bash
-# LoRA fine-tuning from an existing JSONL file
+# Fine-tune from an existing JSONL file
 swiftllm finetune \
   -m meta-llama/Llama-2-7b-hf \
   --train-data ./data/train.jsonl \
   --lora-r 16 --lora-alpha 32 \
   --learning-rate 2e-4
 
-# Fine-tune directly from a directory of files — ingestion is automatic
-# (any mix of .txt, .md, .py, .rs, .pdf, .docx, .csv, .json, .html, …)
+# Fine-tune from a directory of local files — ingestion is automatic
 swiftllm dataset -i ./my_corpus/ -o ./data/train.jsonl --format sft_completion
 swiftllm finetune -m meta-llama/Llama-2-7b-hf --train-data ./data/train.jsonl --lora-r 16
+
+# Fine-tune from a HuggingFace dataset — ingest then train
+swiftllm dataset --hf-dataset tatsu-lab/alpaca --format sft_completion -o ./data/alpaca.jsonl
+swiftllm finetune -m meta-llama/Llama-2-7b-hf --train-data ./data/alpaca.jsonl --lora-r 16
+
+# Fine-tune from HuggingFace + your own files (combined in one step)
+swiftllm dataset \
+  --input ./my_docs/ \
+  --hf-dataset tatsu-lab/alpaca \
+  --hf-max-samples 10000 \
+  --format sft_completion \
+  -o ./data/combined.jsonl
+swiftllm finetune -m meta-llama/Llama-2-7b-hf --train-data ./data/combined.jsonl --lora-r 16
 
 # Full training command with all options
 swiftllm train \
@@ -1064,9 +1365,9 @@ swiftllm train \
 ### Python Training API
 
 ```python
-from swiftllm import Trainer, TrainingConfig, LoRAConfig
+from swiftllm import Trainer, TrainingConfig, LoRAConfig, fine_tune
 
-# Fine-tune from an existing JSONL file
+# ── From an existing JSONL file ──────────────────────────────────────────────
 config = TrainingConfig(
     model="meta-llama/Llama-2-7b-hf",
     train_data="./data/train.jsonl",
@@ -1077,18 +1378,44 @@ config = TrainingConfig(
 )
 Trainer(config).train()
 
-# Fine-tune from a directory — DatasetIngester runs automatically,
-# writes output_dir/auto_train.jsonl, then training begins
+# ── From a local directory (auto-ingested) ───────────────────────────────────
 config = TrainingConfig(
     model="meta-llama/Llama-2-7b-hf",
-    train_data="./my_corpus/",       # any directory of source files
+    train_data="./my_corpus/",       # any directory; writes auto_train.jsonl first
     output_dir="./output",
 )
 Trainer(config).train()
 
-# Fine-tune from a mixed list of paths (files + directories)
-from swiftllm import fine_tune
+# ── From a HuggingFace dataset only (new) ────────────────────────────────────
+trainer = fine_tune(
+    model="meta-llama/Llama-2-7b-hf",
+    hf_dataset="tatsu-lab/alpaca",
+    dataset_format="sft_completion",
+    output_dir="./output",
+    lora_r=32,
+    num_epochs=3,
+)
 
+# ── From HuggingFace + local files combined (new) ────────────────────────────
+trainer = fine_tune(
+    model="meta-llama/Llama-2-7b-hf",
+    train_data="./my_docs/",           # local files
+    hf_dataset="tatsu-lab/alpaca",     # HuggingFace dataset merged in
+    hf_max_samples=10_000,
+    dataset_format="sft_completion",
+    output_dir="./output",
+    lora_r=16,
+)
+
+# ── "hf:" shorthand in TrainingConfig ────────────────────────────────────────
+config = TrainingConfig(
+    model="meta-llama/Llama-2-7b-hf",
+    train_data="hf:tatsu-lab/alpaca",  # pulled from Hub automatically
+    output_dir="./output",
+)
+Trainer(config).train()
+
+# ── Mixed list of local paths ─────────────────────────────────────────────────
 trainer = fine_tune(
     model="meta-llama/Llama-2-7b-hf",
     train_data=["paper.pdf", "qa_pairs.csv", "./notes/"],
@@ -1097,7 +1424,7 @@ trainer = fine_tune(
     num_epochs=3,
 )
 
-# Explicit two-step: ingest first, then train
+# ── Explicit two-step: ingest first, then train ───────────────────────────────
 from swiftllm.training import prepare_dataset
 
 result = prepare_dataset(
@@ -1105,7 +1432,7 @@ result = prepare_dataset(
     output_path="./data/train.jsonl",
     format="sft_messages",
 )
-print(result.summary())   # files processed, chunks written, etc.
+print(result.summary())
 
 trainer = fine_tune(
     model="meta-llama/Llama-2-7b-hf",
@@ -1155,7 +1482,7 @@ opt.step(&mut param, &grad, "layer0.weight");
 
 ### Training Data Formats
 
-> **Have raw files instead of JSONL?**  See [Dataset Ingestion](#dataset-ingestion) — one command converts directories of `.txt`, `.md`, `.py`, `.pdf`, `.docx`, `.csv`, `.html`, and more into any of the formats below.
+> **Have raw files or want to use a public dataset?**  See [Dataset Ingestion](#dataset-ingestion) — one command converts directories of `.txt`, `.md`, `.py`, `.pdf`, `.docx`, `.csv`, `.html`, and more into any of the formats below, or pulls directly from any HuggingFace Hub dataset with `--hf-dataset`.  You can mix both sources in a single run.
 
 SwiftLLM accepts three input formats for supervised fine-tuning.
 
@@ -2629,11 +2956,22 @@ swiftllm finetune -m <model> --train-data <data> --lora-r 16
 # GRPO reinforcement learning training (Phase 2)
 swiftllm grpo -m <model> --train-data <data> --group-size 8 [--enable-prm] [--long-reward-weight 0.1]
 
-# Dataset ingestion — convert files/dirs to JSONL training data
-swiftllm dataset -i ./docs/ -o train.jsonl                        # pretraining from a directory
+# Dataset ingestion — local files
+swiftllm dataset -i ./docs/ -o train.jsonl                         # pretraining from a directory
 swiftllm dataset -i ./src/ -o code.jsonl --format code --extensions .py,.rs
 swiftllm dataset -i paper.pdf qa.csv ./notes/ -o sft.jsonl --format sft_completion
-swiftllm dataset -i ./corpus/ -o /dev/null --stats-only          # dry-run statistics
+swiftllm dataset -i ./corpus/ -o /dev/null --stats-only            # dry-run statistics
+
+# Dataset ingestion — HuggingFace Hub datasets
+swiftllm dataset --hf-dataset tatsu-lab/alpaca -o alpaca.jsonl --format sft_completion
+swiftllm dataset --hf-dataset HuggingFaceFW/fineweb --hf-subset sample-10BT \
+  --hf-streaming --hf-max-samples 100000 -o fineweb.jsonl
+swiftllm dataset --hf-dataset tatsu-lab/alpaca HuggingFaceH4/ultrachat_200k \
+  --format sft_messages -o multi_hf.jsonl
+
+# Dataset ingestion — local files + HuggingFace combined
+swiftllm dataset -i ./my_docs/ --hf-dataset tatsu-lab/alpaca \
+  --hf-max-samples 10000 --format sft_completion -o combined.jsonl
 ```
 
 ### Model Specifiers
@@ -2973,24 +3311,41 @@ SwiftLLM includes built-in security features across the server, installer, and r
 
 ### v2.2.0-beta
 
-**Dataset Ingestion** (`python/swiftllm/dataset.py`)
+**HuggingFace Dataset Support** (`python/swiftllm/dataset.py`, `training.py`, `cli.py`)
 
-- **New**: `dataset.py` — full multi-format dataset ingestion pipeline
+- **New**: `HuggingFaceSource` dataclass — describes one HuggingFace Hub dataset to pull into the ingestion pipeline
+  - **Auto-detects** Alpaca (`instruction`/`output`), ShareGPT (`conversations` with `from`/`value`), OpenAI messages (`messages` with `role`/`content`), prompt+completion, Q&A, and plain `text` schemas — no field mapping needed for standard datasets
+  - **Field overrides**: `text_field`, `prompt_field`, `completion_field`, `messages_field`, `instruction_field`, `input_field`, `output_field` for non-standard schemas
+  - **Sampling controls**: `max_samples`, `shuffle`, `seed`
+  - **Streaming mode**: avoids full dataset download for very large corpora (FineWeb, RedPajama, The Pile)
+  - **`trust_remote_code`** / **`cache_dir`** pass-through to `load_dataset()`
+  - ShareGPT `from`/`value` conversations normalised to OpenAI `role`/`content` format automatically
+- **Updated**: `IngestionConfig` — new `hf_sources: List[HuggingFaceSource]` field; `input_paths` now optional (supply either `input_paths`, `hf_sources`, or both)
+- **Updated**: `IngestionResult` — three new fields: `total_hf_rows`, `total_hf_chunks`, `hf_dataset_counts`; `summary()` now shows a separate HuggingFace section
+- **Updated**: `DatasetIngester.ingest()` — processes local files then HF sources in sequence; SHA-256 dedup pool is shared so duplicates across sources are eliminated
+- **Updated**: `ingest_dataset()` — gains `hf_sources` parameter; `input_paths` now defaults to `None` for HF-only use
+- **Updated**: `Trainer._auto_ingest_if_needed()` — handles `train_data="hf:<dataset>"` shorthand and `config.hf_train_sources`
+- **Updated**: `fine_tune()` — new parameters: `hf_dataset`, `hf_split`, `hf_subset`, `hf_max_samples`, `hf_streaming`
+- **Updated**: `cli.py` — `swiftllm dataset` gains 14 new `--hf-*` flags; `--input` is now optional (omit when using only `--hf-dataset`); added Sources and HuggingFace options groups
+- **Updated**: `__init__.py` — exports `HuggingFaceSource`
+- **New optional dependency**: `pip install datasets` (`pip install swiftllm[hf]`)
+
+**Dataset Ingestion** (`python/swiftllm/dataset.py`) *(original v2.2.0-beta additions)*
+
+- **New**: `dataset.py` — full multi-format local file ingestion pipeline
   - **Formats read**: `.txt` `.md` `.rst` `.log` `.tex` · `.py` `.js` `.ts` `.rs` `.go` `.java` `.c` `.cpp` `.cs` `.rb` `.php` `.swift` `.kt` `.sql` `.yaml` `.toml` `.sh` and 20+ more code extensions · `.pdf` (pdfplumber → pypdf → PyPDF2 cascade) · `.docx` (python-docx) · `.html`/`.xml` (BeautifulSoup4 or regex fallback) · `.csv` · `.json` · `.jsonl`
-  - **Output schemas**: `pretraining` `{"text":"…"}` · `sft_messages` `{"messages":[…]}` · `sft_completion` `{"prompt":"…","completion":"…"}` · `code` `{"prompt":"# lang\n# File: …","completion":code}`
-  - **Smart parsing**: CSV auto-detects `prompt`/`completion`/`messages`/`text` columns and passes structured data through directly; JSONL records remapped to output format
+  - **Output schemas**: `pretraining` · `sft_messages` · `sft_completion` · `code`
+  - **Smart parsing**: CSV/JSONL auto-detects `prompt`/`completion`/`messages`/`text` columns and passes structured data through directly
   - **Code-aware chunking**: splits at `def`/`class`/`fn`/`func`/`impl` boundaries before falling back to character-level chunking
   - **SHA-256 deduplication**: skips exact-duplicate chunks across the entire run
-  - **Size guard**: skips files above configurable `max_file_size_mb` limit
+  - **Size guard**: skips files above configurable `max_file_size_mb`
   - **Metadata attachment**: optional `_source` / `_ext` keys per record
-  - **`ingest_dataset()`** convenience one-liner function
-- **New**: `prepare_dataset()` in `training.py` — full docstring with format examples, forwards to `DatasetIngester`
-- **Updated**: `Trainer._auto_ingest_if_needed()` — if `train_data` is a directory path or a list of paths, `DatasetIngester` runs automatically before training and writes `<output_dir>/auto_train.jsonl`
-- **Updated**: `fine_tune()` — `train_data` now accepts `str | List[str]`; added `dataset_format` parameter
-- **Updated**: `__init__.py` — exports `DatasetIngester`, `DatasetFormat`, `IngestionConfig`, `IngestionResult`, `ingest_dataset`, `prepare_dataset`, `ALL_EXTENSIONS`, `CODE_EXTENSIONS`, `TEXT_EXTENSIONS`, `DOCUMENT_EXTENSIONS`
-- **Updated**: `cli.py` — new `swiftllm dataset` subcommand with 15 flags; `dataset` added to dispatch table
-- **New**: `examples/dataset_ingestion.py` — 6 demo modes: pretraining, sft_messages, sft_completion, code, mixed sources, and auto-ingest through `fine_tune()`
-- **Updated**: README — new **Dataset Ingestion** section (supported formats table, output schema table, full CLI flag reference, Python API examples, auto-ingest patterns, optional dependencies); Key Features, intro, Training API, architecture diagram, and CLI Commands updated to reflect dataset ingestion throughout
+- **New**: `prepare_dataset()` in `training.py` — convenience wrapper with full docstring
+- **Updated**: `Trainer._auto_ingest_if_needed()` — fires automatically when `train_data` is a directory or list
+- **Updated**: `fine_tune()` — `train_data` accepts `str | List[str]`; `dataset_format` parameter added
+- **Updated**: `__init__.py` — exports all dataset classes and helpers
+- **Updated**: `cli.py` — `swiftllm dataset` subcommand with full flag set
+- **New**: `examples/dataset_ingestion.py` — 6 demo modes
 - **Version bump**: `2.1.0-beta` → `2.2.0-beta`
 
 ---

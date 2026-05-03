@@ -112,6 +112,7 @@ from .model_resolver import resolve_model
 from .dataset import (
     DatasetIngester,
     DatasetFormat,
+    HuggingFaceSource,
     IngestionConfig,
     IngestionResult,
     ingest_dataset,
@@ -178,6 +179,7 @@ __all__ = [
     # Dataset ingestion
     "DatasetIngester",
     "DatasetFormat",
+    "HuggingFaceSource",
     "IngestionConfig",
     "IngestionResult",
     "ingest_dataset",

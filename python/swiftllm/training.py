@@ -365,45 +365,73 @@ class Trainer:
 
     @staticmethod
     def _auto_ingest_if_needed(config: TrainingConfig) -> TrainingConfig:
-        """If train_data is a directory or list, run DatasetIngester automatically.
+        """Auto-ingest local directories, file lists, or HuggingFace datasets.
+
+        Triggers when ``train_data`` is:
+          - A directory path (local files ingested with DatasetIngester)
+          - A list of paths (local files/dirs ingested)
+          - A HuggingFace dataset name string starting with ``"hf:"`` prefix
+            (e.g. ``"hf:tatsu-lab/alpaca"``)
+
+        Additionally, ``config.hf_train_sources`` (if set) will always be
+        ingested and merged with any local paths.
 
         The produced JSONL is written to ``<output_dir>/auto_train.jsonl`` so it
         persists alongside checkpoints and is not a temp file.  A note is printed
         so the user can inspect and reuse it.
         """
+        import copy
+        from .dataset import DatasetIngester, DatasetFormat, IngestionConfig, HuggingFaceSource
+
         train_data = config.train_data
-        if not train_data:
-            return config
-
-        # Detect: is it a directory or a list of paths?
-        needs_ingest = False
         input_paths: List[str] = []
+        hf_sources: List[HuggingFaceSource] = []
+        needs_ingest = False
 
+        # --- Resolve train_data -------------------------------------------
         if isinstance(train_data, list):
             input_paths = [str(p) for p in train_data]
             needs_ingest = True
         elif isinstance(train_data, str):
-            p = Path(train_data)
-            if p.is_dir():
-                input_paths = [str(p)]
+            if train_data.startswith("hf:"):
+                # e.g. "hf:tatsu-lab/alpaca" or "hf:tatsu-lab/alpaca:train"
+                parts = train_data[3:].split(":", 1)
+                ds_name = parts[0]
+                split = parts[1] if len(parts) > 1 else "train"
+                hf_sources.append(HuggingFaceSource(dataset_name=ds_name, split=split))
                 needs_ingest = True
+            else:
+                p = Path(train_data)
+                if p.is_dir():
+                    input_paths = [str(p)]
+                    needs_ingest = True
+
+        # --- Merge any explicit hf_train_sources on config ------------------
+        extra_hf = getattr(config, "hf_train_sources", None) or []
+        if extra_hf:
+            hf_sources.extend(extra_hf)
+            needs_ingest = True
 
         if not needs_ingest:
-            return config  # already a JSONL/CSV file
-
-        from .dataset import DatasetIngester, DatasetFormat, IngestionConfig
+            return config  # already a JSONL/CSV file — pass through
 
         os.makedirs(config.output_dir, exist_ok=True)
         jsonl_path = os.path.join(config.output_dir, "auto_train.jsonl")
 
-        print(f"[DatasetIngester] Auto-ingesting {len(input_paths)} input path(s)…")
-        for p in input_paths:
-            print(f"  {p}")
+        if input_paths:
+            print(f"[DatasetIngester] Auto-ingesting {len(input_paths)} local path(s):")
+            for p in input_paths:
+                print(f"  {p}")
+        if hf_sources:
+            print(f"[DatasetIngester] HuggingFace sources:")
+            for s in hf_sources:
+                print(f"  {s.dataset_name}  split={s.split!r}")
         print(f"[DatasetIngester] Output → {jsonl_path}")
 
         ingest_cfg = IngestionConfig(
-            input_paths=input_paths,
             output_path=jsonl_path,
+            input_paths=input_paths,
+            hf_sources=hf_sources,
             format=DatasetFormat.PRETRAINING,
             chunk_size=config.max_seq_len * 4,  # ~4 chars/token heuristic
             chunk_overlap=128,
@@ -411,11 +439,13 @@ class Trainer:
             verbose=False,
         )
         result = DatasetIngester(ingest_cfg).ingest()
-        print(f"[DatasetIngester] {result.total_chunks} chunks written "
-              f"({result.total_files_processed}/{result.total_files_scanned} files).")
+        print(
+            f"[DatasetIngester] {result.total_chunks} total chunks written "
+            f"(local: {result.total_chunks - result.total_hf_chunks}, "
+            f"HF: {result.total_hf_chunks})."
+        )
 
         # Clone config with the resolved JSONL path
-        import copy
         new_config = copy.copy(config)
         new_config.train_data = jsonl_path
         return new_config
@@ -918,44 +948,59 @@ def prepare_dataset(
 
 def fine_tune(
     model: str,
-    train_data: Union[str, List[str]],
+    train_data: Union[str, List[str], None] = None,
     output_dir: str = "./output",
     lora_r: int = 16,
     lora_alpha: float = 32.0,
     learning_rate: float = 2e-4,
     num_epochs: int = 1,
     dataset_format: str = "pretraining",
+    hf_dataset: Optional[str] = None,
+    hf_split: str = "train",
+    hf_subset: Optional[str] = None,
+    hf_max_samples: Optional[int] = None,
+    hf_streaming: bool = False,
     **kwargs,
 ) -> Trainer:
     """Convenience function for fine-tuning with LoRA.
 
-    ``train_data`` may be a JSONL file path, a directory of files, or a list of
-    paths (files and/or directories).  When a directory or list is provided,
-    :func:`prepare_dataset` is called automatically to convert the files into a
-    JSONL dataset stored in ``<output_dir>/auto_train.jsonl`` before training
-    begins.
+    Accepts local files, HuggingFace datasets, or both at the same time.
+    When any directory, file list, or HF dataset is provided, ingestion runs
+    automatically before training and the output is saved to
+    ``<output_dir>/auto_train.jsonl``.
 
     Args:
         model: Model path or HuggingFace model ID.
         train_data:
             Path to a ``.jsonl`` training file **or** a directory / list of
             paths containing source files (text, code, PDF, DOCX, CSV, …).
+            Pass ``None`` (default) when training from ``hf_dataset`` only.
         output_dir: Directory for checkpoints and the final model.
         lora_r: LoRA rank (default: 16).
         lora_alpha: LoRA alpha scaling factor (default: 32).
         learning_rate: Peak learning rate (default: 2e-4).
         num_epochs: Number of training epochs (default: 1).
         dataset_format:
-            Output format when auto-ingesting from a directory or list:
+            Output format when auto-ingesting:
             ``"pretraining"`` | ``"sft_messages"`` | ``"sft_completion"`` | ``"code"``.
-            Ignored when ``train_data`` is already a ``.jsonl`` file.
+        hf_dataset:
+            HuggingFace dataset name to pull in, e.g. ``"tatsu-lab/alpaca"``.
+            May be combined with ``train_data``.
+        hf_split:
+            Dataset split to use (default: ``"train"``).
+        hf_subset:
+            Dataset config / subset name, e.g. ``"sample-10BT"`` for FineWeb.
+        hf_max_samples:
+            Maximum rows to consume from the HF dataset.  ``None`` = all.
+        hf_streaming:
+            Use HuggingFace streaming mode (avoids full download).
         **kwargs: Additional :class:`TrainingConfig` parameters.
 
     Returns:
         :class:`Trainer` instance (training already complete).
 
     Examples:
-        Fine-tune on an existing JSONL::
+        Fine-tune on an existing JSONL only::
 
             trainer = fine_tune(
                 model="meta-llama/Llama-2-7b-hf",
@@ -963,17 +1008,28 @@ def fine_tune(
                 lora_r=16,
             )
 
-        Fine-tune on a directory of source files::
+        Fine-tune on a HuggingFace dataset only::
 
             trainer = fine_tune(
                 model="meta-llama/Llama-2-7b-hf",
-                train_data="./my_project/",   # any mix of .py .md .txt etc.
-                dataset_format="code",
+                hf_dataset="tatsu-lab/alpaca",
+                dataset_format="sft_completion",
                 lora_r=32,
                 num_epochs=3,
             )
 
-        Fine-tune on mixed sources::
+        Fine-tune on HuggingFace + your own documents (combined)::
+
+            trainer = fine_tune(
+                model="meta-llama/Llama-2-7b-hf",
+                train_data="./my_docs/",           # local files
+                hf_dataset="tatsu-lab/alpaca",     # HF dataset
+                dataset_format="sft_completion",
+                hf_max_samples=10_000,
+                lora_r=16,
+            )
+
+        Fine-tune on a list of local files::
 
             trainer = fine_tune(
                 model="meta-llama/Llama-2-7b-hf",
@@ -982,9 +1038,21 @@ def fine_tune(
                 lora_r=16,
             )
     """
+    from .dataset import HuggingFaceSource
+
+    hf_sources = []
+    if hf_dataset:
+        hf_sources.append(HuggingFaceSource(
+            dataset_name=hf_dataset,
+            split=hf_split,
+            subset=hf_subset,
+            max_samples=hf_max_samples,
+            streaming=hf_streaming,
+        ))
+
     config = TrainingConfig(
         model=model,
-        train_data=train_data,   # Trainer.__init__ will auto-ingest if directory/list
+        train_data=train_data,      # Trainer.__init__ auto-ingests dirs/lists
         output_dir=output_dir,
         fine_tuning_method=FineTuningMethod.LORA,
         lora=LoRAConfig(r=lora_r, alpha=lora_alpha),
@@ -992,6 +1060,9 @@ def fine_tune(
         num_epochs=num_epochs,
         **kwargs,
     )
+    # Attach HF sources so _auto_ingest_if_needed can pick them up
+    if hf_sources:
+        config.hf_train_sources = hf_sources  # type: ignore[attr-defined]
     trainer = Trainer(config)
     trainer.train()
     return trainer

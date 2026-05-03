@@ -212,6 +212,17 @@ _CODE_BOUNDARY_RE = re.compile(
     re.MULTILINE,
 )
 
+# Map ShareGPT "from" values → standard OpenAI role names
+_FROM_ROLE_MAP: Dict[str, str] = {
+    "human":     "user",
+    "user":      "user",
+    "gpt":       "assistant",
+    "assistant": "assistant",
+    "bot":       "assistant",
+    "system":    "system",
+    "function":  "tool",
+}
+
 
 # ---------------------------------------------------------------------------
 # Public enumerations and dataclasses
@@ -230,6 +241,108 @@ class DatasetFormat(Enum):
     SFT_MESSAGES = "sft_messages"
     SFT_COMPLETION = "sft_completion"
     CODE = "code"
+
+
+@dataclass
+class HuggingFaceSource:
+    """One HuggingFace Hub dataset to pull into the ingestion pipeline.
+
+    Mix freely with local file paths — the ingester processes both and writes
+    a single deduplicated JSONL file.
+
+    Attributes
+    ----------
+    dataset_name:
+        HuggingFace dataset ID, e.g. ``"tatsu-lab/alpaca"`` or
+        ``"HuggingFaceH4/ultrachat_200k"``.
+    split:
+        Dataset split to load (default: ``"train"``).  Slice syntax is
+        supported: ``"train[:10%]"``, ``"train[:5000]"``.
+    subset:
+        Dataset config / subset name (the second positional argument to
+        ``load_dataset``).  ``None`` for datasets with a single config.
+    text_field:
+        Override: column that contains plain text for pretraining.
+    prompt_field:
+        Override: column that contains the prompt / instruction.
+    completion_field:
+        Override: column that contains the model response / completion.
+    messages_field:
+        Override: column that contains a list of chat messages.
+    instruction_field:
+        Override: Alpaca-style instruction column.
+    input_field:
+        Override: Alpaca-style optional input/context column.
+    output_field:
+        Override: Alpaca-style output column (maps to completion).
+    max_samples:
+        Cap the number of rows to process.  ``None`` = entire split.
+    shuffle:
+        Shuffle the dataset before slicing (uses ``seed``).  Ignored in
+        streaming mode.
+    seed:
+        Random seed for shuffling (default: 42).
+    streaming:
+        Use HuggingFace streaming mode — avoids downloading the full
+        dataset to disk.  Useful for very large datasets.
+    trust_remote_code:
+        Pass ``trust_remote_code=True`` to ``load_dataset``.  Required by
+        some community datasets.
+    cache_dir:
+        Override the local cache directory for downloaded datasets.
+
+    Examples
+    --------
+    Alpaca instruction-tuning dataset::
+
+        HuggingFaceSource(dataset_name="tatsu-lab/alpaca", split="train")
+
+    Large pretraining corpus (streaming, first 50 k rows)::
+
+        HuggingFaceSource(
+            dataset_name="HuggingFaceFW/fineweb",
+            subset="sample-10BT",
+            split="train",
+            streaming=True,
+            max_samples=50_000,
+        )
+
+    Custom field names::
+
+        HuggingFaceSource(
+            dataset_name="my-org/my-dataset",
+            prompt_field="query",
+            completion_field="answer",
+        )
+    """
+    dataset_name: str
+    split: str = "train"
+    subset: Optional[str] = None
+    # Field name overrides (auto-detected when None)
+    text_field: Optional[str] = None
+    prompt_field: Optional[str] = None
+    completion_field: Optional[str] = None
+    messages_field: Optional[str] = None
+    instruction_field: Optional[str] = None
+    input_field: Optional[str] = None
+    output_field: Optional[str] = None
+    # Sampling controls
+    max_samples: Optional[int] = None
+    shuffle: bool = False
+    seed: int = 42
+    # Loading options
+    streaming: bool = False
+    trust_remote_code: bool = False
+    cache_dir: Optional[str] = None
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {k: v for k, v in self.__dict__.items() if v is not None or k in
+                ("dataset_name", "split", "shuffle", "seed", "streaming",
+                 "trust_remote_code")}
+
+    @classmethod
+    def from_dict(cls, d: Dict[str, Any]) -> "HuggingFaceSource":
+        return cls(**{k: v for k, v in d.items() if k in cls.__dataclass_fields__})
 
 
 @dataclass
@@ -283,8 +396,11 @@ class IngestionConfig:
     verbose:
         Print per-file progress to stdout (default: ``False``).
     """
-    input_paths: List[str]
+    # output_path is the only truly required field; input_paths and hf_sources
+    # may each be empty as long as at least one is non-empty.
     output_path: str
+    input_paths: List[str] = field(default_factory=list)
+    hf_sources: List[HuggingFaceSource] = field(default_factory=list)
     format: DatasetFormat = DatasetFormat.PRETRAINING
     file_extensions: Optional[List[str]] = None
     recursive: bool = True
@@ -301,6 +417,12 @@ class IngestionConfig:
     verbose: bool = False
 
     def __post_init__(self):
+        if not self.input_paths and not self.hf_sources:
+            raise ValueError(
+                "IngestionConfig requires at least one source: provide "
+                "'input_paths' (local files/dirs) and/or 'hf_sources' "
+                "(HuggingFace datasets)."
+            )
         if self.chunk_overlap >= self.chunk_size:
             raise ValueError(
                 f"chunk_overlap ({self.chunk_overlap}) must be "
@@ -323,8 +445,9 @@ class IngestionConfig:
 
     def to_dict(self) -> Dict[str, Any]:
         return {
-            "input_paths": self.input_paths,
             "output_path": self.output_path,
+            "input_paths": self.input_paths,
+            "hf_sources": [s.to_dict() for s in self.hf_sources],
             "format": self.format.value,
             "file_extensions": self.file_extensions,
             "recursive": self.recursive,
@@ -345,6 +468,11 @@ class IngestionConfig:
         d = dict(d)
         if "format" in d:
             d["format"] = DatasetFormat(d["format"])
+        if "hf_sources" in d:
+            d["hf_sources"] = [
+                HuggingFaceSource.from_dict(s) if isinstance(s, dict) else s
+                for s in d["hf_sources"]
+            ]
         return cls(**d)
 
 
@@ -377,22 +505,41 @@ class IngestionResult:
     skipped_files: List[Tuple[str, str]] = field(default_factory=list)
     output_path: str = ""
     format_counts: Dict[str, int] = field(default_factory=dict)
+    # HuggingFace-specific counters
+    total_hf_rows: int = 0
+    total_hf_chunks: int = 0
+    hf_dataset_counts: Dict[str, int] = field(default_factory=dict)
 
     def summary(self) -> str:
         """Human-readable one-block summary."""
+        local_chunks = self.total_chunks - self.total_hf_chunks
         lines = [
-            f"Dataset ingestion complete",
+            "Dataset ingestion complete",
             f"  Output          : {self.output_path}",
-            f"  Files scanned   : {self.total_files_scanned}",
-            f"  Files processed : {self.total_files_processed}",
-            f"  Chunks written  : {self.total_chunks}",
-            f"  Total chars     : {self.total_chars:,}",
+            f"  Total chunks    : {self.total_chunks}",
         ]
-        if self.format_counts:
-            lines.append("  By extension    :")
-            for ext, n in sorted(self.format_counts.items(), key=lambda x: -x[1]):
-                lines.append(f"    {ext:<14} {n:>6} chunks")
+        # Local-file section
+        if self.total_files_scanned > 0:
+            lines += [
+                f"  ── Local files ──────────────────",
+                f"  Files scanned   : {self.total_files_scanned}",
+                f"  Files processed : {self.total_files_processed}",
+                f"  Chunks written  : {local_chunks}",
+                f"  Total chars     : {self.total_chars:,}",
+            ]
+            if self.format_counts:
+                lines.append("  By extension    :")
+                for ext, n in sorted(self.format_counts.items(), key=lambda x: -x[1]):
+                    lines.append(f"    {ext:<14} {n:>6} chunks")
+        # HuggingFace section
+        if self.hf_dataset_counts:
+            lines.append(f"  ── HuggingFace datasets ─────────")
+            lines.append(f"  Rows consumed   : {self.total_hf_rows:,}")
+            lines.append(f"  Chunks written  : {self.total_hf_chunks}")
+            for name, n in self.hf_dataset_counts.items():
+                lines.append(f"    {name:<30} {n:>6} chunks")
         if self.skipped_files:
+            lines.append(f"  ── Skipped ──────────────────────")
             lines.append(f"  Skipped files   : {len(self.skipped_files)}")
             for path, reason in self.skipped_files[:5]:
                 lines.append(f"    {Path(path).name}: {reason}")
@@ -439,16 +586,23 @@ class DatasetIngester:
     def ingest(self) -> IngestionResult:
         """Run the full ingestion pipeline and return a result summary.
 
+        Processes local files first, then each HuggingFace source in order.
+        All sources share the same deduplication fingerprint set so no chunk
+        appears twice even across sources.
+
         Raises
         ------
         FileNotFoundError
-            If any ``input_path`` does not exist.
+            If any local ``input_path`` does not exist.
         OSError
             If ``output_path`` cannot be opened for writing.
+        ImportError
+            If ``hf_sources`` is non-empty and ``datasets`` is not installed.
         """
         result = IngestionResult(output_path=str(Path(self.cfg.output_path).resolve()))
 
-        files = list(self._collect_files(result))
+        # --- local files -------------------------------------------------
+        files = list(self._collect_files(result)) if self.cfg.input_paths else []
 
         with open(self.cfg.output_path, "w", encoding="utf-8") as out:
             for path in files:
@@ -466,7 +620,219 @@ class DatasetIngester:
                     ext = path.suffix.lower()
                     result.format_counts[ext] = result.format_counts.get(ext, 0) + wrote
 
+            # --- HuggingFace sources -------------------------------------
+            for src in self.cfg.hf_sources:
+                self._ingest_huggingface(src, out, result)
+
         return result
+
+    # ------------------------------------------------------------------
+    # HuggingFace ingestion
+    # ------------------------------------------------------------------
+
+    def _ingest_huggingface(
+        self,
+        src: HuggingFaceSource,
+        out_fh,
+        result: IngestionResult,
+    ) -> None:
+        """Stream rows from a HuggingFace dataset and write JSONL records.
+
+        Uses the same dedup fingerprint set as local-file ingestion so a
+        chunk that appears in both a local file and an HF dataset is only
+        written once.
+        """
+        try:
+            from datasets import load_dataset  # type: ignore
+        except ImportError:
+            raise ImportError(
+                "HuggingFace dataset support requires the 'datasets' library.\n"
+                "Install with:  pip install datasets\n"
+                "  (or)         pip install swiftllm[hf]"
+            )
+
+        if self.cfg.verbose:
+            stream_note = " [streaming]" if src.streaming else ""
+            subset_note = f"  config={src.subset!r}" if src.subset else ""
+            print(
+                f"  HF dataset : {src.dataset_name}{subset_note}"
+                f"  split={src.split!r}{stream_note}",
+                flush=True,
+            )
+
+        # Build load_dataset kwargs
+        load_kwargs: Dict[str, Any] = {
+            "split": src.split,
+            "streaming": src.streaming,
+            "trust_remote_code": src.trust_remote_code,
+        }
+        if src.cache_dir:
+            load_kwargs["cache_dir"] = src.cache_dir
+
+        ds = load_dataset(src.dataset_name, src.subset, **load_kwargs)
+
+        # Shuffle and slice (non-streaming only)
+        if not src.streaming:
+            if src.shuffle:
+                ds = ds.shuffle(seed=src.seed)
+            if src.max_samples is not None:
+                ds = ds.select(range(min(src.max_samples, len(ds))))
+
+        rows_seen = 0
+        chunks_written = 0
+
+        for row in ds:
+            if src.max_samples is not None and rows_seen >= src.max_samples:
+                break
+            rows_seen += 1
+
+            std = self._hf_row_to_std_dict(row, src)
+            if std is None:
+                continue
+
+            remapped = self._remap_record(std, f"hf://{src.dataset_name}")
+            if not remapped:
+                continue
+
+            for rec in remapped:
+                out_fh.write(json.dumps(rec, ensure_ascii=False) + "\n")
+                chunks_written += 1
+
+        result.total_hf_rows += rows_seen
+        result.total_hf_chunks += chunks_written
+        result.total_chunks += chunks_written
+        result.hf_dataset_counts[src.dataset_name] = (
+            result.hf_dataset_counts.get(src.dataset_name, 0) + chunks_written
+        )
+
+        if self.cfg.verbose:
+            print(f"    → {chunks_written} records ({rows_seen} rows)", flush=True)
+
+    def _hf_row_to_std_dict(
+        self, row: Dict[str, Any], src: HuggingFaceSource
+    ) -> Optional[Dict[str, Any]]:
+        """Convert one HF dataset row to a standard intermediate dict.
+
+        Returns a dict with one of these shapes (suitable for ``_remap_record``):
+          - ``{"messages": [...]}``
+          - ``{"prompt": "...", "completion": "..."}``
+          - ``{"text": "..."}``
+
+        Returns ``None`` if no usable content is found.
+        """
+        # ── User-specified field overrides ────────────────────────────────
+        if src.messages_field and src.messages_field in row:
+            msgs = self._normalize_messages(row[src.messages_field])
+            if msgs:
+                return {"messages": msgs}
+
+        if src.instruction_field and src.instruction_field in row:
+            out_key = src.output_field or src.completion_field
+            if out_key and out_key in row:
+                instruction = str(row[src.instruction_field]).strip()
+                output = str(row[out_key]).strip()
+                if src.input_field and src.input_field in row:
+                    ctx = str(row[src.input_field]).strip()
+                    prompt = f"{instruction}\n\n{ctx}" if ctx else instruction
+                else:
+                    prompt = instruction
+                if prompt and output:
+                    return {"prompt": prompt, "completion": output}
+
+        if src.prompt_field and src.prompt_field in row:
+            compl_key = src.completion_field or src.output_field
+            if compl_key and compl_key in row:
+                p = str(row[src.prompt_field]).strip()
+                c = str(row[compl_key]).strip()
+                if p and c:
+                    return {"prompt": p, "completion": c}
+            # prompt with no completion → treat as plain text
+            text = str(row[src.prompt_field]).strip()
+            if text:
+                return {"text": text}
+
+        if src.text_field and src.text_field in row:
+            text = str(row[src.text_field]).strip()
+            if text:
+                return {"text": text}
+
+        # ── Auto-detection ────────────────────────────────────────────────
+        keys_lower: Dict[str, str] = {k.lower(): k for k in row.keys()}
+
+        # 1. messages / conversations (ShareGPT or OpenAI format)
+        for msg_key in ("messages", "conversations", "dialog", "dialogue"):
+            if msg_key in keys_lower:
+                msgs = self._normalize_messages(row[keys_lower[msg_key]])
+                if msgs:
+                    return {"messages": msgs}
+
+        # 2. Alpaca: instruction + output (optional input context)
+        instr_key = keys_lower.get("instruction")
+        out_key = keys_lower.get("output") or keys_lower.get("response")
+        if instr_key and out_key:
+            instruction = str(row[instr_key]).strip()
+            output = str(row[out_key]).strip()
+            input_key = keys_lower.get("input")
+            ctx = str(row[input_key]).strip() if input_key else ""
+            prompt = f"{instruction}\n\n{ctx}".strip() if ctx else instruction
+            if prompt and output:
+                return {"prompt": prompt, "completion": output}
+
+        # 3. prompt + completion / response / answer
+        p_key = keys_lower.get("prompt") or keys_lower.get("question")
+        c_key = (keys_lower.get("completion") or keys_lower.get("response")
+                 or keys_lower.get("answer") or keys_lower.get("output"))
+        if p_key and c_key and p_key != c_key:
+            p = str(row[p_key]).strip()
+            c = str(row[c_key]).strip()
+            if p and c:
+                return {"prompt": p, "completion": c}
+
+        # 4. plain text fields
+        for text_key in ("text", "content", "document", "passage", "body", "code"):
+            if text_key in keys_lower:
+                text = str(row[keys_lower[text_key]]).strip()
+                if text:
+                    return {"text": text}
+
+        # 5. last resort: join all string values
+        parts = [str(v).strip() for v in row.values()
+                 if isinstance(v, str) and str(v).strip()]
+        if parts:
+            joined = " ".join(parts)
+            if len(joined) >= self.cfg.min_length:
+                return {"text": joined}
+
+        return None
+
+    @staticmethod
+    def _normalize_messages(raw: Any) -> Optional[List[Dict[str, str]]]:
+        """Normalise raw message data to ``[{"role": ..., "content": ...}]``.
+
+        Accepts:
+          - Already-normalised list of ``{"role", "content"}`` dicts
+          - ShareGPT ``{"from", "value"}`` dicts
+          - JSON string encoding either of the above
+        Returns ``None`` if the input cannot be interpreted.
+        """
+        if isinstance(raw, str):
+            try:
+                raw = json.loads(raw)
+            except (json.JSONDecodeError, TypeError):
+                return None
+        if not isinstance(raw, list):
+            return None
+
+        normalized: List[Dict[str, str]] = []
+        for m in raw:
+            if not isinstance(m, dict):
+                continue
+            if "role" in m and "content" in m:
+                normalized.append({"role": str(m["role"]), "content": str(m["content"])})
+            elif "from" in m and "value" in m:
+                role = _FROM_ROLE_MAP.get(str(m["from"]).lower(), "user")
+                normalized.append({"role": role, "content": str(m["value"])})
+        return normalized if normalized else None
 
     # ------------------------------------------------------------------
     # File collection
@@ -1012,9 +1378,10 @@ class DatasetIngester:
 # ---------------------------------------------------------------------------
 
 def ingest_dataset(
-    input_paths: Union[str, List[str]],
-    output_path: str,
+    input_paths: Union[str, List[str], None] = None,
+    output_path: str = "./train.jsonl",
     format: Union[str, DatasetFormat] = DatasetFormat.PRETRAINING,
+    hf_sources: Optional[List[HuggingFaceSource]] = None,
     chunk_size: int = 2048,
     chunk_overlap: int = 128,
     min_length: int = 50,
@@ -1027,20 +1394,26 @@ def ingest_dataset(
     verbose: bool = False,
     **kwargs: Any,
 ) -> IngestionResult:
-    """Ingest files into a JSONL training dataset.
+    """Ingest files and/or HuggingFace datasets into a JSONL training dataset.
 
     A thin wrapper around :class:`DatasetIngester` for common one-liner use.
+    Supply ``input_paths``, ``hf_sources``, or both — at least one is required.
 
     Parameters
     ----------
     input_paths:
-        Single path string or list of paths (files or directories).
+        Single path string or list of paths (local files or directories).
+        May be ``None`` when using only HuggingFace sources.
     output_path:
-        Destination ``.jsonl`` file.
+        Destination ``.jsonl`` file (default: ``"./train.jsonl"``).
     format:
         Output format: ``"pretraining"``, ``"sft_messages"``,
         ``"sft_completion"``, or ``"code"``.  Accepts string or
         :class:`DatasetFormat` enum.
+    hf_sources:
+        List of :class:`HuggingFaceSource` objects describing HuggingFace
+        datasets to pull in.  May be combined with ``input_paths`` — all
+        sources are merged into a single output file with shared dedup.
     chunk_size:
         Max characters per chunk (default: 2048).
     chunk_overlap:
@@ -1068,14 +1441,39 @@ def ingest_dataset(
     Returns
     -------
     IngestionResult
-        Statistics including chunk count and skipped files.
+        Statistics including chunk count, HF row counts, and skipped files.
 
     Examples
     --------
-    Pretraining from a docs directory::
+    Local files only::
 
         result = ingest_dataset("./docs/", "./train.jsonl")
         print(result.summary())
+
+    HuggingFace dataset only::
+
+        result = ingest_dataset(
+            hf_sources=[HuggingFaceSource("tatsu-lab/alpaca")],
+            output_path="./alpaca_train.jsonl",
+            format="sft_completion",
+        )
+
+    Mixed — HF + local files combined::
+
+        result = ingest_dataset(
+            input_paths=["./my_docs/", "domain_notes.pdf"],
+            hf_sources=[
+                HuggingFaceSource("tatsu-lab/alpaca"),
+                HuggingFaceSource(
+                    "HuggingFaceFW/fineweb",
+                    subset="sample-10BT",
+                    streaming=True,
+                    max_samples=20_000,
+                ),
+            ],
+            output_path="./combined_train.jsonl",
+            format="sft_completion",
+        )
 
     Code fine-tuning from a source tree::
 
@@ -1085,22 +1483,16 @@ def ingest_dataset(
             format="code",
             file_extensions=[".py", ".rs"],
         )
-
-    SFT from mixed sources::
-
-        result = ingest_dataset(
-            input_paths=["papers.pdf", "qa_pairs.csv", "./notes/"],
-            output_path="./sft_train.jsonl",
-            format="sft_completion",
-            chunk_size=1024,
-        )
     """
     if isinstance(input_paths, str):
         input_paths = [input_paths]
+    if input_paths is None:
+        input_paths = []
 
     cfg = IngestionConfig(
-        input_paths=input_paths,
         output_path=output_path,
+        input_paths=input_paths,
+        hf_sources=hf_sources or [],
         format=DatasetFormat(format) if isinstance(format, str) else format,
         chunk_size=chunk_size,
         chunk_overlap=chunk_overlap,
@@ -1123,16 +1515,38 @@ def ingest_dataset(
 
 def _cli_ingest(args) -> None:  # noqa: ANN001
     """Handler for ``swiftllm dataset`` called from cli.py."""
-    input_paths = args.input if isinstance(args.input, list) else [args.input]
+    input_paths: List[str] = list(args.input) if getattr(args, "input", None) else []
     fmt = DatasetFormat(args.format)
 
     ext_list = None
     if getattr(args, "extensions", None):
         ext_list = [e.strip() for e in args.extensions.split(",")]
 
+    # Build HuggingFaceSource objects from CLI flags
+    hf_sources: List[HuggingFaceSource] = []
+    hf_dataset_names: List[str] = getattr(args, "hf_dataset", None) or []
+    for ds_name in hf_dataset_names:
+        hf_sources.append(HuggingFaceSource(
+            dataset_name=ds_name,
+            split=getattr(args, "hf_split", "train"),
+            subset=getattr(args, "hf_subset", None),
+            text_field=getattr(args, "hf_text_field", None),
+            prompt_field=getattr(args, "hf_prompt_field", None),
+            completion_field=getattr(args, "hf_completion_field", None),
+            messages_field=getattr(args, "hf_messages_field", None),
+            instruction_field=getattr(args, "hf_instruction_field", None),
+            output_field=getattr(args, "hf_output_field", None),
+            max_samples=getattr(args, "hf_max_samples", None),
+            shuffle=getattr(args, "hf_shuffle", False),
+            seed=getattr(args, "hf_seed", 42),
+            streaming=getattr(args, "hf_streaming", False),
+            trust_remote_code=getattr(args, "hf_trust_remote_code", False),
+        ))
+
     cfg = IngestionConfig(
-        input_paths=input_paths,
         output_path=args.output,
+        input_paths=input_paths,
+        hf_sources=hf_sources,
         format=fmt,
         file_extensions=ext_list,
         recursive=not getattr(args, "no_recursive", False),
@@ -1146,8 +1560,11 @@ def _cli_ingest(args) -> None:  # noqa: ANN001
         verbose=getattr(args, "verbose", False),
     )
 
-    print(f"SwiftLLM Dataset Ingester")
-    print(f"  Input paths : {', '.join(cfg.input_paths)}")
+    print("SwiftLLM Dataset Ingester")
+    if cfg.input_paths:
+        print(f"  Local paths : {', '.join(cfg.input_paths)}")
+    if cfg.hf_sources:
+        print(f"  HF datasets : {', '.join(s.dataset_name for s in cfg.hf_sources)}")
     print(f"  Output      : {cfg.output_path}")
     print(f"  Format      : {cfg.format.value}")
     print(f"  Chunk size  : {cfg.chunk_size} chars  (overlap: {cfg.chunk_overlap})")

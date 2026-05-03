@@ -558,16 +558,122 @@ def _add_chat_args(parser: argparse.ArgumentParser):
 
 def _add_dataset_args(parser: argparse.ArgumentParser):
     """Add arguments for the dataset ingestion command."""
-    parser.add_argument(
+
+    # ── Source arguments ──────────────────────────────────────────────────
+    src_group = parser.add_argument_group(
+        "Sources",
+        "Provide --input, --hf-dataset, or both.  At least one is required.",
+    )
+    src_group.add_argument(
         "-i", "--input",
-        required=True,
-        nargs="+",
+        nargs="*",          # 0-or-more; validated manually so --hf-dataset alone works
+        default=[],
         metavar="PATH",
         help=(
-            "One or more input files or directories to ingest.  "
-            "Directories are walked recursively by default."
+            "One or more local files or directories to ingest.  "
+            "Directories are walked recursively by default.  "
+            "May be omitted when --hf-dataset is used."
         ),
     )
+    src_group.add_argument(
+        "--hf-dataset",
+        nargs="+",
+        default=[],
+        metavar="DATASET",
+        help=(
+            "HuggingFace dataset name(s) to pull in, e.g. 'tatsu-lab/alpaca'.  "
+            "Specify multiple times (or space-separated) for multiple datasets.  "
+            "May be combined with --input."
+        ),
+    )
+
+    # ── HuggingFace options ───────────────────────────────────────────────
+    hf_group = parser.add_argument_group(
+        "HuggingFace options",
+        "Applied to every --hf-dataset.  Use the Python API for per-dataset overrides.",
+    )
+    hf_group.add_argument(
+        "--hf-split",
+        default="train",
+        metavar="SPLIT",
+        help=(
+            "Dataset split to load (default: 'train').  "
+            "Slice syntax supported: 'train[:5000]', 'train[:10%%]'."
+        ),
+    )
+    hf_group.add_argument(
+        "--hf-subset",
+        default=None,
+        metavar="NAME",
+        help="Dataset config / subset name, e.g. 'sample-10BT' for FineWeb.",
+    )
+    hf_group.add_argument(
+        "--hf-max-samples",
+        type=int,
+        default=None,
+        metavar="N",
+        help="Maximum number of rows to consume per HF dataset.",
+    )
+    hf_group.add_argument(
+        "--hf-streaming",
+        action="store_true",
+        help="Use HuggingFace streaming mode (avoids downloading the full dataset).",
+    )
+    hf_group.add_argument(
+        "--hf-shuffle",
+        action="store_true",
+        help="Shuffle the HF dataset before slicing (uses --hf-seed).",
+    )
+    hf_group.add_argument(
+        "--hf-seed",
+        type=int,
+        default=42,
+        metavar="N",
+        help="Random seed for --hf-shuffle (default: 42).",
+    )
+    hf_group.add_argument(
+        "--hf-trust-remote-code",
+        action="store_true",
+        help="Pass trust_remote_code=True to load_dataset (required by some datasets).",
+    )
+    hf_group.add_argument(
+        "--hf-text-field",
+        default=None,
+        metavar="COL",
+        help="Override: HF column name containing plain text.",
+    )
+    hf_group.add_argument(
+        "--hf-prompt-field",
+        default=None,
+        metavar="COL",
+        help="Override: HF column name containing the prompt / question.",
+    )
+    hf_group.add_argument(
+        "--hf-completion-field",
+        default=None,
+        metavar="COL",
+        help="Override: HF column name containing the completion / answer.",
+    )
+    hf_group.add_argument(
+        "--hf-messages-field",
+        default=None,
+        metavar="COL",
+        help="Override: HF column name containing a messages list.",
+    )
+    hf_group.add_argument(
+        "--hf-instruction-field",
+        default=None,
+        metavar="COL",
+        help="Override: HF column name for Alpaca-style instruction.",
+    )
+    hf_group.add_argument(
+        "--hf-output-field",
+        default=None,
+        metavar="COL",
+        help="Override: HF column name for Alpaca-style output.",
+    )
+
+    # ── Output ────────────────────────────────────────────────────────────
     parser.add_argument(
         "-o", "--output",
         required=True,
@@ -586,6 +692,8 @@ def _add_dataset_args(parser: argparse.ArgumentParser):
             "  code           {\"prompt\": \"# lang\\n# File: …\", \"completion\": code}"
         ),
     )
+
+    # ── Chunking ──────────────────────────────────────────────────────────
     parser.add_argument(
         "--chunk-size",
         type=int,
@@ -612,7 +720,7 @@ def _add_dataset_args(parser: argparse.ArgumentParser):
         type=float,
         default=50.0,
         metavar="MB",
-        help="Skip files larger than this size in megabytes (default: 50).",
+        help="Skip local files larger than this size in megabytes (default: 50).",
     )
     parser.add_argument(
         "--extensions",
@@ -661,7 +769,7 @@ def _add_dataset_args(parser: argparse.ArgumentParser):
     parser.add_argument(
         "--verbose", "-v",
         action="store_true",
-        help="Print per-file progress.",
+        help="Print per-file / per-dataset progress.",
     )
 
 
@@ -1692,10 +1800,22 @@ def cmd_grpo(args: argparse.Namespace):
 
 
 def cmd_dataset(args: argparse.Namespace):
-    """Handler for `swiftllm dataset` — ingest files into JSONL training data."""
-    from .dataset import DatasetIngester, DatasetFormat, IngestionConfig
+    """Handler for `swiftllm dataset` — ingest files/HF datasets into JSONL."""
+    from .dataset import DatasetIngester, DatasetFormat, IngestionConfig, HuggingFaceSource
 
-    input_paths = args.input  # list[str] from nargs="+"
+    input_paths: List[str] = list(args.input) if args.input else []
+    hf_datasets: List[str] = list(args.hf_dataset) if args.hf_dataset else []
+
+    # Validate: at least one source required
+    if not input_paths and not hf_datasets:
+        print(
+            "Error: provide at least one source:\n"
+            "  --input PATH [PATH ...]        local files / directories\n"
+            "  --hf-dataset DATASET [...]     HuggingFace dataset name(s)\n"
+            "  (or both together)",
+            file=sys.stderr,
+        )
+        sys.exit(1)
 
     # Parse extension whitelist
     ext_list = None
@@ -1712,9 +1832,31 @@ def cmd_dataset(args: argparse.Namespace):
         print(f"Error: unknown format {args.format!r}", file=sys.stderr)
         sys.exit(1)
 
+    # Build HuggingFaceSource objects (shared settings applied to all)
+    hf_sources = [
+        HuggingFaceSource(
+            dataset_name=ds_name,
+            split=args.hf_split,
+            subset=args.hf_subset,
+            text_field=args.hf_text_field,
+            prompt_field=args.hf_prompt_field,
+            completion_field=args.hf_completion_field,
+            messages_field=args.hf_messages_field,
+            instruction_field=args.hf_instruction_field,
+            output_field=args.hf_output_field,
+            max_samples=args.hf_max_samples,
+            shuffle=args.hf_shuffle,
+            seed=args.hf_seed,
+            streaming=args.hf_streaming,
+            trust_remote_code=args.hf_trust_remote_code,
+        )
+        for ds_name in hf_datasets
+    ]
+
     cfg = IngestionConfig(
-        input_paths=input_paths,
         output_path=args.output,
+        input_paths=input_paths,
+        hf_sources=hf_sources,
         format=fmt,
         file_extensions=ext_list,
         recursive=not args.no_recursive,
@@ -1731,18 +1873,29 @@ def cmd_dataset(args: argparse.Namespace):
 
     # Print header
     print("SwiftLLM Dataset Ingester")
-    print(f"  Input   : {', '.join(input_paths)}")
-    print(f"  Output  : {args.output}")
-    print(f"  Format  : {fmt.value}")
-    print(f"  Chunks  : max {cfg.chunk_size} chars, overlap {cfg.chunk_overlap}")
+    if input_paths:
+        print(f"  Local paths : {', '.join(input_paths)}")
+    if hf_sources:
+        print(f"  HF datasets : {', '.join(s.dataset_name for s in hf_sources)}")
+        print(f"  HF split    : {args.hf_split}"
+              + (f"  subset={args.hf_subset!r}" if args.hf_subset else ""))
+        if args.hf_max_samples:
+            print(f"  HF max rows : {args.hf_max_samples:,}")
+        if args.hf_streaming:
+            print(f"  HF mode     : streaming")
+    print(f"  Output      : {args.output}")
+    print(f"  Format      : {fmt.value}")
+    print(f"  Chunks      : max {cfg.chunk_size} chars, overlap {cfg.chunk_overlap}")
     if ext_list:
-        print(f"  Exts    : {', '.join(ext_list)}")
+        print(f"  Exts        : {', '.join(ext_list)}")
     print()
 
     if args.stats_only:
         import tempfile, os as _os
         tmp = tempfile.mktemp(suffix=".jsonl")
-        cfg_tmp = IngestionConfig(**{**cfg.to_dict(), "output_path": tmp, "input_paths": input_paths})
+        d = cfg.to_dict()
+        d["output_path"] = tmp
+        cfg_tmp = IngestionConfig.from_dict(d)
         ingester = DatasetIngester(cfg_tmp)
         result = ingester.ingest()
         if _os.path.exists(tmp):
@@ -1756,15 +1909,20 @@ def cmd_dataset(args: argparse.Namespace):
     print(result.summary())
 
     if result.skipped_files:
-        print(f"\n  Tip: install optional dependencies to read more formats:")
-        needs = {ext for _, reason in result.skipped_files if "read error" in reason
-                 for ext in [".pdf", ".docx"] if ext in reason}
-        if ".pdf" in str(result.skipped_files):
+        skipped_str = str(result.skipped_files)
+        print("\n  Tip: install optional dependencies to read more formats:")
+        if ".pdf" in skipped_str:
             print("    pip install pdfplumber   # PDF support")
-        if ".docx" in str(result.skipped_files):
+        if ".docx" in skipped_str:
             print("    pip install python-docx  # DOCX support")
-        if ".html" in str(result.skipped_files):
+        if ".html" in skipped_str:
             print("    pip install beautifulsoup4  # improved HTML extraction")
+
+    if hf_datasets and not result.hf_dataset_counts:
+        print(
+            "\n  Tip: HuggingFace dataset ingestion requires the 'datasets' library:\n"
+            "    pip install datasets"
+        )
 
 
 def _estimate_params(info: dict) -> int:
