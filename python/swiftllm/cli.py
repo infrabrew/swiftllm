@@ -37,6 +37,9 @@ This module provides the CLI for SwiftLLM, supporting:
 - train: Train or fine-tune a model
 - finetune: Fine-tune with LoRA (convenience command)
 - grpo: GRPO RL fine-tuning with optional CGAR curriculum
+- dataset: Ingest files/directories into JSONL training data
+    Supports: .txt .md .py .rs .go .java .pdf .docx .csv .json .html and more
+    Formats:  pretraining | sft_messages | sft_completion | code
 """
 
 import argparse
@@ -115,6 +118,30 @@ def main():
     )
     _add_grpo_args(grpo_parser)
 
+    # Dataset ingestion command
+    dataset_parser = subparsers.add_parser(
+        "dataset",
+        help="Ingest files/directories into JSONL training data",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        description=(
+            "Convert a directory or collection of files into a JSONL dataset\n"
+            "ready for fine_tune(), grpo_train(), or Trainer.\n\n"
+            "Supported input formats:\n"
+            "  Text     : .txt  .md  .rst  .log\n"
+            "  Code     : .py  .js  .ts  .rs  .go  .java  .c  .cpp  .cs  .sql\n"
+            "             .rb  .php  .swift  .kt  .sh  .yaml  .toml  and more\n"
+            "  Documents: .pdf (needs pdfplumber)  .docx (needs python-docx)\n"
+            "  Web      : .html  .htm  .xml  (needs beautifulsoup4 for best results)\n"
+            "  Data     : .csv  .json  .jsonl\n\n"
+            "Output formats (--format):\n"
+            "  pretraining    {\"text\": \"...\"}\n"
+            "  sft_messages   {\"messages\": [{\"role\": ...}, ...]}\n"
+            "  sft_completion {\"prompt\": \"...\", \"completion\": \"...\"}\n"
+            "  code           {\"prompt\": \"# lang\\n# File: ...\", \"completion\": code}\n"
+        ),
+    )
+    _add_dataset_args(dataset_parser)
+
     args = parser.parse_args()
 
     if args.command is None:
@@ -133,6 +160,7 @@ def main():
         "train": cmd_train,
         "finetune": cmd_finetune,
         "grpo": cmd_grpo,
+        "dataset": cmd_dataset,
     }
 
     try:
@@ -525,6 +553,115 @@ def _add_chat_args(parser: argparse.ArgumentParser):
         default=None,
         help="Directory for downloading models (default: ~/.cache/swiftllm/models, "
              "or set SWIFTLLM_MODEL_DIR env var)",
+    )
+
+
+def _add_dataset_args(parser: argparse.ArgumentParser):
+    """Add arguments for the dataset ingestion command."""
+    parser.add_argument(
+        "-i", "--input",
+        required=True,
+        nargs="+",
+        metavar="PATH",
+        help=(
+            "One or more input files or directories to ingest.  "
+            "Directories are walked recursively by default."
+        ),
+    )
+    parser.add_argument(
+        "-o", "--output",
+        required=True,
+        metavar="FILE",
+        help="Output .jsonl file path.",
+    )
+    parser.add_argument(
+        "--format",
+        choices=["pretraining", "sft_messages", "sft_completion", "code"],
+        default="pretraining",
+        help=(
+            "Output JSONL schema (default: pretraining).\n"
+            "  pretraining    {\"text\": \"...\"}\n"
+            "  sft_messages   {\"messages\": [...]}\n"
+            "  sft_completion {\"prompt\": \"...\", \"completion\": \"...\"}\n"
+            "  code           {\"prompt\": \"# lang\\n# File: …\", \"completion\": code}"
+        ),
+    )
+    parser.add_argument(
+        "--chunk-size",
+        type=int,
+        default=2048,
+        metavar="N",
+        help="Maximum characters per output record (default: 2048).",
+    )
+    parser.add_argument(
+        "--chunk-overlap",
+        type=int,
+        default=128,
+        metavar="N",
+        help="Character overlap between consecutive chunks (default: 128).",
+    )
+    parser.add_argument(
+        "--min-length",
+        type=int,
+        default=50,
+        metavar="N",
+        help="Minimum chunk length; shorter chunks are discarded (default: 50).",
+    )
+    parser.add_argument(
+        "--max-file-size-mb",
+        type=float,
+        default=50.0,
+        metavar="MB",
+        help="Skip files larger than this size in megabytes (default: 50).",
+    )
+    parser.add_argument(
+        "--extensions",
+        default=None,
+        metavar="EXT[,EXT...]",
+        help=(
+            "Comma-separated extension whitelist, e.g. '.py,.md,.txt'.  "
+            "Default: all supported extensions."
+        ),
+    )
+    parser.add_argument(
+        "--no-recursive",
+        action="store_true",
+        help="Do not walk directories recursively.",
+    )
+    parser.add_argument(
+        "--no-dedup",
+        action="store_true",
+        help="Disable chunk-level deduplication.",
+    )
+    parser.add_argument(
+        "--system-prompt",
+        default="You are a helpful assistant.",
+        metavar="TEXT",
+        help="System turn for sft_messages records.",
+    )
+    parser.add_argument(
+        "--sft-user-template",
+        default="Continue the following passage:\n\n{text}",
+        metavar="TEMPLATE",
+        help=(
+            "User-turn template for sft_messages / sft_completion.  "
+            "Use {text} as placeholder (default: 'Continue the following passage:\\n\\n{text}')."
+        ),
+    )
+    parser.add_argument(
+        "--include-metadata",
+        action="store_true",
+        help="Attach _source and _ext fields to every output record.",
+    )
+    parser.add_argument(
+        "--stats-only",
+        action="store_true",
+        help="Print statistics without writing the output file.",
+    )
+    parser.add_argument(
+        "--verbose", "-v",
+        action="store_true",
+        help="Print per-file progress.",
     )
 
 
@@ -1552,6 +1689,82 @@ def cmd_grpo(args: argparse.Namespace):
 
     trainer = GrpoTrainer(config)
     trainer.train()
+
+
+def cmd_dataset(args: argparse.Namespace):
+    """Handler for `swiftllm dataset` — ingest files into JSONL training data."""
+    from .dataset import DatasetIngester, DatasetFormat, IngestionConfig
+
+    input_paths = args.input  # list[str] from nargs="+"
+
+    # Parse extension whitelist
+    ext_list = None
+    if args.extensions:
+        ext_list = [
+            e.strip() if e.strip().startswith(".") else f".{e.strip()}"
+            for e in args.extensions.split(",")
+            if e.strip()
+        ]
+
+    try:
+        fmt = DatasetFormat(args.format)
+    except ValueError:
+        print(f"Error: unknown format {args.format!r}", file=sys.stderr)
+        sys.exit(1)
+
+    cfg = IngestionConfig(
+        input_paths=input_paths,
+        output_path=args.output,
+        format=fmt,
+        file_extensions=ext_list,
+        recursive=not args.no_recursive,
+        chunk_size=args.chunk_size,
+        chunk_overlap=args.chunk_overlap,
+        min_length=args.min_length,
+        max_file_size_mb=args.max_file_size_mb,
+        system_prompt=args.system_prompt,
+        sft_user_template=args.sft_user_template,
+        deduplicate=not args.no_dedup,
+        include_metadata=args.include_metadata,
+        verbose=args.verbose,
+    )
+
+    # Print header
+    print("SwiftLLM Dataset Ingester")
+    print(f"  Input   : {', '.join(input_paths)}")
+    print(f"  Output  : {args.output}")
+    print(f"  Format  : {fmt.value}")
+    print(f"  Chunks  : max {cfg.chunk_size} chars, overlap {cfg.chunk_overlap}")
+    if ext_list:
+        print(f"  Exts    : {', '.join(ext_list)}")
+    print()
+
+    if args.stats_only:
+        import tempfile, os as _os
+        tmp = tempfile.mktemp(suffix=".jsonl")
+        cfg_tmp = IngestionConfig(**{**cfg.to_dict(), "output_path": tmp, "input_paths": input_paths})
+        ingester = DatasetIngester(cfg_tmp)
+        result = ingester.ingest()
+        if _os.path.exists(tmp):
+            _os.unlink(tmp)
+        result.output_path = "(stats only — no file written)"
+    else:
+        ingester = DatasetIngester(cfg)
+        result = ingester.ingest()
+
+    print()
+    print(result.summary())
+
+    if result.skipped_files:
+        print(f"\n  Tip: install optional dependencies to read more formats:")
+        needs = {ext for _, reason in result.skipped_files if "read error" in reason
+                 for ext in [".pdf", ".docx"] if ext in reason}
+        if ".pdf" in str(result.skipped_files):
+            print("    pip install pdfplumber   # PDF support")
+        if ".docx" in str(result.skipped_files):
+            print("    pip install python-docx  # DOCX support")
+        if ".html" in str(result.skipped_files):
+            print("    pip install beautifulsoup4  # improved HTML extraction")
 
 
 def _estimate_params(info: dict) -> int:

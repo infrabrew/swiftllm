@@ -50,6 +50,13 @@
 - [Supported Models](#supported-models)
 - [Installation](#installation)
 - [Quick Start](#quick-start)
+- [Dataset Ingestion](#dataset-ingestion)
+  - [Supported Input Formats](#supported-input-formats)
+  - [Output Formats](#output-formats-jsonl)
+  - [CLI — swiftllm dataset](#cli--swiftllm-dataset)
+  - [Python API](#python-api-dataset)
+  - [Auto-Ingest in Trainer](#auto-ingest-in-trainer)
+  - [Optional Dependencies](#optional-dependencies-for-dataset-ingestion)
 - [Training & Fine-Tuning](#training--fine-tuning)
   - [Quick Start — CLI](#quick-fine-tune-with-lora-cli)
   - [Python Training API](#python-training-api)
@@ -424,6 +431,261 @@ llm = LLM(model="/path/to/model.gguf")
 params = SamplingParams(temperature=0.7, max_tokens=256)
 outputs = llm.generate(["Hello, how are you?"], params)
 print(outputs[0].outputs[0].text)
+```
+
+---
+
+## Dataset Ingestion
+
+SwiftLLM can convert a directory tree or collection of files in any supported
+format into a JSONL training dataset ready for `fine_tune()`, `Trainer`, or
+`grpo_train()`.  Just point at your source files — no custom data-prep scripts
+needed.
+
+### Supported Input Formats
+
+| Category  | Extensions |
+|-----------|-----------|
+| Plain text | `.txt`  `.md`  `.rst`  `.log`  `.tex`  `.asciidoc` |
+| Code | `.py`  `.js`  `.ts`  `.rs`  `.go`  `.java`  `.c`  `.cpp`  `.cs`  `.rb`  `.php`  `.swift`  `.kt`  `.scala`  `.sh`  `.sql`  `.toml`  `.yaml`  and ~30 more |
+| Documents | `.pdf` *(pdfplumber / pypdf)*   `.docx` *(python-docx)* |
+| Web | `.html`  `.htm`  `.xml` *(beautifulsoup4 recommended)* |
+| Structured | `.csv`   `.json`   `.jsonl` |
+
+CSV and JSONL files are auto-detected: if they already contain
+`prompt`/`completion`, `messages`, or `text` columns/keys they are passed
+through directly; otherwise the values are concatenated as plain text.
+
+### Output Formats (JSONL)
+
+| `--format` | Record schema | Best for |
+|---|---|---|
+| `pretraining` | `{"text": "..."}` | Next-token LM training on raw corpora |
+| `sft_messages` | `{"messages": [{"role": "system"}, {"role": "user"}, {"role": "assistant"}]}` | Chat / instruction fine-tuning |
+| `sft_completion` | `{"prompt": "...", "completion": "..."}` | Classic SFT (non-chat) |
+| `code` | `{"prompt": "# python\n# File: foo.py\n\n", "completion": "<code>"}` | Code generation fine-tuning |
+
+For raw text files in `sft_messages` / `sft_completion` mode, each chunk is
+split ~75 / 25 into a user prompt and assistant completion so the model learns
+both document style and continuation.
+
+### CLI — `swiftllm dataset`
+
+```bash
+# Ingest an entire documentation tree (pretraining)
+swiftllm dataset \
+  --input ./docs/ \
+  --output ./data/train.jsonl
+
+# Code fine-tuning from a source tree (Python + Rust only)
+swiftllm dataset \
+  --input ./src/ ./tests/ \
+  --output ./data/code_train.jsonl \
+  --format code \
+  --extensions .py,.rs
+
+# SFT from mixed sources: PDF + CSV + notes directory
+swiftllm dataset \
+  --input paper.pdf qa_pairs.csv ./notes/ \
+  --output ./data/sft.jsonl \
+  --format sft_completion \
+  --chunk-size 1024
+
+# Inspect statistics without writing any file
+swiftllm dataset \
+  --input ./my_corpus/ \
+  --output /dev/null \
+  --stats-only
+
+# Full options
+swiftllm dataset \
+  --input ./data/ \
+  --output train.jsonl \
+  --format sft_messages \
+  --chunk-size 2048 \
+  --chunk-overlap 128 \
+  --min-length 50 \
+  --max-file-size-mb 50 \
+  --extensions .py,.md,.txt \
+  --system-prompt "You are a helpful assistant." \
+  --no-dedup \
+  --include-metadata \
+  --verbose
+```
+
+**Key flags:**
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--input PATH …` | *(required)* | Files or directories (space-separated) |
+| `--output FILE` | *(required)* | Destination `.jsonl` |
+| `--format` | `pretraining` | Output schema (see table above) |
+| `--chunk-size N` | `2048` | Max characters per record |
+| `--chunk-overlap N` | `128` | Overlap between consecutive chunks |
+| `--min-length N` | `50` | Discard chunks shorter than N chars |
+| `--max-file-size-mb MB` | `50` | Skip files larger than this |
+| `--extensions .ext[,…]` | all supported | Whitelist specific extensions |
+| `--no-recursive` | off | Don't walk directories recursively |
+| `--no-dedup` | off | Allow duplicate chunks |
+| `--include-metadata` | off | Add `_source` / `_ext` keys to records |
+| `--system-prompt TEXT` | `"You are a helpful assistant."` | System turn for `sft_messages` |
+| `--stats-only` | off | Print statistics; skip writing output |
+| `--verbose` | off | Print per-file progress |
+
+### Python API (Dataset)
+
+**Convenience function — one liner:**
+
+```python
+from swiftllm.dataset import ingest_dataset
+
+# Pretraining from a docs directory
+result = ingest_dataset(
+    input_paths="./docs/",
+    output_path="./data/train.jsonl",
+)
+print(result.summary())
+
+# Code fine-tuning from a repo
+result = ingest_dataset(
+    input_paths=["./src/", "./tests/"],
+    output_path="./data/code_train.jsonl",
+    format="code",
+    file_extensions=[".py", ".rs", ".go"],
+    chunk_size=1500,
+)
+
+# SFT from heterogeneous sources
+result = ingest_dataset(
+    input_paths=["research.pdf", "qa_pairs.csv", "./notes/"],
+    output_path="./data/sft.jsonl",
+    format="sft_completion",
+    chunk_size=1024,
+    chunk_overlap=64,
+)
+```
+
+**Full-control API — `DatasetIngester` + `IngestionConfig`:**
+
+```python
+from swiftllm.dataset import DatasetIngester, DatasetFormat, IngestionConfig
+
+cfg = IngestionConfig(
+    input_paths=["./src/", "paper.pdf", "qa_pairs.csv"],
+    output_path="./data/train.jsonl",
+    format=DatasetFormat.SFT_MESSAGES,
+    chunk_size=2048,
+    chunk_overlap=128,
+    min_length=50,
+    max_file_size_mb=100.0,
+    file_extensions=[".py", ".md", ".pdf", ".csv"],
+    recursive=True,
+    system_prompt="You are a helpful coding assistant.",
+    sft_user_template="Continue the following code:\n\n{text}",
+    deduplicate=True,
+    include_metadata=True,    # adds _source, _ext
+    verbose=True,
+)
+
+result = DatasetIngester(cfg).ingest()
+print(result.summary())
+# result.total_files_scanned
+# result.total_files_processed
+# result.total_chunks
+# result.total_chars
+# result.skipped_files    → list of (path, reason) tuples
+# result.format_counts    → {".py": 80, ".md": 40, ".pdf": 12}
+```
+
+**`prepare_dataset()` in `training.py`:**
+
+```python
+from swiftllm.training import prepare_dataset, Trainer, TrainingConfig
+
+# Step 1 — convert files to JSONL
+result = prepare_dataset(
+    input_paths=["./docs/", "paper.pdf", "qa_pairs.csv"],
+    output_path="./data/train.jsonl",
+    format="sft_completion",
+    chunk_size=1024,
+)
+print(result.summary())
+
+# Step 2 — train on the result
+config = TrainingConfig(
+    model="meta-llama/Llama-2-7b-hf",
+    train_data="./data/train.jsonl",
+    output_dir="./output",
+    num_epochs=3,
+)
+Trainer(config).train()
+```
+
+**`IngestionResult` fields:**
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `total_files_scanned` | `int` | All files visited (including skipped) |
+| `total_files_processed` | `int` | Files that produced ≥1 chunk |
+| `total_chunks` | `int` | Total JSONL records written |
+| `total_chars` | `int` | Total raw characters extracted |
+| `skipped_files` | `list[(str, str)]` | `(path, reason)` for each skipped file |
+| `output_path` | `str` | Absolute path of the written `.jsonl` |
+| `format_counts` | `dict[str, int]` | Records per extension, e.g. `{".py": 80}` |
+
+### Auto-Ingest in Trainer
+
+`Trainer`, `fine_tune()`, and `GrpoTrainer` automatically ingest a directory
+or list of paths when `train_data` is not a `.jsonl` file.  The produced JSONL
+is written to `<output_dir>/auto_train.jsonl` and persists alongside checkpoints.
+
+```python
+from swiftllm.training import fine_tune
+
+# Pass a directory — ingestion fires automatically
+trainer = fine_tune(
+    model="meta-llama/Llama-2-7b-hf",
+    train_data="./my_codebase/",     # ← directory, not a .jsonl!
+    output_dir="./output",
+    lora_r=16,
+    num_epochs=3,
+)
+
+# Pass a mixed list of paths
+trainer = fine_tune(
+    model="meta-llama/Llama-2-7b-hf",
+    train_data=["paper.pdf", "qa_pairs.csv", "./notes/"],
+    output_dir="./output",
+    dataset_format="sft_completion",
+)
+
+# Trainer class — same behaviour
+from swiftllm.training import Trainer, TrainingConfig
+config = TrainingConfig(
+    model="meta-llama/Llama-2-7b-hf",
+    train_data="./data/raw/",        # ← directory auto-ingested
+    output_dir="./output",
+)
+Trainer(config).train()
+```
+
+### Optional Dependencies for Dataset Ingestion
+
+| Format | Package | Install |
+|--------|---------|---------|
+| PDF | `pdfplumber` *(recommended)* | `pip install pdfplumber` |
+| PDF *(fallback)* | `pypdf` | `pip install pypdf` |
+| DOCX | `python-docx` | `pip install python-docx` |
+| HTML/XML *(improved)* | `beautifulsoup4` | `pip install beautifulsoup4` |
+
+HTML and XML work without `beautifulsoup4` via a regex fallback, but the
+output quality is better with the full parser installed.  PDF and DOCX require
+their respective libraries; an `ImportError` with install instructions is raised
+if neither is available when a matching file is encountered.
+
+Install all optional dependencies at once:
+```bash
+pip install pdfplumber python-docx beautifulsoup4
 ```
 
 ---
@@ -1992,6 +2254,12 @@ swiftllm finetune -m <model> --train-data <data> --lora-r 16
 
 # GRPO reinforcement learning training (Phase 2)
 swiftllm grpo -m <model> --train-data <data> --group-size 8 [--enable-prm] [--long-reward-weight 0.1]
+
+# Dataset ingestion — convert files/dirs to JSONL training data
+swiftllm dataset -i ./docs/ -o train.jsonl                        # pretraining from a directory
+swiftllm dataset -i ./src/ -o code.jsonl --format code --extensions .py,.rs
+swiftllm dataset -i paper.pdf qa.csv ./notes/ -o sft.jsonl --format sft_completion
+swiftllm dataset -i ./corpus/ -o /dev/null --stats-only          # dry-run statistics
 ```
 
 ### Model Specifiers
@@ -2093,7 +2361,8 @@ swiftllm/
 │   │                                 #   + generate_best_of_n()
 │   │                                 #   + generate_with_rlm()            ← Phase 3
 │   │                                 #   + generate_with_dense_verification() ← Phase 3
-│   ├── training.py                   #   Trainer / GrpoTrainer / fine_tune / grpo_train
+│   ├── training.py                   #   Trainer / GrpoTrainer / fine_tune / prepare_dataset
+│   ├── dataset.py                    #   DatasetIngester — txt/md/code/pdf/docx/csv→JSONL
 │   ├── sampling.py                   #   Sampling strategies + SelfConsistencySampler
 │   ├── config.py                     #   All config dataclasses (Phase 1–3)
 │   │                                 #   GrpoConfig, CgarConfig, PrmConfig, LongRewardConfig
@@ -2101,7 +2370,7 @@ swiftllm/
 │   │                                 #   VerificationConfig, DisaggregatedServingConfig
 │   │                                 #   RlmConfig, RlmMode                ← Phase 3
 │   │                                 #   DenseVerificationConfig, VerificationStrategy ← Phase 3
-│   ├── cli.py                        #   CLI: serve/generate/train/finetune/grpo/chat/…
+│   ├── cli.py                        #   CLI: serve/generate/train/finetune/grpo/dataset/…
 │   │                                 #   + --rlm DEPTH, --dense-verification flags ← Phase 3
 │   └── model_resolver.py             #   HuggingFace / local / offline resolution
 │
@@ -2156,6 +2425,7 @@ swiftllm/
     ├── basic_inference.py            # Simple inference
     ├── streaming.py                  # Streaming generation
     ├── batch_processing.py           # High-throughput batch processing
+    ├── dataset_ingestion.py          # Dataset ingestion — all formats, all output schemas
     ├── openai_server.py              # OpenAI API server
     ├── multi_gpu.py                  # Multi-GPU inference
     ├── fine_tuning.py                # LoRA and QLoRA fine-tuning
@@ -2177,6 +2447,7 @@ See the [examples/](examples/) directory:
 | [`basic_inference.py`](examples/basic_inference.py) | Simple LLM inference with SamplingParams |
 | [`streaming.py`](examples/streaming.py) | Streaming token generation |
 | [`batch_processing.py`](examples/batch_processing.py) | High-throughput batch inference |
+| [`dataset_ingestion.py`](examples/dataset_ingestion.py) | **Dataset Ingestion**: convert dirs/files (.txt .md .py .rs .pdf .docx .csv …) to JSONL; all 4 output formats; auto-ingest demo in `fine_tune()` |
 | [`openai_server.py`](examples/openai_server.py) | OpenAI-compatible API server |
 | [`multi_gpu.py`](examples/multi_gpu.py) | Tensor-parallel multi-GPU inference |
 | [`fine_tuning.py`](examples/fine_tuning.py) | LoRA and QLoRA fine-tuning |
@@ -2318,6 +2589,7 @@ SwiftLLM includes built-in security features across the server, installer, and r
 - **New**: `examples/grpo_training.py` — full GRPO + CGAR + PRM + LongR demo with synthetic math data
 - **New** (this release): `examples/rlm_inference.py` — SHALLOW / REASONING / AGENTIC modes, variable-binding demo, no-REPL variant
 - **New** (this release): `examples/dense_verification_inference.py` — all four strategies, multi-prompt batch scoring, confidence calibration demo
+- **New** (this release): `dataset.py` — `DatasetIngester`, `IngestionConfig`, `IngestionResult`, `DatasetFormat`; reads `.txt`, `.md`, `.py`, `.rs`, `.go`, `.java`, `.c`, `.cpp`, `.cs`, `.rb`, `.sql`, `.yaml` + 30 more code extensions; `.pdf` (pdfplumber/pypdf), `.docx` (python-docx), `.html`/`.xml` (beautifulsoup4 or regex fallback), `.csv`, `.json`, `.jsonl`; 4 output schemas (pretraining / sft_messages / sft_completion / code); SHA-256 chunk deduplication; code boundary-aware splitting; `ingest_dataset()` convenience function; `prepare_dataset()` in `training.py`; `Trainer`/`fine_tune()`/`GrpoTrainer` auto-ingest directories and lists; `swiftllm dataset` CLI subcommand; `examples/dataset_ingestion.py` with 6 demo modes
 
 ---
 

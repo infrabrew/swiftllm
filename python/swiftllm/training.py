@@ -89,6 +89,7 @@ Example usage:
 
 import json
 import os
+import tempfile
 import time
 from dataclasses import dataclass, field
 from enum import Enum
@@ -350,6 +351,8 @@ class Trainer:
         config: TrainingConfig,
         early_stopping: Optional[EarlyStoppingConfig] = None,
     ):
+        # Auto-ingest if train_data points to a directory or is a list of paths
+        config = self._auto_ingest_if_needed(config)
         self.config = config
         self.early_stopping = early_stopping
         self._callbacks: List[Callable] = []
@@ -358,6 +361,64 @@ class Trainer:
         self._patience_counter: int = 0
         self._checkpoints: List[str] = []
         self._stopped_early: bool = False
+        self._ingested_tmp: Optional[str] = None  # temp JSONL created by auto-ingest
+
+    @staticmethod
+    def _auto_ingest_if_needed(config: TrainingConfig) -> TrainingConfig:
+        """If train_data is a directory or list, run DatasetIngester automatically.
+
+        The produced JSONL is written to ``<output_dir>/auto_train.jsonl`` so it
+        persists alongside checkpoints and is not a temp file.  A note is printed
+        so the user can inspect and reuse it.
+        """
+        train_data = config.train_data
+        if not train_data:
+            return config
+
+        # Detect: is it a directory or a list of paths?
+        needs_ingest = False
+        input_paths: List[str] = []
+
+        if isinstance(train_data, list):
+            input_paths = [str(p) for p in train_data]
+            needs_ingest = True
+        elif isinstance(train_data, str):
+            p = Path(train_data)
+            if p.is_dir():
+                input_paths = [str(p)]
+                needs_ingest = True
+
+        if not needs_ingest:
+            return config  # already a JSONL/CSV file
+
+        from .dataset import DatasetIngester, DatasetFormat, IngestionConfig
+
+        os.makedirs(config.output_dir, exist_ok=True)
+        jsonl_path = os.path.join(config.output_dir, "auto_train.jsonl")
+
+        print(f"[DatasetIngester] Auto-ingesting {len(input_paths)} input path(s)…")
+        for p in input_paths:
+            print(f"  {p}")
+        print(f"[DatasetIngester] Output → {jsonl_path}")
+
+        ingest_cfg = IngestionConfig(
+            input_paths=input_paths,
+            output_path=jsonl_path,
+            format=DatasetFormat.PRETRAINING,
+            chunk_size=config.max_seq_len * 4,  # ~4 chars/token heuristic
+            chunk_overlap=128,
+            deduplicate=True,
+            verbose=False,
+        )
+        result = DatasetIngester(ingest_cfg).ingest()
+        print(f"[DatasetIngester] {result.total_chunks} chunks written "
+              f"({result.total_files_processed}/{result.total_files_scanned} files).")
+
+        # Clone config with the resolved JSONL path
+        import copy
+        new_config = copy.copy(config)
+        new_config.train_data = jsonl_path
+        return new_config
 
     def add_callback(self, callback: Callable):
         """Add a training callback.
@@ -724,41 +785,206 @@ class GrpoTrainer(Trainer):
             return max_l
 
 
+def prepare_dataset(
+    input_paths: Union[str, List[str]],
+    output_path: str,
+    format: str = "pretraining",
+    chunk_size: int = 2048,
+    chunk_overlap: int = 128,
+    min_length: int = 50,
+    file_extensions: Optional[List[str]] = None,
+    system_prompt: str = "You are a helpful assistant.",
+    sft_user_template: str = "Continue the following passage:\n\n{text}",
+    deduplicate: bool = True,
+    include_metadata: bool = False,
+    verbose: bool = False,
+    **kwargs,
+):
+    """Convert a directory or collection of files into a JSONL training dataset.
+
+    Supports plain text, Markdown, code files, PDFs, DOCX, HTML, CSV, and JSON.
+    The resulting ``.jsonl`` file can be passed directly to :class:`Trainer`,
+    :func:`fine_tune`, or :func:`grpo_train` as ``train_data``.
+
+    Args:
+        input_paths:
+            A single path (file or directory) or a list of paths.  Directories
+            are walked recursively by default.
+        output_path:
+            Destination ``.jsonl`` file path.
+        format:
+            Output JSONL schema:
+
+            - ``"pretraining"`` — ``{"text": "..."}``
+            - ``"sft_messages"`` — ``{"messages": [...]}``
+            - ``"sft_completion"`` — ``{"prompt": "...", "completion": "..."}``
+            - ``"code"`` — ``{"prompt": "# lang\\n# File: …", "completion": code}``
+        chunk_size:
+            Maximum characters per JSONL record (default: 2048).
+        chunk_overlap:
+            Character overlap between consecutive chunks (default: 128).
+        min_length:
+            Minimum chunk length; shorter chunks are discarded (default: 50).
+        file_extensions:
+            Restrict to specific extensions, e.g. ``[".py", ".md"]``.
+            ``None`` = include all supported extensions.
+        system_prompt:
+            System turn for ``sft_messages`` records.
+        sft_user_template:
+            User-turn template for ``sft_messages`` / ``sft_completion``.
+            ``{text}`` is replaced with the prompt portion of the chunk.
+        deduplicate:
+            Skip duplicate chunks (default: ``True``).
+        include_metadata:
+            Add ``_source`` / ``_ext`` fields to each record.
+        verbose:
+            Print per-file progress.
+        **kwargs:
+            Additional keyword arguments forwarded to :class:`~swiftllm.dataset.IngestionConfig`.
+
+    Returns:
+        :class:`~swiftllm.dataset.IngestionResult` with statistics.
+
+    Raises:
+        FileNotFoundError: If any input path does not exist.
+        ImportError: If a required optional dependency is missing (e.g. pdfplumber).
+
+    Examples:
+        Pretraining from a documentation tree::
+
+            from swiftllm.training import prepare_dataset, Trainer, TrainingConfig
+
+            result = prepare_dataset("./docs/", "./data/train.jsonl")
+            print(result.summary())
+
+            config = TrainingConfig(
+                model="meta-llama/Llama-2-7b-hf",
+                train_data="./data/train.jsonl",
+            )
+            Trainer(config).train()
+
+        Code fine-tuning from a repo::
+
+            result = prepare_dataset(
+                input_paths=["./src/", "./tests/"],
+                output_path="./data/code_train.jsonl",
+                format="code",
+                file_extensions=[".py", ".rs"],
+            )
+
+        SFT from heterogeneous sources::
+
+            result = prepare_dataset(
+                input_paths=["research.pdf", "qa_pairs.csv", "./notes/"],
+                output_path="./data/sft.jsonl",
+                format="sft_completion",
+                chunk_size=1024,
+            )
+
+        One-shot with auto-ingest in Trainer::
+
+            from swiftllm.training import Trainer, TrainingConfig
+
+            # Pass a directory directly — Trainer will ingest automatically
+            config = TrainingConfig(
+                model="meta-llama/Llama-2-7b-hf",
+                train_data="./my_corpus/",   # directory!
+                output_dir="./output",
+            )
+            Trainer(config).train()
+    """
+    from .dataset import DatasetIngester, DatasetFormat, IngestionConfig
+
+    if isinstance(input_paths, str):
+        input_paths = [input_paths]
+
+    cfg = IngestionConfig(
+        input_paths=input_paths,
+        output_path=output_path,
+        format=DatasetFormat(format),
+        chunk_size=chunk_size,
+        chunk_overlap=chunk_overlap,
+        min_length=min_length,
+        file_extensions=file_extensions,
+        system_prompt=system_prompt,
+        sft_user_template=sft_user_template,
+        deduplicate=deduplicate,
+        include_metadata=include_metadata,
+        verbose=verbose,
+        **kwargs,
+    )
+    return DatasetIngester(cfg).ingest()
+
+
 def fine_tune(
     model: str,
-    train_data: str,
+    train_data: Union[str, List[str]],
     output_dir: str = "./output",
     lora_r: int = 16,
     lora_alpha: float = 32.0,
     learning_rate: float = 2e-4,
     num_epochs: int = 1,
+    dataset_format: str = "pretraining",
     **kwargs,
 ) -> Trainer:
     """Convenience function for fine-tuning with LoRA.
 
+    ``train_data`` may be a JSONL file path, a directory of files, or a list of
+    paths (files and/or directories).  When a directory or list is provided,
+    :func:`prepare_dataset` is called automatically to convert the files into a
+    JSONL dataset stored in ``<output_dir>/auto_train.jsonl`` before training
+    begins.
+
     Args:
-        model: Model path or HuggingFace ID.
-        train_data: Path to training data (JSONL format).
-        output_dir: Output directory.
-        lora_r: LoRA rank.
-        lora_alpha: LoRA alpha.
-        learning_rate: Learning rate.
-        num_epochs: Number of epochs.
-        **kwargs: Additional TrainingConfig parameters.
+        model: Model path or HuggingFace model ID.
+        train_data:
+            Path to a ``.jsonl`` training file **or** a directory / list of
+            paths containing source files (text, code, PDF, DOCX, CSV, …).
+        output_dir: Directory for checkpoints and the final model.
+        lora_r: LoRA rank (default: 16).
+        lora_alpha: LoRA alpha scaling factor (default: 32).
+        learning_rate: Peak learning rate (default: 2e-4).
+        num_epochs: Number of training epochs (default: 1).
+        dataset_format:
+            Output format when auto-ingesting from a directory or list:
+            ``"pretraining"`` | ``"sft_messages"`` | ``"sft_completion"`` | ``"code"``.
+            Ignored when ``train_data`` is already a ``.jsonl`` file.
+        **kwargs: Additional :class:`TrainingConfig` parameters.
 
     Returns:
-        Trainer instance (already trained).
+        :class:`Trainer` instance (training already complete).
 
-    Example:
-        >>> trainer = fine_tune(
-        ...     model="meta-llama/Llama-2-7b-hf",
-        ...     train_data="data.jsonl",
-        ...     lora_r=16,
-        ... )
+    Examples:
+        Fine-tune on an existing JSONL::
+
+            trainer = fine_tune(
+                model="meta-llama/Llama-2-7b-hf",
+                train_data="data/train.jsonl",
+                lora_r=16,
+            )
+
+        Fine-tune on a directory of source files::
+
+            trainer = fine_tune(
+                model="meta-llama/Llama-2-7b-hf",
+                train_data="./my_project/",   # any mix of .py .md .txt etc.
+                dataset_format="code",
+                lora_r=32,
+                num_epochs=3,
+            )
+
+        Fine-tune on mixed sources::
+
+            trainer = fine_tune(
+                model="meta-llama/Llama-2-7b-hf",
+                train_data=["paper.pdf", "qa_pairs.csv", "./notes/"],
+                dataset_format="sft_completion",
+                lora_r=16,
+            )
     """
     config = TrainingConfig(
         model=model,
-        train_data=train_data,
+        train_data=train_data,   # Trainer.__init__ will auto-ingest if directory/list
         output_dir=output_dir,
         fine_tuning_method=FineTuningMethod.LORA,
         lora=LoRAConfig(r=lora_r, alpha=lora_alpha),

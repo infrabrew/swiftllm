@@ -10,6 +10,7 @@
 #   - python/swiftllm/config.py    all config dataclasses
 #   - python/swiftllm/sampling.py  SamplingStrategy, SelfConsistencySampler
 #   - python/swiftllm/training.py  Trainer, GrpoTrainer, convenience functions
+#   - python/swiftllm/dataset.py   DatasetIngester, IngestionConfig, ingest_dataset
 # USED BY:
 #   - user code  (top-level public API)
 #   - python/swiftllm/cli.py       lazy imports via __getattr__
@@ -49,6 +50,11 @@ Phase 2 (training) and Phase 3 (inference) research additions are also exposed h
   Training (Phase 2):
     GrpoTrainer / grpo_train()        — GRPO RL fine-tuning
     GrpoConfig, CgarConfig, PrmConfig, LongRewardConfig
+
+  Dataset Ingestion:
+    ingest_dataset()                  — convert files/dirs to JSONL training data
+    DatasetIngester / IngestionConfig — full-control ingestion API
+    DatasetFormat                     — output format enum (pretraining / sft / code)
 
 Example usage:
     >>> from swiftllm import LLM, SamplingParams
@@ -103,6 +109,17 @@ from .config import (
 )
 from .sampling import SamplingStrategy, create_sampler, SelfConsistencySampler, SelfConsistencyResult
 from .model_resolver import resolve_model
+from .dataset import (
+    DatasetIngester,
+    DatasetFormat,
+    IngestionConfig,
+    IngestionResult,
+    ingest_dataset,
+    ALL_EXTENSIONS,
+    CODE_EXTENSIONS,
+    TEXT_EXTENSIONS,
+    DOCUMENT_EXTENSIONS,
+)
 
 __version__ = "2.0.0a1"
 __all__ = [
@@ -158,6 +175,16 @@ __all__ = [
     "fine_tune",
     "GrpoTrainer",
     "grpo_train",
+    # Dataset ingestion
+    "DatasetIngester",
+    "DatasetFormat",
+    "IngestionConfig",
+    "IngestionResult",
+    "ingest_dataset",
+    "ALL_EXTENSIONS",
+    "CODE_EXTENSIONS",
+    "TEXT_EXTENSIONS",
+    "DOCUMENT_EXTENSIONS",
     # Version
     "__version__",
 ]
@@ -186,6 +213,48 @@ def __getattr__(name: str):
             "grpo_train": grpo_train,
         }[name]
     raise AttributeError(f"module 'swiftllm' has no attribute {name!r}")
+
+
+def prepare_dataset(
+    input_paths,
+    output_path: str,
+    format="pretraining",
+    **kwargs,
+):
+    """Ingest files/directories into a JSONL training dataset.
+
+    Shortcut that delegates to :func:`swiftllm.dataset.ingest_dataset`.
+    Available directly as ``swiftllm.prepare_dataset(...)`` for convenience.
+
+    Parameters
+    ----------
+    input_paths : str or list[str]
+        Files or directories to ingest.
+    output_path : str
+        Destination ``.jsonl`` path.
+    format : str or DatasetFormat
+        ``"pretraining"`` | ``"sft_messages"`` | ``"sft_completion"`` | ``"code"``.
+    **kwargs
+        Forwarded to :class:`~swiftllm.dataset.IngestionConfig`.
+
+    Returns
+    -------
+    IngestionResult
+
+    Example
+    -------
+    ::
+
+        import swiftllm
+        result = swiftllm.prepare_dataset(
+            input_paths=["./src/", "README.md", "paper.pdf"],
+            output_path="./data/train.jsonl",
+            format="code",
+        )
+        print(result.summary())
+    """
+    from .dataset import ingest_dataset as _ingest
+    return _ingest(input_paths, output_path, format=format, **kwargs)
 
 
 def version() -> str:
