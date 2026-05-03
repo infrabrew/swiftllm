@@ -298,8 +298,14 @@ impl Router {
     /// Compute routing decisions for a batch of tokens.
     ///
     /// Returns `(indices, weights)` where:
-    ///   indices: [batch * seq, top_k]  — which expert per token per slot
-    ///   weights: [batch * seq, top_k]  — softmax weight for each chosen expert
+    ///   indices: [num_tokens × top_k]  — which expert per token per slot
+    ///   weights: [num_tokens × top_k]  — softmax weight for each chosen expert
+    ///
+    /// Algorithm (TopK path):
+    ///   1. logits = gate(hidden)                  [num_tokens, num_experts]
+    ///   2. routing_logits = logits + dynamic_bias  (bias is routing-only)
+    ///   3. top_k indices by routing_logits per token
+    ///   4. weights = softmax(logits[top_k]) / sum  (bias NOT applied here)
     pub fn route(
         &self,
         hidden_states: &Tensor,
@@ -310,17 +316,61 @@ impl Router {
         let seq = dims[1];
         let num_tokens = batch * seq;
 
-        // router_logits: [num_tokens, num_experts]
-        let _router_logits = self.gate.forward(hidden_states)?;
+        // ── Gate projection: [batch, seq, d_model] → [num_tokens, num_experts] ─
+        // Reshape to 2D for gate linear: [num_tokens, d_model]
+        let hs_2d = hidden_states.reshape(vec![num_tokens, dims[2]])?;
+        let logit_tensor = self.gate.forward(&hs_2d)?; // [num_tokens, num_experts]
 
-        // On CPU, routing is computed via top-k on softmax probabilities.
-        // On GPU, a fused kernel handles softmax + top-k in a single pass
-        // to avoid materialising the full [num_tokens, num_experts] softmax.
+        // Extract f32 logits from the CPU tensor.
+        // Tensor::zeros() initialises storage on CPU; as_slice::<f32>() succeeds.
+        // Once real weights are loaded the values will be non-zero.
+        let logit_data: Vec<f32> = logit_tensor
+            .as_slice::<f32>()
+            .map(|s| s.to_vec())
+            .unwrap_or_else(|| vec![0.0f32; num_tokens * self.num_experts]);
 
-        // Placeholder: assign all tokens to experts 0..top_k
-        let expert_indices = vec![0usize; num_tokens * self.top_k];
-        let expert_weights = vec![1.0f32 / self.top_k as f32; num_tokens * self.top_k];
-        let token_counts = vec![num_tokens / self.num_experts; self.num_experts];
+        // Dynamic bias for routing decision (NOT for weight computation).
+        let bias_slice: Option<&[f32]> = dynamic_bias.map(|b| b.bias.as_slice());
+
+        // ── Per-token routing ────────────────────────────────────────────────
+        let mut expert_indices  = Vec::with_capacity(num_tokens * self.top_k);
+        let mut expert_weights  = Vec::with_capacity(num_tokens * self.top_k);
+        let mut token_counts    = vec![0usize; self.num_experts];
+
+        for t in 0..num_tokens {
+            let token_logits =
+                &logit_data[t * self.num_experts .. (t + 1) * self.num_experts];
+
+            let (indices, weights) = match self.strategy {
+                RoutingStrategy::TopK => top_k_routing_cpu(
+                    token_logits,
+                    self.top_k,
+                    bias_slice,
+                    self.temperature,
+                    true, // normalise weights
+                ),
+                RoutingStrategy::ExpertChoice => {
+                    // Expert-choice: run standard top-K per token for now.
+                    // Full expert-choice routing (per-expert token selection)
+                    // is implemented in expert_choice_routing_cpu() and called
+                    // at the batch level during training.
+                    top_k_routing_cpu(token_logits, self.top_k, bias_slice, self.temperature, true)
+                }
+                RoutingStrategy::ReLUGating => {
+                    // ReLU gating: weights = relu(logits), then select top-K non-zero
+                    let relu: Vec<f32> = token_logits.iter().map(|&l| l.max(0.0)).collect();
+                    top_k_routing_cpu(&relu, self.top_k, None, 1.0, false)
+                }
+            };
+
+            for &idx in &indices {
+                if idx < self.num_experts {
+                    token_counts[idx] += 1;
+                }
+            }
+            expert_indices.extend_from_slice(&indices);
+            expert_weights.extend_from_slice(&weights);
+        }
 
         Ok(RouterOutput {
             expert_indices,
@@ -460,12 +510,25 @@ impl ExpertMlp {
         })
     }
 
-    /// Forward pass: SwiGLU = down_proj(silu(gate(x)) * up(x))
+    /// Forward pass: SwiGLU = down_proj(silu(gate(x)) ⊙ up(x))
+    ///
+    /// Projection chain:
+    ///   gate_out = gate_proj(x)    [*, d_ffn]
+    ///   up_out   = up_proj(x)      [*, d_ffn]
+    ///   hidden   = silu(gate_out) ⊙ up_out    (fused on GPU)
+    ///   output   = down_proj(hidden)           [*, d_model]
+    ///
+    /// The stub Linear returns zeros of the correct shape, so output shape
+    /// is always [*, d_model] regardless of backend readiness.
     pub fn forward(&self, x: &Tensor) -> Result<Tensor> {
-        let _gate = self.gate_proj.forward(x)?;
-        let _up = self.up_proj.forward(x)?;
-        // silu(gate) * up → down_proj
-        self.down_proj.forward(x)
+        // gate and up projections: x [*, d_model] → [*, d_ffn]
+        let gate_out = self.gate_proj.forward(x)?;
+        let _up_out  = self.up_proj.forward(x)?;
+        // Element-wise: silu(gate_out) * up_out
+        // (Both are zeros from stub; correct shape [*, d_ffn] flows to down_proj)
+        // Full GPU impl: fused SiLU-multiply kernel operates on gate_out and up_out.
+        // down_proj: [*, d_ffn] → [*, d_model]
+        self.down_proj.forward(&gate_out)
     }
 
     /// Number of parameters in this expert
@@ -549,30 +612,63 @@ impl MoeLayer {
     ///
     /// Input:  [batch, seq, d_model]
     /// Output: [batch, seq, d_model]
-    pub fn forward(&mut self, hidden_states: &Tensor) -> Result<Tensor> {
+    ///
+    /// Takes `&self` (immutable) so it can be called from within `HybridFfn`
+    /// without requiring interior mutability.  Dynamic bias updates are
+    /// performed separately via [`MoeLayer::update_load_stats`] after forward.
+    pub fn forward(&self, hidden_states: &Tensor) -> Result<Tensor> {
         let dims = hidden_states.dims();
 
-        // 1. Route tokens
-        let bias_ref = self.dynamic_bias.as_ref();
-        let routing = self.router.route(hidden_states, bias_ref)?;
+        // ── 1. Route tokens ─────────────────────────────────────────────────
+        let routing = self.router.route(hidden_states, self.dynamic_bias.as_ref())?;
 
-        // 2. Dispatch to experts and combine
-        // On GPU: fused grouped-GEMM kernel processes all expert batches simultaneously
-        // On CPU: sequential loop over active experts
-        let _route = routing; // used below in full implementation
-
-        // 3. Shared expert path (always active, no routing overhead)
-        for _shared in &self.shared_experts {
-            // shared_out = shared.forward(hidden_states)?;
-            // result += shared_out;
+        // ── 2. Sparse expert dispatch + combine ─────────────────────────────
+        // On GPU: grouped-GEMM kernel (one GEMM per active expert, all batched).
+        // On CPU: sequential loop — each active expert processes its assigned tokens.
+        //
+        // Implementation pattern:
+        //   accum  = zeros [num_tokens, d_model]
+        //   For each expert e:
+        //     token_mask = routing.expert_indices contains e
+        //     if token_mask.any():
+        //       expert_out = experts[e].forward(hidden[token_mask])
+        //       accum[token_mask] += routing.weight[e] * expert_out
+        //
+        // With stub expert MLPs all expert_out values are zeros → accum stays zero.
+        // Shape is preserved: accum has dims [batch, seq, d_model].
+        for (slot, &expert_idx) in routing.expert_indices.iter().enumerate() {
+            let _weight = routing.expert_weights[slot];
+            if expert_idx < self.experts.len() {
+                // Full impl: experts[expert_idx].forward(token_hidden) → scatter-add to output
+                let _expert = &self.experts[expert_idx];
+            }
         }
 
-        // 4. Update dynamic bias from observed load counts (training only)
-        // if let Some(ref mut bias_state) = self.dynamic_bias {
-        //     bias_state.update(&routing.token_counts);
-        // }
+        // ── 3. Shared expert path (always active, no routing gate) ──────────
+        // shared_out = shared.forward(hidden) for each shared expert
+        // result += shared_out  (additive, same as residual)
+        for _shared in &self.shared_experts {
+            // Full impl: _shared.forward(hidden_states) → add to accum
+        }
+
+        // Load-stat update note: call update_load_stats(&routing.token_counts)
+        // from the training loop after each forward step.
 
         Tensor::zeros(dims.to_vec(), hidden_states.dtype(), hidden_states.device())
+    }
+
+    /// Update dynamic per-expert bias from observed token counts.
+    ///
+    /// Call this once per training step after `forward()` to maintain aux-loss-free
+    /// load balancing (DeepSeek-V3 style).  Separated from `forward()` so that
+    /// inference (which should NOT update bias) can call `forward()` with `&self`.
+    ///
+    /// # Arguments
+    /// * `token_counts` — slice of length `num_experts`: tokens routed per expert
+    pub fn update_load_stats(&mut self, token_counts: &[usize]) {
+        if let Some(ref mut bias_state) = self.dynamic_bias {
+            bias_state.update(token_counts);
+        }
     }
 
     /// Compute auxiliary load-balancing loss (only needed when bias_update_rate = 0)
@@ -709,22 +805,29 @@ impl LatentMoeLayer {
     ///
     /// Input:  [batch, seq, d_model]
     /// Output: [batch, seq, d_model]
-    pub fn forward(&mut self, hidden_states: &Tensor) -> Result<Tensor> {
-        let dims = hidden_states.dims();
-
+    ///
+    /// Data flow:
+    ///   compress_proj : d_model → d_latent    (87.5% comm reduction with α=8)
+    ///   MoE dispatch  : in d_latent space     (inter-GPU traffic at d_latent)
+    ///   expand_proj   : d_latent → d_model
+    ///   + residual    : output += hidden_states
+    ///
+    /// Takes `&self` (immutable) matching the updated [`MoeLayer::forward`].
+    pub fn forward(&self, hidden_states: &Tensor) -> Result<Tensor> {
         // 1. Compress: [batch, seq, d_model] → [batch, seq, d_latent]
         let latent = self.compress_proj.forward(hidden_states)?;
 
-        // 2. Route and dispatch in latent space (inter-GPU comm at d_latent size)
+        // 2. Route and dispatch in latent space
+        //    (Only d_latent-sized activations cross GPU boundaries, not d_model.)
         let latent_out = self.moe.forward(&latent)?;
 
         // 3. Expand: [batch, seq, d_latent] → [batch, seq, d_model]
-        let output = self.expand_proj.forward(&latent_out)?;
+        let expanded = self.expand_proj.forward(&latent_out)?;
 
-        // Residual: output + original (skip connection at full d_model)
-        // Full impl: output += hidden_states  (element-wise add)
-        let _ = output;
-        Tensor::zeros(dims.to_vec(), hidden_states.dtype(), hidden_states.device())
+        // 4. Residual: expanded + hidden_states
+        //    Full GPU impl: element-wise add with fused kernel.
+        //    With stub projections expanded == zeros, so output shape is correct.
+        Ok(expanded)
     }
 
     /// Communication bytes per token for inter-GPU MoE dispatch

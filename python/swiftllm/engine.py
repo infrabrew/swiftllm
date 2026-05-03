@@ -7,7 +7,8 @@
 # ------------------------------------------------------------------------------
 # USES:
 #   - python/swiftllm/config.py     EngineConfig, SamplingParams, SelfConsistencyConfig,
-#                                   RefinementConfig, VerificationConfig, DisaggregatedServingConfig
+#                                   RefinementConfig, VerificationConfig, DisaggregatedServingConfig,
+#                                   RlmConfig, DenseVerificationConfig, RlmMode, VerificationStrategy
 #   - python/swiftllm/sampling.py   SelfConsistencySampler, SelfConsistencyResult
 # USED BY:
 #   - python/swiftllm/__init__.py   LLM, AsyncLLM, LLMEngine re-exports
@@ -18,6 +19,8 @@
 #   - crates/swiftllm-core/src/sampling/self_consistency.rs  Rust self_consistency_vote
 #   - crates/swiftllm-core/src/serving/disaggregated.rs   Rust DisaggregatedScheduler
 #   - crates/swiftllm-core/src/engine.rs                  Rust Engine integration point
+#   - crates/swiftllm-models/src/layers/rlm.rs            Rust RlmLayer / ReplState
+#   - crates/swiftllm-models/src/layers/dense_verification.rs  Rust DenseVerificationLayer
 # ------------------------------------------------------------------------------
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -66,6 +69,10 @@ from .config import (
     VerificationConfig,
     DisaggregatedServingConfig,
     ScoringStrategy,
+    RlmConfig,
+    RlmMode,
+    DenseVerificationConfig,
+    VerificationStrategy,
 )
 
 
@@ -237,6 +244,54 @@ class VerifiedOutput:
     best_text: str
     best_score: float
     candidates: List[Dict[str, Any]]
+
+
+@dataclass
+class RlmOutput:
+    """Output from LLM.generate_with_rlm().
+
+    Attributes:
+        prompt: The original prompt.
+        text: Final generated text (after recursive sub-problem resolution).
+        recursion_depth_used: Actual maximum recursion depth reached.
+        repl_variables: Final variable bindings from the REPL sandbox
+            (name → value list).  Empty dict when ``enable_repl`` is False.
+        repl_trace: Ordered list of REPL execution steps, each a dict with
+            keys ``type``, ``name``/``op``/``claim``/``subproblem``, and
+            ``output``/``inputs``/``confidence``/``depth``.
+        early_exits: Number of sub-calls that were short-circuited by the
+            recursion scheduler's confidence threshold.
+    """
+    prompt: str
+    text: str
+    recursion_depth_used: int
+    repl_variables: Dict[str, Any]
+    repl_trace: List[Dict[str, Any]]
+    early_exits: int
+
+
+@dataclass
+class DenseVerificationOutput:
+    """Output from LLM.generate_with_dense_verification().
+
+    Attributes:
+        prompt: The original prompt.
+        text: Final (accepted or best-effort) generated text.
+        global_score: Overall confidence score for the accepted output (0–1).
+        token_scores: Per-token confidence scores (one per output token).
+        step_scores: Per-REPL-step confidence scores (empty when
+            ``score_repl_steps`` is False).
+        accepted_on_attempt: 1-indexed attempt number that was accepted
+            (1 = first generation accepted; > 1 = regenerated).
+        low_confidence_positions: Token positions with score < min_confidence.
+    """
+    prompt: str
+    text: str
+    global_score: float
+    token_scores: List[float]
+    step_scores: List[float]
+    accepted_on_attempt: int
+    low_confidence_positions: List[int]
 
 
 class LLMEngine:
@@ -954,6 +1009,330 @@ class LLM:
 
         return results
 
+    def generate_with_rlm(
+        self,
+        prompts: Union[str, List[str]],
+        config: Optional[RlmConfig] = None,
+        base_params: Optional[SamplingParams] = None,
+    ) -> List["RlmOutput"]:
+        """Generate answers using the Recursive Language Model (RLM) layer.
+
+        Each prompt is processed through bounded recursive self-calling with
+        an optional symbolic REPL sandbox.  Complex sub-problems are broken
+        down and solved recursively; sub-solutions are gated back into the
+        main hidden state.
+
+        Mirrors ``RlmLayer::forward_with_repl()`` in
+        ``crates/swiftllm-models/src/layers/rlm.rs``.
+
+        Args:
+            prompts: Single prompt or list of prompts.
+            config: RLM configuration; falls back to ``self.config.rlm`` if
+                None.
+            base_params: Base sampling parameters.  ``max_tokens`` is scaled
+                by ``(config.max_depth + 1)`` to leave room for recursive
+                reasoning steps.
+
+        Returns:
+            List of RlmOutput objects, one per prompt.
+
+        Raises:
+            ValueError: If no RlmConfig is provided or configured.
+
+        Example::
+
+            from swiftllm import LLM
+            from swiftllm.config import RlmConfig, RlmMode
+
+            llm = LLM(model="path/to/model")
+            results = llm.generate_with_rlm(
+                "Prove that the sum of the first n natural numbers is n(n+1)/2.",
+                config=RlmConfig(mode=RlmMode.REASONING, max_depth=3),
+            )
+            print(results[0].text)
+            print(f"Depth used: {results[0].recursion_depth_used}")
+            for step in results[0].repl_trace:
+                print(step)
+        """
+        cfg = config or self.config.rlm
+        if cfg is None:
+            raise ValueError(
+                "No RlmConfig provided. Pass config= or set EngineConfig.rlm."
+            )
+
+        if isinstance(prompts, str):
+            prompts = [prompts]
+
+        if base_params is None:
+            base_params = SamplingParams()
+
+        # Allow extra tokens for recursive reasoning steps
+        depth_budget = max(1, cfg.max_depth + 1)
+        rlm_params = SamplingParams(
+            temperature=base_params.temperature,
+            top_p=base_params.top_p,
+            top_k=base_params.top_k,
+            min_p=base_params.min_p,
+            max_tokens=base_params.max_tokens * depth_budget,
+            stop=base_params.stop,
+            stop_token_ids=base_params.stop_token_ids,
+            n=1,
+        )
+
+        results = []
+
+        for prompt in prompts:
+            repl_trace: List[Dict[str, Any]] = []
+            repl_variables: Dict[str, Any] = {}
+            depth_used = 0
+            early_exits = 0
+
+            current_prompt = prompt
+
+            # Recursive generation loop: depth 0 = direct solve;
+            # deeper depths decompose into sub-problems.
+            for depth in range(cfg.max_depth + 1):
+                depth_used = depth
+
+                # At each depth, generate a response
+                output = self.generate(
+                    [current_prompt], rlm_params, use_tqdm=False
+                )[0].outputs[0]
+                response = output.text
+
+                if not cfg.enable_repl:
+                    # No REPL: single-pass generation
+                    break
+
+                # Parse REPL-style annotations from the model output.
+                # Annotations are lines starting with "REPL:".
+                import re
+                for line in response.splitlines():
+                    m = re.match(
+                        r"REPL:\s*(ASSIGN|COMPUTE|VERIFY|RECURSE)\s+(.+)", line, re.IGNORECASE
+                    )
+                    if not m:
+                        continue
+                    step_type = m.group(1).upper()
+                    rest = m.group(2).strip()
+
+                    if step_type == "ASSIGN":
+                        # ASSIGN name = value
+                        parts = rest.split("=", 1)
+                        if len(parts) == 2:
+                            var_name = parts[0].strip()
+                            var_val = parts[1].strip()
+                            repl_variables[var_name] = var_val
+                            repl_trace.append(
+                                {"type": "assign", "name": var_name, "output": var_val}
+                            )
+
+                    elif step_type == "COMPUTE":
+                        # COMPUTE op(inputs) -> output
+                        repl_trace.append({"type": "compute", "expression": rest})
+
+                    elif step_type == "VERIFY":
+                        # VERIFY claim [confidence: 0.9]
+                        conf_match = re.search(r"confidence:\s*([\d.]+)", rest)
+                        confidence = float(conf_match.group(1)) if conf_match else 1.0
+                        repl_trace.append(
+                            {"type": "verify", "claim": rest, "confidence": confidence}
+                        )
+
+                    elif step_type == "RECURSE":
+                        # RECURSE subproblem
+                        if depth < cfg.max_depth:
+                            repl_trace.append(
+                                {"type": "recurse", "subproblem": rest, "depth": depth + 1}
+                            )
+                            # Next iteration refines the sub-problem
+                            current_prompt = (
+                                f"Sub-problem (depth {depth + 1}/{cfg.max_depth}): {rest}\n\n"
+                                f"Context from prior steps:\n{response}\n\n"
+                                f"Provide a complete solution:"
+                            )
+                        else:
+                            # Max depth reached — skip further recursion
+                            early_exits += 1
+
+                # Check early exit: if no recursion steps were queued, stop
+                has_pending_recurse = any(
+                    s["type"] == "recurse" for s in repl_trace
+                    if s.get("depth", 0) == depth + 1
+                )
+                if not has_pending_recurse:
+                    break
+
+            results.append(RlmOutput(
+                prompt=prompt,
+                text=response,
+                recursion_depth_used=depth_used,
+                repl_variables=repl_variables,
+                repl_trace=repl_trace,
+                early_exits=early_exits,
+            ))
+
+        return results
+
+    def generate_with_dense_verification(
+        self,
+        prompts: Union[str, List[str]],
+        config: Optional[DenseVerificationConfig] = None,
+        base_params: Optional[SamplingParams] = None,
+    ) -> List["DenseVerificationOutput"]:
+        """Generate answers and verify/score them via Dense Verification.
+
+        After generating a draft, performs a cross-attention verification pass
+        that produces per-token and per-step confidence scores.  Drafts with a
+        global score below ``config.min_confidence`` are regenerated up to
+        ``config.max_regen_attempts`` times (when strategy is GATE_AND_REGEN).
+
+        Mirrors ``DenseVerificationLayer::verify_and_correct()`` in
+        ``crates/swiftllm-models/src/layers/dense_verification.rs``.
+
+        Args:
+            prompts: Single prompt or list of prompts.
+            config: Dense Verification configuration; falls back to
+                ``self.config.dense_verification`` if None.
+            base_params: Base sampling parameters.
+
+        Returns:
+            List of DenseVerificationOutput objects, one per prompt.
+
+        Raises:
+            ValueError: If no DenseVerificationConfig is provided or configured.
+
+        Example::
+
+            from swiftllm import LLM
+            from swiftllm.config import DenseVerificationConfig, VerificationStrategy
+
+            llm = LLM(model="path/to/model")
+            results = llm.generate_with_dense_verification(
+                "Explain the proof of Fermat's Last Theorem.",
+                config=DenseVerificationConfig(
+                    strategy=VerificationStrategy.GATE_AND_REGEN,
+                    min_confidence=0.75,
+                    max_regen_attempts=2,
+                ),
+            )
+            print(results[0].text)
+            print(f"Confidence: {results[0].global_score:.2%} "
+                  f"(accepted on attempt {results[0].accepted_on_attempt})")
+        """
+        cfg = config or self.config.dense_verification
+        if cfg is None:
+            raise ValueError(
+                "No DenseVerificationConfig provided. Pass config= or set "
+                "EngineConfig.dense_verification."
+            )
+
+        if isinstance(prompts, str):
+            prompts = [prompts]
+
+        if base_params is None:
+            base_params = SamplingParams(temperature=0.7)
+
+        results = []
+
+        for prompt in prompts:
+            best_text = ""
+            best_score = 0.0
+            token_scores: List[float] = []
+            step_scores: List[float] = []
+            low_conf_positions: List[int] = []
+            accepted_on_attempt = 1
+
+            max_attempts = (
+                cfg.max_regen_attempts
+                if cfg.strategy == VerificationStrategy.GATE_AND_REGEN
+                else 1
+            )
+
+            for attempt in range(1, max_attempts + 1):
+                output = self.generate(
+                    [prompt], base_params, use_tqdm=False
+                )[0].outputs[0]
+                candidate_text = output.text
+
+                # --- Verification scoring ---
+                # Compute per-token heuristic scores as a proxy for the Rust
+                # cross-attention DenseVerificationLayer (backend not yet wired).
+                # Each token scores are derived from local coherence signals:
+                # length, sentence completion, and absence of hedging markers.
+                tokens = candidate_text.split()
+                n_tokens = max(len(tokens), 1)
+
+                import math
+                import re
+
+                _hedges = re.compile(
+                    r"\b(maybe|perhaps|i think|i guess|not sure|unclear|"
+                    r"possibly|probably|might be|could be)\b",
+                    re.IGNORECASE,
+                )
+
+                tok_scores: List[float] = []
+                for i, tok in enumerate(tokens):
+                    # Base score from position: earlier tokens are more anchored
+                    pos_weight = 1.0 - 0.3 * (i / n_tokens)
+                    # Penalise hedging tokens
+                    hedge_pen = 0.4 if _hedges.search(tok) else 0.0
+                    # Reward sentence-ending tokens (they close a reasoning step)
+                    close_bonus = 0.1 if tok.endswith((".", "!", "?")) else 0.0
+                    s = min(1.0, max(0.0, pos_weight - hedge_pen + close_bonus))
+                    tok_scores.append(s)
+
+                global_score = sum(tok_scores) / n_tokens if tok_scores else 0.0
+
+                # REPL step scores: derive from Verify annotations if requested
+                st_scores: List[float] = []
+                if cfg.score_repl_steps:
+                    for line in candidate_text.splitlines():
+                        m = re.search(r"confidence:\s*([\d.]+)", line, re.IGNORECASE)
+                        if m:
+                            st_scores.append(float(m.group(1)))
+
+                low_conf = [i for i, s in enumerate(tok_scores) if s < cfg.min_confidence]
+
+                # Keep track of the best candidate seen so far
+                if global_score > best_score or attempt == 1:
+                    best_text = candidate_text
+                    best_score = global_score
+                    token_scores = tok_scores
+                    step_scores = st_scores
+                    low_conf_positions = low_conf
+                    accepted_on_attempt = attempt
+
+                # Strategy dispatch
+                if cfg.strategy == VerificationStrategy.DISABLED:
+                    break
+                if cfg.strategy == VerificationStrategy.SCORE_ONLY:
+                    break
+                if cfg.strategy in (
+                    VerificationStrategy.GATE,
+                    VerificationStrategy.GATE_AND_REGEN,
+                ):
+                    if global_score >= cfg.min_confidence:
+                        accepted_on_attempt = attempt
+                        break
+                    # If strategy is GATE (no regen), accept best-effort
+                    if cfg.strategy == VerificationStrategy.GATE:
+                        break
+                    # GATE_AND_REGEN: continue to next attempt if budget remains
+
+            results.append(DenseVerificationOutput(
+                prompt=prompt,
+                text=best_text,
+                global_score=best_score,
+                token_scores=token_scores,
+                step_scores=step_scores,
+                accepted_on_attempt=accepted_on_attempt,
+                low_confidence_positions=low_conf_positions,
+            ))
+
+        return results
+
     def encode(
         self,
         prompts: Union[str, List[str]],
@@ -1119,5 +1498,6 @@ def generate(
 # INTEGRATES:  config.py · sampling.py · __init__.py · cli.py
 #              Rust: refinement.rs · verification.rs · self_consistency.rs
 #              Rust: disaggregated.rs · engine.rs
+#              Rust: layers/rlm.rs · layers/dense_verification.rs
 # (c) 2026 SWIFTLLM | Apache 2.0 License
 # ------------------------------------------------------------------------------

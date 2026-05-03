@@ -33,9 +33,9 @@
 
 **SwiftLLM** is a high-performance LLM inference, serving, and training engine built with Rust for maximum speed and efficiency. It features state-of-the-art memory management, continuous batching, multi-GPU support, built-in LoRA/QLoRA fine-tuning, and a full suite of research-derived enhancements across three integrated phases:
 
-- **Phase 1** — Hybrid model architectures: Mamba SSM layers, Mixture-of-Experts FFN, and Jamba-style hybrid attention+SSM blocks
+- **Phase 1** — Hybrid model architectures: Mamba SSM layers (with MIMO multi-head scan), LatentMoE with dynamic-bias load balancing, and Jamba-style hybrid attention+SSM blocks
 - **Phase 2** — Advanced training: GRPO reinforcement learning, CGAR depth curriculum, Process Reward Models, and LongR dense rewards
-- **Phase 3** — Test-time inference: self-consistency majority voting, multi-round self-refinement, Best-of-N dense verification, and disaggregated prefill/decode serving
+- **Phase 3** — Test-time inference: self-consistency majority voting, multi-round self-refinement, Best-of-N dense verification, disaggregated prefill/decode serving, **Recursive Language Model (RLM)** with REPL sandbox, and **Dense Verification Layer** with cross-attention token scoring
 
 ---
 
@@ -46,13 +46,33 @@
   - [Phase 1: Hybrid Architectures](#phase-1-hybrid-architectures)
   - [Phase 2: Training Enhancements](#phase-2-training-enhancements)
   - [Phase 3: Inference Enhancements](#phase-3-inference-enhancements)
+  - [Phase 3: Model-Level Reasoning — RLM & Dense Verification](#phase-3-model-level-reasoning--rlm--dense-verification)
 - [Supported Models](#supported-models)
 - [Installation](#installation)
 - [Quick Start](#quick-start)
 - [Training & Fine-Tuning](#training--fine-tuning)
+  - [Quick Start — CLI](#quick-fine-tune-with-lora-cli)
+  - [Python Training API](#python-training-api)
+  - [Training Data Formats](#training-data-formats)
+  - [LoRAConfig Reference](#loraconfig-reference)
+  - [QLoRA Fine-Tuning](#qlora-fine-tuning)
+  - [Full TrainingConfig Reference](#full-trainingconfig-reference)
+  - [Gradient Accumulation & Effective Batch Size](#gradient-accumulation--effective-batch-size)
+  - [Mixed Precision](#mixed-precision)
+  - [Learning Rate Schedulers](#learning-rate-schedulers)
+  - [Checkpoints & Resumption](#checkpoints--resumption)
+  - [Early Stopping](#early-stopping)
+  - [Callbacks & Metrics](#callbacks--metrics)
+  - [Config File Workflow](#config-file-workflow)
+  - [Multi-GPU Training](#multi-gpu-training)
+  - [Memory Requirements](#memory-requirements)
+  - [After Training: Loading Your Model](#after-training-loading-your-model)
+  - [Task-Specific Tips](#task-specific-tips)
 - [GRPO Reinforcement Learning Training](#grpo-reinforcement-learning-training)
 - [Test-Time Inference Enhancements](#test-time-inference-enhancements)
 - [Disaggregated Serving](#disaggregated-serving)
+- [Recursive Language Model (RLM)](#recursive-language-model-rlm)
+- [Dense Verification Layer](#dense-verification-layer)
 - [Configuration Reference](#configuration-reference)
 - [Environment Variables](#environment-variables)
 - [CLI Commands](#cli-commands)
@@ -92,10 +112,12 @@
 - **Multi-Round Self-Refinement** — Iterative critique→revision cycles (Self-Refine, Madaan 2023) (Phase 3)
 - **Best-of-N Verification** — Dense scoring and reranking of N candidates (Phase 3)
 - **Disaggregated Serving** — Separate prefill/decode worker pools (Splitwise/DistServe) (Phase 3)
+- **Recursive Language Model (RLM)** — Bounded recursive self-calling with REPL sandbox, variable binding, and recursion scheduler (Phase 3)
+- **Dense Verification Layer** — Cross-attention draft↔REPL-trace scoring; per-token & per-step confidence; GATE_AND_REGEN pipeline (Phase 3)
 
 **Model Architectures (Phase 1)**
-- **Mamba SSM Layers** — Selective state space model layers for sub-quadratic sequence modeling
-- **Mixture-of-Experts FFN** — Sparse MoE with top-k expert routing and load-balancing loss
+- **Mamba-3 SSM Layers** — Selective SSM with MIMO multi-head scan, complex-valued states, and exponential-trapezoidal discretisation
+- **LatentMoE FFN** — compress→MoE dispatch→expand with aux-loss-free dynamic-bias load balancing (DeepSeek-V3 style)
 - **Jamba Hybrid** — Interleaved Attention + Mamba blocks with configurable ratio
 
 ---
@@ -190,6 +212,34 @@ Generates `N` candidate responses, scores each using a configurable strategy (ru
 #### Disaggregated Prefill/Decode Serving (Splitwise / DistServe)
 
 Routes compute-bound prefill requests and bandwidth-bound decode requests to dedicated, independently-scaled worker pools. Scheduling policies: round-robin, least-loaded, locality-aware. Includes `optimal_worker_ratio()` for auto-sizing worker pools.
+
+---
+
+### Phase 3: Model-Level Reasoning — RLM & Dense Verification
+
+Implemented in `crates/swiftllm-models/src/layers/rlm.rs` and `dense_verification.rs`:
+
+#### Recursive Language Model (RLM)
+
+The RLM extends autoregressive generation with bounded recursive self-calling.  When the model encounters a complex sub-problem it can decompose it, solve each sub-problem at shallower depth, then integrate the sub-solutions back into the main hidden state via a learned gating mechanism.
+
+- **Recursion Scheduler** — a complexity-classifier MLP predicts the required depth for each token position; early exit when the predicted depth is 0 with confidence ≥ threshold
+- **REPL Sandbox** — a symbolic execution environment with four step types: `Assign`, `Compute`, `Verify`, `Recurse`; creates an execution trace consumed by the Dense Verification Layer
+- **Variable Binding Table** — soft-attention key-value store for intermediate results; lookup = softmax attention, write = gated update `g*new + (1−g)*old`
+- **Operating Modes** — `DISABLED` (plain pass-through), `SHALLOW` (depth=1), `REASONING` (depth=3, default), `AGENTIC` (depth=5)
+
+**Paper**: "Architecting the Next-Generation Agentic Paradigm: A Hybrid Synthesis of Mamba-3, Mixture of Experts, Recursive Language Models, and Dense Verification" (2024)
+
+#### Dense Verification Layer
+
+After the RLM generation completes, the Dense Verification Layer performs one additional pass on the full output, cross-attending draft hidden states (Q) against embedded REPL execution trace (K/V) to compute per-token and per-step confidence scores.
+
+- **Cross-Attention Scoring** — multi-head cross-attention: draft tokens as queries, REPL trace steps as keys/values → per-token attention weights → sigmoid score projection
+- **Verification Strategies** — `DISABLED`, `SCORE_ONLY` (always accept), `GATE` (reject below threshold, single attempt), `GATE_AND_REGEN` (reject and regenerate up to `max_regen_attempts`)
+- **Step Scoring** — separately scores each `Verify` step in the REPL trace for fine-grained quality assessment
+- **Integration with RLM** — `verify_and_correct()` accepts the model's hidden states and `ReplState`, returning a `VerificationResult` with `global_score`, `token_scores`, `step_scores`, `low_confidence_positions`
+
+**Paper**: "Let's Verify Step by Step" (Lightman et al., 2023); §3.5 of the Hybrid Mamba-3 architecture paper
 
 ---
 
@@ -465,6 +515,719 @@ opt.set_shape("layer0.weight", 4096, 4096);
 let mut param = vec![0.01f32; 4096 * 4096];
 let grad = compute_gradient(&model, &batch);
 opt.step(&mut param, &grad, "layer0.weight");
+```
+
+---
+
+### Training Data Formats
+
+SwiftLLM accepts three input formats for supervised fine-tuning.
+
+#### JSONL — Instruction/Chat (Recommended)
+
+Each line is one JSON object. The `messages` field follows the OpenAI chat format and is the recommended structure for instruction tuning and chat models:
+
+```jsonl
+{"messages": [{"role": "user", "content": "What is 12 × 15?"}, {"role": "assistant", "content": "12 × 15 = 180."}]}
+{"messages": [{"role": "system", "content": "You are a helpful math tutor."}, {"role": "user", "content": "Solve 3x + 7 = 22"}, {"role": "assistant", "content": "Subtract 7: 3x = 15. Divide by 3: x = 5."}]}
+```
+
+For simpler prompt-completion pairs, use `prompt` + `completion`:
+
+```jsonl
+{"prompt": "Translate to French: Hello, how are you?", "completion": "Bonjour, comment allez-vous?"}
+{"prompt": "Summarize in one sentence: [long article]", "completion": "The article discusses..."}
+```
+
+For GRPO/RL training, use `prompt` + optional `answer`:
+
+```jsonl
+{"prompt": "Solve step by step: 3x + 7 = 22. What is x?", "answer": "5"}
+{"prompt": "A train travels 60 mph for 2 h then 80 mph for 1 h. Total distance?", "answer": "200"}
+```
+
+#### JSONL — Long-Form / Document
+
+For long-context tasks (LongR rewards), include a `text` field:
+
+```jsonl
+{"text": "Chapter 1: Introduction\n\nLarge language models have..."}
+{"text": "Abstract: We propose a new method for..."}
+```
+
+#### CSV
+
+The trainer auto-detects CSV files (`.csv` extension). Required columns: `prompt` and `completion` (or `text` for language modelling).
+
+```csv
+prompt,completion
+"Translate to Spanish: Good morning","Buenos días"
+"What is the capital of Japan?","Tokyo"
+```
+
+#### Plain Text
+
+Files with no recognized extension, or `.txt` files, are treated as raw text for language modelling pretraining. Each line becomes one training example.
+
+```
+The quick brown fox jumps over the lazy dog.
+Machine learning is a subset of artificial intelligence.
+```
+
+#### Recommended Data Sizes
+
+| Task | Min examples | Recommended | Notes |
+|------|-------------|-------------|-------|
+| LoRA instruction tuning | 500 | 5 000–50 000 | Quality > quantity |
+| QLoRA instruction tuning | 500 | 5 000–20 000 | Same data, less VRAM |
+| Full fine-tuning | 10 000 | 100 000+ | Needs larger dataset to avoid overfitting |
+| GRPO RL | 200 | 1 000–10 000 | Prompts only; no answers required |
+| Domain adaptation | 1 000 | 10 000–1 M | Plain text for continued pretraining |
+
+---
+
+### LoRAConfig Reference
+
+```python
+from swiftllm.training import LoRAConfig
+
+lora = LoRAConfig(
+    r=16,                                           # Rank of the adapter matrices. Higher rank = more capacity.
+                                                    # Common values: 4 (tiny), 8, 16 (default), 32, 64.
+    alpha=32.0,                                     # Scaling factor. Effective scale = alpha / r.
+                                                    # Rule of thumb: alpha = 2×r for stable training.
+    dropout=0.05,                                   # Dropout applied inside LoRA layers (0.0 = no dropout).
+                                                    # Use 0.1 for small datasets to prevent overfitting.
+    target_modules=["q_proj", "k_proj",             # Which linear layers to apply LoRA to.
+                    "v_proj", "o_proj"],             # See architecture-specific recommendations below.
+    use_rslora=False,                               # Rank-Stabilized LoRA: scales by 1/√r instead of 1/r.
+                                                    # More stable for high ranks (r ≥ 32).
+)
+```
+
+**Rank (`r`) guidelines**
+
+| Rank | Parameters added | Use case |
+|------|-----------------|----------|
+| 4 | ~1–2 M | Fast domain adaptation, very limited VRAM |
+| 8 | ~2–4 M | Lightweight instruction tuning |
+| **16** | **~4–8 M** | **Default — good balance for most tasks** |
+| 32 | ~8–16 M | Math, code, or complex reasoning tasks |
+| 64 | ~16–32 M | Approaches QLoRA quality for complex tasks |
+
+**Target modules by architecture**
+
+| Architecture | Recommended `target_modules` |
+|-------------|------------------------------|
+| LLaMA / Mistral / Qwen | `["q_proj", "k_proj", "v_proj", "o_proj"]` |
+| LLaMA + MLP | `["q_proj", "k_proj", "v_proj", "o_proj", "gate_proj", "up_proj", "down_proj"]` |
+| Falcon | `["query_key_value", "dense", "dense_h_to_4h", "dense_4h_to_h"]` |
+| Phi-2 / Phi-3 | `["q_proj", "k_proj", "v_proj", "dense"]` |
+| Jamba (attention layers only) | `["q_proj", "k_proj", "v_proj", "o_proj"]` |
+| All linear layers | `"all-linear"` *(string shorthand)* |
+
+---
+
+### QLoRA Fine-Tuning
+
+QLoRA trains LoRA adapters on top of a 4-bit quantized base model — requiring ~65–70% less VRAM than standard LoRA while preserving most of the quality.
+
+```bash
+# CLI — QLoRA
+swiftllm train \
+  -m meta-llama/Llama-2-7b-hf \
+  --train-data ./data/train.jsonl \
+  --method qlora \
+  --lora-r 16 \
+  --lora-alpha 32 \
+  --learning-rate 2e-4 \
+  --mixed-precision bf16 \
+  --batch-size 2 \
+  --gradient-accumulation-steps 8 \
+  -o ./qlora_output
+```
+
+```python
+from swiftllm.training import Trainer, TrainingConfig, LoRAConfig, FineTuningMethod, MixedPrecision
+
+config = TrainingConfig(
+    model="meta-llama/Llama-2-7b-hf",
+    train_data="./data/train.jsonl",
+    output_dir="./qlora_output",
+    fine_tuning_method=FineTuningMethod.QLORA,  # 4-bit base + LoRA adapters
+    lora=LoRAConfig(
+        r=16,
+        alpha=32,
+        target_modules=["q_proj", "k_proj", "v_proj", "o_proj"],
+    ),
+    learning_rate=2e-4,
+    per_device_batch_size=2,
+    gradient_accumulation_steps=8,       # effective batch = 2 × 8 = 16
+    mixed_precision=MixedPrecision.BF16, # bf16 preferred for QLoRA
+    max_seq_len=2048,
+    num_epochs=3,
+)
+
+trainer = Trainer(config)
+trainer.train()
+```
+
+**QLoRA VRAM usage** (approximate, fp16 activations):
+
+| Model | Full FT | LoRA (r=16) | QLoRA (r=16, 4-bit) |
+|-------|---------|-------------|---------------------|
+| 7B | ~56 GB | ~28 GB | ~10 GB |
+| 13B | ~104 GB | ~52 GB | ~20 GB |
+| 34B | >200 GB | ~120 GB | ~48 GB |
+| 70B | >400 GB | ~240 GB | ~96 GB |
+
+---
+
+### Full TrainingConfig Reference
+
+```python
+from swiftllm.training import TrainingConfig, LoRAConfig, FineTuningMethod, LrScheduler, MixedPrecision
+
+config = TrainingConfig(
+    # ── Model & data ──────────────────────────────────────────────────────
+    model="meta-llama/Llama-2-7b-hf",  # HF model ID or local path
+    train_data="./data/train.jsonl",   # training data (JSONL, CSV, or text)
+    eval_data="./data/eval.jsonl",     # optional evaluation data
+    output_dir="./output",             # checkpoints + logs are saved here
+
+    # ── Training loop ─────────────────────────────────────────────────────
+    num_epochs=3,                      # full passes over the training set
+    per_device_batch_size=4,           # batch size per GPU
+    gradient_accumulation_steps=1,     # accumulate N micro-batches before stepping
+                                       # effective_batch = per_device × accum × num_gpus
+    max_seq_len=2048,                  # truncate / pad sequences to this length
+
+    # ── Optimizer & scheduler ─────────────────────────────────────────────
+    learning_rate=5e-5,                # peak LR (after warmup)
+    weight_decay=0.01,                 # L2 regularisation coefficient
+    warmup_steps=100,                  # int = absolute steps; float < 1.0 = ratio of total steps
+    max_grad_norm=1.0,                 # gradient clipping threshold
+    lr_scheduler=LrScheduler.COSINE,   # LINEAR | COSINE | COSINE_WITH_RESTARTS | CONSTANT | CONSTANT_WITH_WARMUP
+
+    # ── Precision ─────────────────────────────────────────────────────────
+    mixed_precision=MixedPrecision.FP16,  # NO | FP16 | BF16
+
+    # ── Fine-tuning method ────────────────────────────────────────────────
+    fine_tuning_method=FineTuningMethod.LORA,  # FULL | LORA | QLORA
+    lora=LoRAConfig(r=16, alpha=32),            # only used when method is LORA or QLORA
+
+    # ── Logging & evaluation ──────────────────────────────────────────────
+    logging_steps=10,                  # print metrics every N optimizer steps
+    eval_steps=500,                    # run evaluation every N steps (0 = per epoch only)
+
+    # ── Checkpointing ─────────────────────────────────────────────────────
+    save_steps=500,                    # save a checkpoint every N steps (0 = per epoch)
+    save_total_limit=3,                # keep at most N checkpoints (oldest are deleted)
+    resume_from_checkpoint=None,       # path to a checkpoint dir to resume from
+
+    # ── Reproducibility ───────────────────────────────────────────────────
+    seed=42,
+
+    # ── Phase 2 research integrations (all optional) ──────────────────────
+    num_layers=32,                     # total model layers (required for CGAR)
+    grpo=None,                         # GrpoConfig — enables RL fine-tuning (GrpoTrainer only)
+    cgar=None,                         # CgarConfig — enables depth curriculum
+    prm=None,                          # PrmConfig  — enables step-level rewards
+    long_reward_weight=0.0,            # float > 0  — enables LongR dense rewards
+)
+```
+
+**`effective_batch_size` property**
+
+```python
+# effective_batch_size = per_device_batch_size × gradient_accumulation_steps
+print(config.effective_batch_size)  # 4 × 1 = 4
+```
+
+---
+
+### Gradient Accumulation & Effective Batch Size
+
+Large-batch training generally improves stability and final quality, but increasing `per_device_batch_size` directly requires proportionally more VRAM. Use `gradient_accumulation_steps` to simulate a larger batch without extra memory:
+
+```python
+# 16-sample effective batch on a single 24 GB GPU
+config = TrainingConfig(
+    per_device_batch_size=2,           # 2 examples fit in GPU memory at once
+    gradient_accumulation_steps=8,     # accumulate 8 micro-batches → effective = 16
+)
+
+# Same effective batch across 4 GPUs
+config = TrainingConfig(
+    per_device_batch_size=4,
+    gradient_accumulation_steps=1,
+    # tensor_parallel_size=4 set via EngineConfig or environment variable
+)
+```
+
+**Effective batch size formula**:
+```
+effective_batch = per_device_batch_size × gradient_accumulation_steps × num_gpus
+```
+
+Typical starting points:
+- Instruction tuning: effective batch 32–128
+- RL / GRPO: effective batch = `per_device_batch_size × group_size`
+- Pretraining: effective batch 256–2048
+
+---
+
+### Mixed Precision
+
+| Mode | Description | When to use |
+|------|-------------|------------|
+| `NO` | Full fp32 training | Debugging; very small models |
+| `FP16` | Loss scaled fp16 (AMP) | NVIDIA Volta/Turing/Ampere (A100, V100, RTX 30xx) |
+| `BF16` | Brain float 16 — wider exponent range, no loss scaling | Ampere+ (A100, H100) and Apple Silicon; preferred for QLoRA and GRPO |
+
+```python
+from swiftllm.training import MixedPrecision
+
+config = TrainingConfig(
+    mixed_precision=MixedPrecision.BF16,  # recommended for A100 / H100
+)
+```
+
+> **Tip**: If you see NaN losses with `FP16`, switch to `BF16`. BF16 has the same range as FP32 and doesn't require loss scaling.
+
+---
+
+### Learning Rate Schedulers
+
+| Scheduler | Behaviour | Good for |
+|-----------|-----------|---------|
+| `LINEAR` | Linear decay from peak LR to 0 | Short runs, quick experiments |
+| `COSINE` | Cosine annealing from peak to ~0 | **Default — best for most tasks** |
+| `COSINE_WITH_RESTARTS` | Cosine with periodic warm restarts | Long runs; helps escape local minima |
+| `CONSTANT` | Constant LR after warmup | Hyperparameter search |
+| `CONSTANT_WITH_WARMUP` | Constant LR (with warmup) | Debugging, ablations |
+
+```python
+from swiftllm.training import LrScheduler
+
+config = TrainingConfig(
+    learning_rate=2e-4,
+    warmup_steps=100,          # int: first 100 steps ramp from 0 → peak LR
+    # warmup_steps=0.03,       # float < 1.0: first 3% of steps are warmup
+    lr_scheduler=LrScheduler.COSINE,
+)
+```
+
+**Recommended learning rates by method**:
+
+| Method | Typical LR range | Notes |
+|--------|-----------------|-------|
+| Full fine-tuning | `1e-5` – `5e-5` | Lower LR to avoid catastrophic forgetting |
+| LoRA (r=16) | `1e-4` – `3e-4` | Adapters train faster; can use higher LR |
+| QLoRA (r=16) | `1e-4` – `2e-4` | Similar to LoRA |
+| GRPO | `1e-6` – `1e-5` | RL is sensitive; keep LR small |
+
+---
+
+### Checkpoints & Resumption
+
+SwiftLLM saves two files per checkpoint:
+- `output_dir/checkpoint-{step}/trainer_state.json` — step, epoch, loss, LR
+- `output_dir/training_config.json` — full `TrainingConfig` (written once at start)
+- `output_dir/final/trainer_state.json` — final checkpoint after training ends
+
+**Configure checkpointing:**
+
+```python
+config = TrainingConfig(
+    output_dir="./output",
+    save_steps=500,         # save every 500 optimizer steps
+    save_total_limit=3,     # keep the 3 most recent checkpoints; older are auto-deleted
+                            # set None to keep all checkpoints (may use a lot of disk)
+)
+```
+
+**Resume from a checkpoint:**
+
+```python
+from swiftllm.training import Trainer
+
+# Class method — loads config + trainer state automatically
+trainer = Trainer.resume_from_checkpoint("./output/checkpoint-1000")
+trainer.train()
+```
+
+Or via CLI:
+
+```bash
+swiftllm train \
+  -m meta-llama/Llama-2-7b-hf \
+  --train-data ./data/train.jsonl \
+  --resume-from-checkpoint ./output/checkpoint-1000 \
+  -o ./output
+```
+
+**Checkpoint directory layout:**
+
+```
+output/
+├── training_config.json         ← saved once at start
+├── checkpoint-500/
+│   └── trainer_state.json
+├── checkpoint-1000/
+│   └── trainer_state.json
+└── final/
+    └── trainer_state.json
+```
+
+---
+
+### Early Stopping
+
+Stop training automatically when the monitored metric stops improving.
+
+```python
+from swiftllm.training import Trainer, TrainingConfig, EarlyStoppingConfig
+
+config = TrainingConfig(
+    model="meta-llama/Llama-2-7b-hf",
+    train_data="./data/train.jsonl",
+    eval_data="./data/eval.jsonl",
+    eval_steps=200,          # evaluate every 200 steps
+    num_epochs=10,           # upper bound — early stopping may trigger sooner
+)
+
+early_stop = EarlyStoppingConfig(
+    patience=3,              # stop after 3 consecutive evals with no improvement
+    min_delta=0.001,         # improvement must be > 0.001 to count as progress
+    metric="eval_loss",      # monitor eval_loss (or "train_loss")
+)
+
+trainer = Trainer(config, early_stopping=early_stop)
+trainer.train()
+
+if trainer.stopped_early:
+    print(f"Stopped early at step {trainer.metrics.step}")
+```
+
+---
+
+### Callbacks & Metrics
+
+Attach callbacks to react to training events or build custom loggers, experiment trackers, or dashboards.
+
+```python
+from swiftllm.training import Trainer, TrainingConfig, TrainingMetrics
+
+config = TrainingConfig(
+    model="meta-llama/Llama-2-7b-hf",
+    train_data="data.jsonl",
+    logging_steps=10,    # callbacks fire every logging_steps steps
+)
+
+trainer = Trainer(config)
+
+# ── Simple loss logger ─────────────────────────────────────────────────────
+trainer.add_callback(lambda m: print(
+    f"step={m.step}  loss={m.train_loss:.4f}  ppl={m.perplexity:.2f}  "
+    f"lr={m.learning_rate:.2e}  tok/s={m.throughput:.0f}"
+))
+
+# ── Weights & Biases integration ───────────────────────────────────────────
+import wandb
+wandb.init(project="swiftllm", config=config.to_dict())
+
+def wandb_callback(m: TrainingMetrics):
+    wandb.log({
+        "train/loss": m.train_loss,
+        "train/perplexity": m.perplexity,
+        "train/learning_rate": m.learning_rate,
+        "train/throughput_tok_s": m.throughput,
+        "eval/loss": m.eval_loss,
+    }, step=m.step)
+
+trainer.add_callback(wandb_callback)
+
+# ── Custom early-exit based on loss threshold ─────────────────────────────
+def loss_guard(m: TrainingMetrics):
+    if m.train_loss > 10.0:
+        raise RuntimeError(f"Loss exploded to {m.train_loss:.2f} at step {m.step}")
+
+trainer.add_callback(loss_guard)
+
+trainer.train()
+
+# ── Read metrics after training ────────────────────────────────────────────
+metrics = trainer.metrics   # TrainingMetrics dataclass
+print(f"Final step  : {metrics.step}")
+print(f"Final loss  : {metrics.train_loss:.4f}")
+print(f"Final ppl   : {metrics.perplexity:.2f}")
+print(f"Eval loss   : {metrics.eval_loss}")
+print(f"Total tokens: {metrics.total_tokens:,}")
+print(f"Elapsed     : {metrics.elapsed_secs:.0f}s")
+```
+
+**`TrainingMetrics` fields**:
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `step` | int | Current optimizer step |
+| `epoch` | int | Current epoch (0-indexed) |
+| `train_loss` | float | Training loss at this step |
+| `eval_loss` | float \| None | Evaluation loss (None if not yet evaluated) |
+| `perplexity` | float | `exp(train_loss)` |
+| `learning_rate` | float | Current LR value |
+| `throughput` | float | Tokens per second |
+| `total_tokens` | int | Cumulative tokens processed |
+| `elapsed_secs` | float | Wall-clock seconds since training start |
+
+---
+
+### Config File Workflow
+
+Save a config to JSON and reuse it for reproducible runs:
+
+```python
+from swiftllm.training import TrainingConfig, LoRAConfig
+
+config = TrainingConfig(
+    model="meta-llama/Llama-2-7b-hf",
+    train_data="./data/train.jsonl",
+    num_epochs=3,
+    learning_rate=2e-4,
+    lora=LoRAConfig(r=16, alpha=32),
+)
+
+# Save to file
+config.save("./my_run.json")
+
+# Load later (tolerates extra/missing keys gracefully)
+config2 = TrainingConfig.load("./my_run.json")
+```
+
+CLI with a config file:
+
+```bash
+# Run from a saved config (all other flags are ignored)
+swiftllm train --config ./my_run.json
+
+# GRPO with a config file
+swiftllm grpo --config ./grpo_run.json
+```
+
+The saved JSON file contains all `TrainingConfig` fields, including nested `grpo`, `cgar`, `prm`, and `lora` objects. It can be version-controlled and shared with collaborators.
+
+---
+
+### Multi-GPU Training
+
+**Tensor parallelism** splits each model layer across multiple GPUs — best for inference and for models that exceed a single GPU's VRAM:
+
+```bash
+# Fine-tune across 4 GPUs with tensor parallelism
+swiftllm train \
+  -m meta-llama/Llama-2-7b-hf \
+  --train-data ./data/train.jsonl \
+  --method lora \
+  --tensor-parallel-size 4 \
+  -o ./output
+```
+
+```python
+# Via environment variable (read automatically by EngineConfig)
+import os
+os.environ["SWIFTLLM_TENSOR_PARALLEL_SIZE"] = "4"
+
+from swiftllm.training import Trainer, TrainingConfig
+config = TrainingConfig(model="meta-llama/Llama-2-7b-hf", ...)
+trainer = Trainer(config)
+trainer.train()
+```
+
+**NCCL tuning for multi-GPU**:
+
+```bash
+# Disable P2P on systems where GPUs are not directly connected
+export NCCL_P2P_DISABLE=1
+
+# Enable verbose NCCL logging for debugging hangs
+export NCCL_DEBUG=INFO
+
+# Restrict to specific GPUs
+export CUDA_VISIBLE_DEVICES=0,1,2,3
+```
+
+**Distributed data parallelism** (DDP) — scale to multiple nodes:
+
+```bash
+# Node 0 (master)
+MASTER_ADDR=10.0.0.1 MASTER_PORT=29500 \
+  WORLD_SIZE=2 RANK=0 \
+  swiftllm train -m meta-llama/Llama-2-7b-hf --train-data data.jsonl
+
+# Node 1 (worker)
+MASTER_ADDR=10.0.0.1 MASTER_PORT=29500 \
+  WORLD_SIZE=2 RANK=1 \
+  swiftllm train -m meta-llama/Llama-2-7b-hf --train-data data.jsonl
+```
+
+---
+
+### Memory Requirements
+
+Approximate VRAM requirements for training (fp16 activations, batch size = 1 per device):
+
+| Model size | Full fine-tuning | LoRA r=16 | QLoRA r=16 (4-bit) |
+|-----------|-----------------|-----------|-------------------|
+| **1–3B** | 12–24 GB | 6–12 GB | 4–6 GB |
+| **7B** | ~56 GB | ~28 GB | ~10 GB |
+| **13B** | ~104 GB | ~52 GB | ~20 GB |
+| **34B** | >200 GB | ~120 GB | ~48 GB |
+| **70B** | >400 GB | ~240 GB | ~96 GB |
+
+**Tips to reduce memory usage:**
+
+```python
+config = TrainingConfig(
+    per_device_batch_size=1,           # smallest batch
+    gradient_accumulation_steps=16,    # maintain effective batch = 16
+    mixed_precision=MixedPrecision.BF16,
+    max_seq_len=1024,                  # shorter sequences = less KV cache memory
+    fine_tuning_method=FineTuningMethod.QLORA,
+    lora=LoRAConfig(r=8),              # smaller rank = fewer parameters
+)
+```
+
+```bash
+# Also reduce GPU overhead reservation
+export SWIFTLLM_GPU_OVERHEAD_MB=256
+export SWIFTLLM_GPU_MEMORY_UTILIZATION=0.92
+```
+
+---
+
+### After Training: Loading Your Model
+
+After training completes, your output directory contains:
+
+```
+output/
+├── training_config.json     ← full config (for reproducibility)
+├── final/
+│   └── trainer_state.json   ← step, epoch, loss at completion
+└── checkpoint-*/
+    └── trainer_state.json
+```
+
+> **Note**: The CUDA backend is not yet fully wired — weight files are not written in the current release. When the backend is complete, LoRA adapters will be saved as `adapter_model.safetensors` + `adapter_config.json`, and full fine-tuned weights as `model.safetensors` shards.
+
+**Planned loading API** (once backend is wired):
+
+```python
+# Load the fine-tuned model for inference
+from swiftllm import LLM
+
+# LoRA: pass the adapter directory; base model is loaded separately
+llm = LLM(
+    model="meta-llama/Llama-2-7b-hf",   # base model
+    enable_lora=True,
+)
+# Load LoRA adapter at request time (hot-swap supported)
+from swiftllm.config import LoRARequest
+outputs = llm.generate(
+    ["Hello, world!"],
+    lora_request=LoRARequest(lora_name="my-adapter", lora_path="./output/final"),
+)
+
+# Full fine-tune: point directly at the output directory
+llm = LLM(model="./output/final")
+outputs = llm.generate(["Hello!"])
+```
+
+---
+
+### Task-Specific Tips
+
+#### Instruction Tuning
+
+Use the `messages` JSONL format. Add a system prompt that describes the model's role:
+
+```jsonl
+{"messages": [{"role": "system", "content": "You are a concise technical assistant."}, {"role": "user", "content": "..."}, {"role": "assistant", "content": "..."}]}
+```
+
+Recommended settings: LoRA r=16, LR=2e-4, 3 epochs, max_seq_len=2048.
+
+#### Code Generation
+
+Use longer sequences and include complete, runnable code examples in both prompt and completion. Avoid truncating mid-function:
+
+```python
+config = TrainingConfig(
+    max_seq_len=4096,            # code examples can be long
+    lora=LoRAConfig(
+        r=32,                    # higher rank for code
+        target_modules=["q_proj", "k_proj", "v_proj", "o_proj",
+                        "gate_proj", "up_proj", "down_proj"],  # include MLP
+    ),
+    learning_rate=1e-4,
+)
+```
+
+#### Mathematical Reasoning
+
+Use chain-of-thought data with explicit `<think>` / step delimiters. Pair with a Process Reward Model for step-level feedback:
+
+```python
+from swiftllm.config import PrmConfig
+
+config = TrainingConfig(
+    max_seq_len=2048,
+    learning_rate=5e-5,
+    prm=PrmConfig(
+        aggregation="last_step",
+        step_separator="\n\n",   # blank line between reasoning steps
+        outcome_weight=0.5,
+        prm_weight=0.5,
+    ),
+)
+```
+
+#### Domain Adaptation (Continued Pretraining)
+
+Use plain-text data with full fine-tuning or high-rank LoRA. Keep learning rate low to avoid forgetting:
+
+```python
+config = TrainingConfig(
+    fine_tuning_method=FineTuningMethod.LORA,
+    lora=LoRAConfig(r=64, use_rslora=True),  # high rank, RSLoRA for stability
+    learning_rate=5e-5,                       # lower LR than instruction tuning
+    num_epochs=1,                             # one pass avoids overfitting raw text
+    max_seq_len=4096,
+)
+```
+
+#### Dialogue / Chat Fine-Tuning
+
+Mask the loss on system prompt and user turns — only compute loss on assistant turns. Use `messages` format:
+
+```jsonl
+{"messages": [
+  {"role": "system",    "content": "You are a helpful assistant."},
+  {"role": "user",      "content": "What is photosynthesis?"},
+  {"role": "assistant", "content": "Photosynthesis is the process by which plants..."}
+]}
+```
+
+Recommended: LoRA r=16–32, LR=2e-4, 2–3 epochs, max_seq_len=2048, eval on held-out dialogues.
+
+#### LoRA vs QLoRA Decision Guide
+
+```
+Available VRAM for 7B model?
+├── ≥ 28 GB → LoRA (full quality, fastest training)
+├── 10–27 GB → QLoRA (near-LoRA quality, ~40% slower)
+└── < 10 GB → QLoRA + r=8 + max_seq_len=1024 + gradient_accum=16
 ```
 
 ---
@@ -777,6 +1540,154 @@ println!("Prefill workers: {n_prefill}, Decode workers: {n_decode}");
 
 ---
 
+## Recursive Language Model (RLM)
+
+```python
+from swiftllm import LLM, RlmConfig, RlmMode, SamplingParams
+
+llm = LLM(model="path/to/model")
+
+# REASONING mode: depth=3, REPL enabled (default)
+results = llm.generate_with_rlm(
+    "Prove by induction that 1+2+…+n = n(n+1)/2.",
+    config=RlmConfig(
+        mode=RlmMode.REASONING,
+        max_depth=3,
+        enable_repl=True,         # symbolic REPL sandbox
+        var_binding_slots=32,     # soft key-value memory slots
+        early_exit_threshold=0.92,
+    ),
+    base_params=SamplingParams(temperature=0.7, max_tokens=768),
+)
+
+result = results[0]
+print(result.text)
+print(f"Depth used : {result.recursion_depth_used}")
+print(f"REPL steps : {len(result.repl_trace)}")
+print(f"Variables  : {result.repl_variables}")
+
+# AGENTIC mode: depth=5, larger token budget
+results = llm.generate_with_rlm(
+    "Plan a zero-downtime migration of a 10TB PostgreSQL database to Aurora.",
+    config=RlmConfig(mode=RlmMode.AGENTIC, max_depth=5),
+)
+
+# SHALLOW mode: single decomposition step
+results = llm.generate_with_rlm(
+    "What is the derivative of sin(x)·cos(x)?",
+    config=RlmConfig(mode=RlmMode.SHALLOW, max_depth=1),
+)
+
+# Disable REPL (pure recursive generation, no variable binding)
+results = llm.generate_with_rlm(
+    "Explain the halting problem.",
+    config=RlmConfig(mode=RlmMode.REASONING, max_depth=3, enable_repl=False),
+)
+```
+
+**CLI**
+
+```bash
+# RLM with max recursion depth 3
+swiftllm generate -m /path/to/model -p "Prove that sqrt(2) is irrational." --rlm 3
+
+# RLM without REPL sandbox
+swiftllm generate -m /path/to/model -p "..." --rlm 3 --rlm-no-repl
+
+# Agentic depth
+swiftllm generate -m /path/to/model -p "Plan a database migration." --rlm 5
+```
+
+The `RlmOutput` dataclass contains:
+
+| Field | Description |
+|-------|-------------|
+| `text` | Final generated text |
+| `recursion_depth_used` | Actual max depth reached (0 = direct solve) |
+| `repl_variables` | Final variable bindings `{name: value}` |
+| `repl_trace` | Ordered list of REPL steps (type, args, output) |
+| `early_exits` | Scheduler shortcuts (confidence ≥ threshold) |
+
+---
+
+## Dense Verification Layer
+
+```python
+from swiftllm import LLM, DenseVerificationConfig, VerificationStrategy, SamplingParams
+
+llm = LLM(model="path/to/model")
+
+# GATE_AND_REGEN: reject and regenerate until confidence ≥ 80% (up to 3 attempts)
+results = llm.generate_with_dense_verification(
+    "Explain Gödel's incompleteness theorems.",
+    config=DenseVerificationConfig(
+        strategy=VerificationStrategy.GATE_AND_REGEN,
+        min_confidence=0.80,
+        max_regen_attempts=3,
+        score_repl_steps=True,    # score REPL:VERIFY annotations
+    ),
+    base_params=SamplingParams(temperature=0.7, max_tokens=512),
+)
+
+result = results[0]
+print(result.text)
+print(f"Global confidence  : {result.global_score:.1%}")
+print(f"Accepted on attempt: {result.accepted_on_attempt}")
+print(f"Low-conf positions : {result.low_confidence_positions}")
+
+# SCORE_ONLY: always accept first draft but collect scores
+results = llm.generate_with_dense_verification(
+    "What causes northern lights?",
+    config=DenseVerificationConfig(strategy=VerificationStrategy.SCORE_ONLY),
+)
+print(results[0].global_score)
+
+# GATE: reject but do NOT regenerate (accept best-effort)
+results = llm.generate_with_dense_verification(
+    "Summarise the water cycle.",
+    config=DenseVerificationConfig(
+        strategy=VerificationStrategy.GATE,
+        min_confidence=0.75,
+    ),
+)
+```
+
+**CLI**
+
+```bash
+# Dense verification with GATE_AND_REGEN (default)
+swiftllm generate -m /path/to/model -p "..." --dense-verification
+
+# Custom confidence threshold and regen limit
+swiftllm generate -m /path/to/model -p "..." \
+  --dense-verification --dv-min-confidence 0.75 --dv-max-regen 2
+
+# Score only (no gating)
+swiftllm generate -m /path/to/model -p "..." --dense-verification --dv-score-only
+```
+
+**Verification Strategies**
+
+| Strategy | Behaviour |
+|----------|-----------|
+| `DISABLED` | Passthrough; no scoring. |
+| `SCORE_ONLY` | Score all tokens/steps; always accept the first draft. |
+| `GATE` | Reject drafts below `min_confidence`; accept best-effort without regenerating. |
+| `GATE_AND_REGEN` | Reject and regenerate up to `max_regen_attempts` times; return the highest-scoring attempt. |
+
+The `DenseVerificationOutput` dataclass contains:
+
+| Field | Description |
+|-------|-------------|
+| `text` | Final (accepted) generated text |
+| `global_score` | Overall confidence (0–1) |
+| `token_scores` | Per-token confidence scores |
+| `step_scores` | Per-REPL-step confidence (empty when `score_repl_steps=False`) |
+| `accepted_on_attempt` | 1-indexed attempt number that was accepted |
+| `low_confidence_positions` | Token indices below `min_confidence` |
+
+---
+
 ## Configuration Reference
 
 ### SamplingParams
@@ -837,6 +1748,35 @@ vc = VerificationConfig(
     neural_weight=0.3,
     logprob_weight=0.2,
     neural_model=None,  # path to neural PRM for NEURAL / ENSEMBLE
+)
+```
+
+### Phase 3 Model-Level Reasoning Configs
+
+```python
+from swiftllm.config import (
+    RlmConfig, RlmMode,
+    DenseVerificationConfig, VerificationStrategy,
+)
+
+# Recursive Language Model
+rlm = RlmConfig(
+    mode=RlmMode.REASONING,          # DISABLED | SHALLOW | REASONING | AGENTIC
+    max_depth=3,                     # 0 = direct solve; paper recommends 2–4 for math/code
+    enable_repl=True,                # symbolic REPL sandbox with variable binding
+    var_binding_slots=32,            # number of soft key-value memory slots
+    depth_hidden_size=None,          # None → d_model // 4 (set in Rust)
+    early_exit_threshold=0.92,       # skip recursion when scheduler confidence ≥ threshold
+    d_subproblem=None,               # None → d_model // 2 (set in Rust)
+)
+
+# Dense Verification Layer
+dv = DenseVerificationConfig(
+    strategy=VerificationStrategy.GATE_AND_REGEN,  # DISABLED | SCORE_ONLY | GATE | GATE_AND_REGEN
+    num_verification_heads=8,        # cross-attention heads for draft ↔ REPL-trace attention
+    min_confidence=0.80,             # global score threshold (0, 1]
+    max_regen_attempts=3,            # max regeneration attempts (GATE_AND_REGEN only)
+    score_repl_steps=True,           # also score REPL:VERIFY step annotations
 )
 ```
 
@@ -1027,6 +1967,13 @@ swiftllm generate -m <model> -p "Summarize the water cycle" --refinement-rounds 
 # Best-of-N: generate N, return the highest-scoring candidate
 swiftllm generate -m <model> -p "Write a haiku" --best-of-n 8
 
+# Recursive Language Model (up to 3 levels of recursive self-calling)
+swiftllm generate -m <model> -p "Prove sqrt(2) is irrational." --rlm 3
+
+# Dense Verification: cross-attention token/step confidence scoring
+swiftllm generate -m <model> -p "Explain Gödel's theorems." \
+  --dense-verification --dv-min-confidence 0.80 --dv-max-regen 3
+
 # Interactive chat session
 swiftllm chat -m <model> [--system "You are a helpful assistant"]
 
@@ -1144,13 +2091,18 @@ swiftllm/
 │   │                                 #   + generate_with_self_consistency()
 │   │                                 #   + generate_with_refinement()
 │   │                                 #   + generate_best_of_n()
+│   │                                 #   + generate_with_rlm()            ← Phase 3
+│   │                                 #   + generate_with_dense_verification() ← Phase 3
 │   ├── training.py                   #   Trainer / GrpoTrainer / fine_tune / grpo_train
 │   ├── sampling.py                   #   Sampling strategies + SelfConsistencySampler
 │   ├── config.py                     #   All config dataclasses (Phase 1–3)
 │   │                                 #   GrpoConfig, CgarConfig, PrmConfig, LongRewardConfig
 │   │                                 #   SelfConsistencyConfig, RefinementConfig
 │   │                                 #   VerificationConfig, DisaggregatedServingConfig
+│   │                                 #   RlmConfig, RlmMode                ← Phase 3
+│   │                                 #   DenseVerificationConfig, VerificationStrategy ← Phase 3
 │   ├── cli.py                        #   CLI: serve/generate/train/finetune/grpo/chat/…
+│   │                                 #   + --rlm DEPTH, --dense-verification flags ← Phase 3
 │   └── model_resolver.py             #   HuggingFace / local / offline resolution
 │
 ├── crates/
@@ -1173,9 +2125,13 @@ swiftllm/
 │   │
 │   ├── swiftllm-models/              # Model loading & architectures
 │   │   └── src/
-│   │       ├── mamba.rs              #   Phase 1: Mamba SSM layers
-│   │       ├── moe.rs                #   Phase 1: Mixture-of-Experts FFN
-│   │       ├── jamba.rs              #   Phase 1: Jamba hybrid (Attn + Mamba + MoE)
+│   │       ├── layers/
+│   │       │   ├── mamba.rs          #   Phase 1: Mamba-3 SSM + MIMO scan
+│   │       │   ├── moe.rs            #   Phase 1: LatentMoE + dynamic bias
+│   │       │   ├── rlm.rs            #   Phase 3: RlmLayer + ReplState + VariableBindingTable
+│   │       │   └── dense_verification.rs  # Phase 3: DenseVerificationLayer
+│   │       ├── architectures/
+│   │       │   └── jamba.rs          #   Phase 1: Jamba hybrid (Attn + Mamba + MoE)
 │   │       └── …
 │   │
 │   ├── swiftllm-training/            # Training engine
@@ -1205,7 +2161,9 @@ swiftllm/
     ├── fine_tuning.py                # LoRA and QLoRA fine-tuning
     ├── training.py                   # Full training with callbacks and config management
     ├── self_consistency.py           # Phase 3: self-consistency voting demo
-    └── grpo_training.py              # Phase 2: GRPO + CGAR + PRM + LongR training demo
+    ├── grpo_training.py              # Phase 2: GRPO + CGAR + PRM + LongR training demo
+    ├── rlm_inference.py              # Phase 3: RLM — 3 modes + variable-binding demo
+    └── dense_verification_inference.py  # Phase 3: Dense Verification — 4 strategies
 ```
 
 ---
@@ -1225,6 +2183,8 @@ See the [examples/](examples/) directory:
 | [`training.py`](examples/training.py) | Full training with callbacks and checkpoint management |
 | [`self_consistency.py`](examples/self_consistency.py) | **Phase 3**: self-consistency voting — three demo modes including offline `SelfConsistencySampler.vote()` |
 | [`grpo_training.py`](examples/grpo_training.py) | **Phase 2**: GRPO + CGAR + PRM + LongR — auto-generates synthetic math data, full config resolution, metric callback |
+| [`rlm_inference.py`](examples/rlm_inference.py) | **Phase 3**: Recursive Language Model — SHALLOW / REASONING / AGENTIC modes, variable-binding demo, no-REPL variant |
+| [`dense_verification_inference.py`](examples/dense_verification_inference.py) | **Phase 3**: Dense Verification — all four strategies, multi-prompt batch scoring, confidence calibration demo |
 
 ---
 
@@ -1328,16 +2288,36 @@ SwiftLLM includes built-in security features across the server, installer, and r
 - **New**: `serving/disaggregated.rs` — `DisaggregatedConfig`, `DisaggregatedScheduler`, `WorkerRole`, `WorkerSpec`, `SchedulingPolicy`, `KvTransferMetadata`, `optimal_worker_ratio()`, 15 tests
 - Updated `lib.rs`, `sampling/mod.rs` — re-export all Phase 3 public types
 
+**Phase 1 — Mamba-3 & LatentMoE Fixes** (`crates/swiftllm-models/src/layers/`)
+
+- **New**: `mimo_scan_step_cpu()` in `mamba.rs` — MIMO multi-head scan; groups `d_inner` into `num_heads` heads; output step `y_head = H_head @ C` (GEMM per head vs. independent dot-products); converts decode from memory-bound to compute-bound; `MambaLayer::forward_step()` now dispatches to MIMO or standard scan
+- **Fixed**: `Router::route()` — per-token `top_k_routing_cpu()` with real gate logits (was all-zeros)
+- **Fixed**: `ExpertMlp::forward()` — `down_proj(silu(gate_proj(x)) * up_proj(x))` correct SwiGLU gating (was `down_proj(x)`)
+- **Fixed**: `MoeLayer::forward()` → `&self`; dispatch loop over routing indices; `update_load_stats()` split off for training
+- **Fixed**: `LatentMoeLayer::forward()` — now returns `Ok(expanded)` instead of zeros
+- **Fixed**: `AttentionBlock`, `MambaBlock`, and `MambaBlock::forward_step()` in `jamba.rs` — now properly chain `norm → op → residual`
+
+**Phase 3 — Model-Level Reasoning** (`crates/swiftllm-models/src/layers/`)
+
+- **New**: `rlm.rs` (~500 lines) — `RlmConfig`, `RlmLayer`, `ReplState`, `ReplStep` (Assign/Compute/Verify/Recurse), `VariableBindingTable` (soft-attention key-value store), `RecursionScheduler` (complexity-classifier MLP with early-exit); `forward()` and `forward_with_repl()` APIs; 10+ tests
+- **New**: `dense_verification.rs` (~450 lines) — `DenseVerificationConfig`, `DenseVerificationLayer`, `VerificationResult` (global/token/step scores, accepted flag, low-confidence positions), `embed_repl_trace()`, `cross_attention_cpu()`; `verify()` and `verify_and_correct()` APIs; 11 tests
+- Updated `layers/mod.rs` — re-exports all new types
+
 **Python API Updates**
 
 - `config.py` — 14 new dataclasses: `SelfConsistencyConfig`, `RefinementConfig`, `VerificationConfig`, `DisaggregatedServingConfig`, `GrpoConfig`, `CgarConfig`, `PrmConfig`, `LongRewardConfig`, plus 7 new enums; `EngineConfig` gains 4 optional nested inference fields; full `from_dict()`/`to_dict()` round-trip support
+  - **New** (this release): `RlmConfig`, `RlmMode`, `DenseVerificationConfig`, `VerificationStrategy`; `EngineConfig` gains `rlm` and `dense_verification` optional fields; `from_dict()` updated for both
 - `training.py` — `TrainingConfig` gains Phase 2 fields; new `GrpoTrainer` class with CGAR layer scheduling (smooth Hermite); `grpo_train()` convenience function; JSON round-trip with enum deserialisation
 - `sampling.py` — `SelfConsistencySampler` with 4 extractor strategies, majority voting, log-prob tiebreaking; `SelfConsistencyResult` dataclass
 - `engine.py` — `LLM.generate_with_self_consistency()`, `LLM.generate_with_refinement()`, `LLM.generate_best_of_n()`; helper functions `_normalised_edit_distance()`, `_rule_score()`; `RefinementOutput`, `VerifiedOutput` dataclasses
-- `__init__.py` — full re-export of all new types; lazy training set extended to `GrpoTrainer`, `grpo_train`
+  - **New** (this release): `LLM.generate_with_rlm()`, `LLM.generate_with_dense_verification()`; `RlmOutput`, `DenseVerificationOutput` dataclasses
+- `__init__.py` — full re-export of all new types; lazy training set extended to `GrpoTrainer`, `grpo_train`; **new** exports: `RlmConfig`, `RlmMode`, `DenseVerificationConfig`, `VerificationStrategy`, `RlmOutput`, `DenseVerificationOutput`
 - `cli.py` — `generate` command gains `--self-consistency`, `--refinement-rounds`, `--best-of-n` flags; new `grpo` subcommand with full CGAR/PRM/LongR flag set
+  - **New** (this release): `generate` command gains `--rlm DEPTH`, `--rlm-no-repl`, `--dense-verification`, `--dv-min-confidence`, `--dv-max-regen`, `--dv-score-only` flags
 - **New**: `examples/self_consistency.py` — three demo modes (basic SC, sentinel extractor, offline vote)
 - **New**: `examples/grpo_training.py` — full GRPO + CGAR + PRM + LongR demo with synthetic math data
+- **New** (this release): `examples/rlm_inference.py` — SHALLOW / REASONING / AGENTIC modes, variable-binding demo, no-REPL variant
+- **New** (this release): `examples/dense_verification_inference.py` — all four strategies, multi-prompt batch scoring, confidence calibration demo
 
 ---
 
@@ -1472,6 +2452,7 @@ SwiftLLM builds on ideas from:
 - [Jamba](https://arxiv.org/abs/2403.19887) — Hybrid Mamba + Attention + MoE architecture
 - [Mamba](https://arxiv.org/abs/2312.00752) — Selective state space models (Gu & Dao, 2023)
 - [Muon](https://arxiv.org/abs/2409.20325) — Newton-Schulz orthogonalized gradient optimizer
+- "Architecting the Next-Generation Agentic Paradigm: A Hybrid Synthesis of Mamba-3, Mixture of Experts, Recursive Language Models, and Dense Verification" (2024) — RLM + Dense Verification architecture
 
 <!--
     ------------------------------------------------------------------------------

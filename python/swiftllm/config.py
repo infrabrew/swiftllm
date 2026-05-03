@@ -22,6 +22,8 @@
 #   - crates/swiftllm-training/src/curriculum.rs              Rust counterpart for CgarConfig
 #   - crates/swiftllm-training/src/process_reward.rs          Rust counterpart for PrmConfig
 #   - crates/swiftllm-training/src/long_reward.rs             Rust counterpart for LongRewardConfig
+#   - crates/swiftllm-models/src/layers/rlm.rs                Rust counterpart for RlmConfig
+#   - crates/swiftllm-models/src/layers/dense_verification.rs Rust counterpart for DenseVerificationConfig
 # ------------------------------------------------------------------------------
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -41,6 +43,9 @@
 This module provides configuration classes for the SwiftLLM inference engine,
 training pipeline, and all research-derived features added in Phases 1-3:
 
+  Phase 1 — Hybrid Model Architecture:
+    (configured at model-load time via JambaConfig in Rust)
+
   Phase 2 — Training:
     GrpoConfig         Group Relative Policy Optimization (GRPO)
     CgarConfig         Curriculum-Guided Adaptive Recursion (CGAR)
@@ -48,10 +53,14 @@ training pipeline, and all research-derived features added in Phases 1-3:
     LongRewardConfig   LongR dense token-level rewards
 
   Phase 3 — Inference:
-    SelfConsistencyConfig     Self-consistency majority voting (Wang et al., 2022)
-    RefinementConfig          Multi-round self-refinement (Madaan et al., 2023)
-    VerificationConfig        Best-of-N dense verification & reranking
+    SelfConsistencyConfig      Self-consistency majority voting (Wang et al., 2022)
+    RefinementConfig           Multi-round self-refinement (Madaan et al., 2023)
+    VerificationConfig         Best-of-N dense verification & reranking
     DisaggregatedServingConfig Disaggregated prefill/decode serving (Splitwise)
+
+  Phase 3 — Model-level Reasoning (new):
+    RlmConfig                  Recursive Language Model (REPL state, variable binding)
+    DenseVerificationConfig    Dense Verification Layer (full-capacity eval pass)
 
 All configuration options can be overridden via environment variables with the
 ``SWIFTLLM_`` prefix.  For example, ``SWIFTLLM_GPU_MEMORY_UTILIZATION=0.95``
@@ -367,6 +376,166 @@ class DisaggregatedServingConfig:
             "kv_transfer_timeout_ms": self.kv_transfer_timeout_ms,
             "enable_auto_ratio": self.enable_auto_ratio,
         }
+
+
+# ---------------------------------------------------------------------------
+# Phase 3 — Model-level Reasoning (RLM + Dense Verification)
+# ---------------------------------------------------------------------------
+
+class RlmMode(Enum):
+    """Operating mode for the Recursive Language Model layer.
+
+    Mirrors ``RlmMode`` in ``crates/swiftllm-models/src/layers/rlm.rs``.
+    """
+    DISABLED   = "disabled"    # Pass-through; no recursion or REPL side-effects
+    SHALLOW    = "shallow"     # max_depth=1; single sub-call, no REPL state
+    REASONING  = "reasoning"   # max_depth=3; full REPL + variable binding
+    AGENTIC    = "agentic"     # max_depth=5; for multi-step agentic tasks
+
+
+class VerificationStrategy(Enum):
+    """Scoring strategy for the Dense Verification Layer.
+
+    Mirrors ``VerificationStrategy`` in
+    ``crates/swiftllm-models/src/layers/dense_verification.rs``.
+    """
+    DISABLED       = "disabled"        # Skip verification entirely
+    SCORE_ONLY     = "score_only"      # Score but always accept
+    GATE           = "gate"            # Reject drafts below min_confidence
+    GATE_AND_REGEN = "gate_and_regen"  # Reject and regenerate (up to max_attempts)
+
+
+@dataclass
+class RlmConfig:
+    """Configuration for the Recursive Language Model (RLM) layer.
+
+    The RLM extends autoregressive generation with bounded recursive self-
+    calling and a symbolic REPL sandbox.  Complex sub-problems are solved
+    recursively at shallower depth and the sub-solutions are integrated back
+    into the main hidden state via a learned gating mechanism.
+
+    Corresponds to ``RlmConfig`` in
+    ``crates/swiftllm-models/src/layers/rlm.rs``.
+
+    References:
+        "Architecting the Next-Generation Agentic Paradigm: A Hybrid
+         Synthesis of Mamba-3, Mixture of Experts, Recursive Language
+         Models, and Dense Verification" (2024)
+
+    Attributes:
+        mode: Operating mode (disabled / shallow / reasoning / agentic).
+        max_depth: Maximum recursion depth (0 = direct solve, no sub-calls).
+            Paper recommendation: 2–4 for math/coding, 1 for language tasks.
+        enable_repl: Enable the symbolic REPL sandbox with variable binding.
+            When False the RLM acts as a plain pass-through MLP.
+        var_binding_slots: Number of soft key-value memory slots in the
+            REPL variable binding table.  Default: 32.
+        depth_hidden_size: Hidden size of the complexity-classifier MLP.
+            Defaults to d_model // 4 (set by the Rust layer at construction).
+        early_exit_threshold: Confidence threshold for skipping deeper recursion.
+            If the scheduler assigns depth 0 with confidence ≥ threshold the
+            sub-call is skipped even if the model predicted deeper recursion.
+        d_subproblem: Projection size for sub-problem embeddings passed to
+            recursive sub-calls.  Defaults to d_model // 2.
+    """
+    mode: RlmMode = RlmMode.REASONING
+    max_depth: int = 3
+    enable_repl: bool = True
+    var_binding_slots: int = 32
+    depth_hidden_size: Optional[int] = None   # None → d_model // 4 (set in Rust)
+    early_exit_threshold: float = 0.92
+    d_subproblem: Optional[int] = None         # None → d_model // 2 (set in Rust)
+
+    def __post_init__(self):
+        if self.max_depth < 0:
+            raise ValueError(f"max_depth must be >= 0, got {self.max_depth}")
+        if self.var_binding_slots < 1:
+            raise ValueError(f"var_binding_slots must be >= 1, got {self.var_binding_slots}")
+        if not 0.0 < self.early_exit_threshold <= 1.0:
+            raise ValueError(
+                f"early_exit_threshold must be in (0, 1], got {self.early_exit_threshold}"
+            )
+        if self.mode == RlmMode.DISABLED:
+            self.max_depth = 0
+            self.enable_repl = False
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "mode": self.mode.value,
+            "max_depth": self.max_depth,
+            "enable_repl": self.enable_repl,
+            "var_binding_slots": self.var_binding_slots,
+            "depth_hidden_size": self.depth_hidden_size,
+            "early_exit_threshold": self.early_exit_threshold,
+            "d_subproblem": self.d_subproblem,
+        }
+
+    @classmethod
+    def from_dict(cls, d: Dict[str, Any]) -> "RlmConfig":
+        d = dict(d)
+        if "mode" in d:
+            d["mode"] = RlmMode(d["mode"])
+        return cls(**d)
+
+
+@dataclass
+class DenseVerificationConfig:
+    """Configuration for the Dense Verification Layer.
+
+    After generation completes the Dense Verification Layer performs one
+    additional read-over pass on the full output, scoring each token and
+    reasoning step against the REPL execution trace.  Outputs below
+    ``min_confidence`` trigger re-generation up to ``max_regen_attempts`` times.
+
+    Corresponds to ``DenseVerificationConfig`` in
+    ``crates/swiftllm-models/src/layers/dense_verification.rs``.
+
+    References:
+        "Hybrid_Mamba3-RLM-Reasoning-Architecture.pdf", §3.5
+        "Let's Verify Step by Step" — Lightman et al. 2023
+
+    Attributes:
+        strategy: When / how to act on verification scores.
+        num_verification_heads: Cross-attention heads for draft ↔ REPL-trace
+            attention.  Default: 8.
+        min_confidence: Global score threshold below which the draft is
+            rejected.  Range (0, 1].  Default: 0.80 for reasoning tasks.
+        max_regen_attempts: Maximum re-generation attempts when
+            strategy = GATE_AND_REGEN.  Default: 3.
+        score_repl_steps: Also compute per-REPL-step confidence scores
+            (uses explicit ``Verify`` step confidences from the trace).
+    """
+    strategy: VerificationStrategy = VerificationStrategy.GATE_AND_REGEN
+    num_verification_heads: int = 8
+    min_confidence: float = 0.80
+    max_regen_attempts: int = 3
+    score_repl_steps: bool = True
+
+    def __post_init__(self):
+        if not 0.0 < self.min_confidence <= 1.0:
+            raise ValueError(
+                f"min_confidence must be in (0, 1], got {self.min_confidence}"
+            )
+        if self.max_regen_attempts < 1:
+            raise ValueError(
+                f"max_regen_attempts must be >= 1, got {self.max_regen_attempts}"
+            )
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "strategy": self.strategy.value,
+            "num_verification_heads": self.num_verification_heads,
+            "min_confidence": self.min_confidence,
+            "max_regen_attempts": self.max_regen_attempts,
+            "score_repl_steps": self.score_repl_steps,
+        }
+
+    @classmethod
+    def from_dict(cls, d: Dict[str, Any]) -> "DenseVerificationConfig":
+        d = dict(d)
+        if "strategy" in d:
+            d["strategy"] = VerificationStrategy(d["strategy"])
+        return cls(**d)
 
 
 # ---------------------------------------------------------------------------
@@ -692,6 +861,8 @@ class EngineConfig:
         download_dir: Directory for downloading models.
         seed: Random seed for reproducibility.
         device: Device to use ('cuda', 'cpu', 'auto').
+        rlm: Recursive Language Model config (Phase 3). None = disabled.
+        dense_verification: Dense Verification Layer config (Phase 3). None = disabled.
     """
     model: str = ""
     tokenizer: Optional[str] = None
@@ -748,6 +919,12 @@ class EngineConfig:
     disaggregated_serving: Optional[DisaggregatedServingConfig] = None
     """Disaggregated prefill/decode serving config. Set to enable disaggregated mode."""
 
+    # Phase 3 — Model-level reasoning (RLM + Dense Verification)
+    rlm: Optional[RlmConfig] = None
+    """Recursive Language Model config. Set to enable generate_with_rlm()."""
+    dense_verification: Optional[DenseVerificationConfig] = None
+    """Dense Verification Layer config. Set to enable generate_with_dense_verification()."""
+
     def __post_init__(self):
         """Validate configuration."""
         if self.gpu_memory_utilization <= 0 or self.gpu_memory_utilization > 1:
@@ -799,6 +976,10 @@ class EngineConfig:
             if "scheduling_policy" in ds:
                 ds["scheduling_policy"] = DisaggregatedPolicy(ds["scheduling_policy"])
             d["disaggregated_serving"] = DisaggregatedServingConfig(**ds)
+        if "rlm" in d and isinstance(d["rlm"], dict):
+            d["rlm"] = RlmConfig.from_dict(d["rlm"])
+        if "dense_verification" in d and isinstance(d["dense_verification"], dict):
+            d["dense_verification"] = DenseVerificationConfig.from_dict(d["dense_verification"])
         return cls(**{k: v for k, v in d.items() if k in cls.__dataclass_fields__})
 
     def to_dict(self) -> Dict[str, Any]:

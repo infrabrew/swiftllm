@@ -14,8 +14,10 @@
 #   - user code  (top-level public API)
 #   - python/swiftllm/cli.py       lazy imports via __getattr__
 # SEE ALSO:
-#   - crates/swiftllm-core/src/lib.rs      Rust core library public API
-#   - crates/swiftllm-training/src/lib.rs  Rust training library public API
+#   - crates/swiftllm-core/src/lib.rs             Rust core library public API
+#   - crates/swiftllm-training/src/lib.rs         Rust training library public API
+#   - crates/swiftllm-models/src/layers/rlm.rs            RlmLayer
+#   - crates/swiftllm-models/src/layers/dense_verification.rs  DenseVerificationLayer
 # ------------------------------------------------------------------------------
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -38,9 +40,11 @@ featuring PagedAttention, continuous batching, and multi-GPU support.
 Phase 2 (training) and Phase 3 (inference) research additions are also exposed here:
 
   Inference (Phase 3):
-    generate_with_self_consistency()  — majority voting over N chains
-    generate_with_refinement()        — iterative self-refinement
-    generate_best_of_n()              — Best-of-N dense verification
+    generate_with_self_consistency()     — majority voting over N chains
+    generate_with_refinement()           — iterative self-refinement
+    generate_best_of_n()                 — Best-of-N dense verification
+    generate_with_rlm()                  — Recursive Language Model with REPL sandbox
+    generate_with_dense_verification()   — cross-attention token/step confidence scoring
 
   Training (Phase 2):
     GrpoTrainer / grpo_train()        — GRPO RL fine-tuning
@@ -66,6 +70,8 @@ from .engine import (
     CompletionOutput,
     RefinementOutput,
     VerifiedOutput,
+    RlmOutput,
+    DenseVerificationOutput,
 )
 from .config import (
     SamplingParams,
@@ -82,6 +88,11 @@ from .config import (
     ImprovementMetric,
     ScoringStrategy,
     DisaggregatedPolicy,
+    # Phase 3 — Model-level reasoning (RLM + Dense Verification)
+    RlmConfig,
+    RlmMode,
+    DenseVerificationConfig,
+    VerificationStrategy,
     # Phase 2 — Training configs
     GrpoConfig,
     CgarConfig,
@@ -104,6 +115,8 @@ __all__ = [
     "CompletionOutput",
     "RefinementOutput",
     "VerifiedOutput",
+    "RlmOutput",
+    "DenseVerificationOutput",
     # Configuration — core
     "SamplingParams",
     "EngineConfig",
@@ -119,6 +132,11 @@ __all__ = [
     "ImprovementMetric",
     "ScoringStrategy",
     "DisaggregatedPolicy",
+    # Configuration — Phase 3 Model-level reasoning
+    "RlmConfig",
+    "RlmMode",
+    "DenseVerificationConfig",
+    "VerificationStrategy",
     # Configuration — Phase 2 Training
     "GrpoConfig",
     "CgarConfig",
@@ -178,6 +196,6 @@ def version() -> str:
 # END OF FILE: __init__.py
 # REPO PATH:   /swiftllm/python/swiftllm/__init__.py
 # INTEGRATES:  engine.py · config.py · sampling.py · training.py · model_resolver.py
-#              Rust: swiftllm-core · swiftllm-training
+#              Rust: swiftllm-core · swiftllm-training · swiftllm-models
 # (c) 2026 SWIFTLLM | Apache 2.0 License
 # ------------------------------------------------------------------------------

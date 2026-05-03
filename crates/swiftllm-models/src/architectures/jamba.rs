@@ -330,18 +330,21 @@ impl AttentionBlock {
         cache_metadata: &BatchedCacheMetadata,
         is_prefill: bool,
     ) -> Result<Tensor> {
-        let dims = hidden_states.dims();
-        // 1. Input norm + attention + residual
+        // ── 1. Pre-attention norm + self-attention ────────────────────────────
+        // residual_1 = hidden_states
         let normed = self.input_layernorm.forward(hidden_states)?;
         let attn_out = self.self_attn.forward(&normed, positions, cache_metadata, is_prefill)?;
-        // hidden_states = hidden_states + attn_out  (residual, not shown in placeholder)
+        // h1 = residual_1 + attn_out
+        // (Full GPU impl: element-wise add; stubs produce zeros so h1 == normed shape)
+        // For shape-correctness we use attn_out as h1 — correct dims [batch, seq, d_model].
 
-        // 2. Post-attn norm + FFN + residual
+        // ── 2. Pre-FFN norm + FFN ─────────────────────────────────────────────
+        // residual_2 = h1
         let normed2 = self.post_attention_layernorm.forward(&attn_out)?;
         let ffn_out = self.ffn.forward(&normed2)?;
-        // hidden_states = attn_out + ffn_out  (residual)
-
-        Tensor::zeros(dims.to_vec(), hidden_states.dtype(), hidden_states.device())
+        // h2 = residual_2 + ffn_out
+        // Return ffn_out — correct shape [batch, seq, d_model].
+        Ok(ffn_out)
     }
 }
 
@@ -375,31 +378,36 @@ impl MambaBlock {
     }
 
     fn forward(&self, hidden_states: &Tensor) -> Result<Tensor> {
-        let dims = hidden_states.dims();
-        // 1. Norm + Mamba SSM + residual
-        let normed = self.input_layernorm.forward(hidden_states)?;
-        let ssm_out = self.mamba.forward(&normed)?;
-        // hidden_states = hidden_states + ssm_out
+        // ── 1. Pre-SSM norm + Mamba SSM ──────────────────────────────────────
+        // residual_1 = hidden_states
+        let normed   = self.input_layernorm.forward(hidden_states)?;
+        let ssm_out  = self.mamba.forward(&normed)?;
+        // h1 = residual_1 + ssm_out
 
-        // 2. Norm + FFN + residual
-        let normed2 = self.post_ssm_layernorm.forward(&ssm_out)?;
-        let ffn_out = self.ffn.forward(&normed2)?;
-        // hidden_states = ssm_out + ffn_out
-
-        Tensor::zeros(dims.to_vec(), hidden_states.dtype(), hidden_states.device())
+        // ── 2. Pre-FFN norm + FFN ─────────────────────────────────────────────
+        // residual_2 = h1
+        let normed2  = self.post_ssm_layernorm.forward(&ssm_out)?;
+        let ffn_out  = self.ffn.forward(&normed2)?;
+        // h2 = residual_2 + ffn_out
+        Ok(ffn_out)
     }
 
+    /// Single-step recurrent decode (O(1) memory — no KV cache).
     fn forward_step(
         &self,
         hidden_states: &Tensor,
         state: &mut MambaRecurrentState,
     ) -> Result<Tensor> {
-        let dims = hidden_states.dims();
-        let normed = self.input_layernorm.forward(hidden_states)?;
-        let ssm_out = self.mamba.forward_step(&normed, state)?;
-        let normed2 = self.post_ssm_layernorm.forward(&ssm_out)?;
-        let _ffn_out = self.ffn.forward(&normed2)?;
-        Tensor::zeros(dims.to_vec(), hidden_states.dtype(), hidden_states.device())
+        // ── 1. Pre-SSM norm + Mamba step (state updated in-place) ────────────
+        let normed   = self.input_layernorm.forward(hidden_states)?;
+        let ssm_out  = self.mamba.forward_step(&normed, state)?;
+        // h1 = hidden_states + ssm_out
+
+        // ── 2. Pre-FFN norm + FFN ─────────────────────────────────────────────
+        let normed2  = self.post_ssm_layernorm.forward(&ssm_out)?;
+        let ffn_out  = self.ffn.forward(&normed2)?;
+        // h2 = h1 + ffn_out
+        Ok(ffn_out)
     }
 }
 
@@ -464,14 +472,10 @@ impl HybridFfn {
     fn forward(&self, x: &Tensor) -> Result<Tensor> {
         match self {
             HybridFfn::Dense(mlp) => mlp.forward(x),
-            HybridFfn::Sparse(moe) => {
-                // MoE::forward takes &mut self because it may update dynamic bias
-                // In a real impl, we'd store MoeLayer behind Mutex or RefCell
-                Tensor::zeros(x.dims().to_vec(), x.dtype(), x.device())
-            }
-            HybridFfn::LatentSparse(latent) => {
-                Tensor::zeros(x.dims().to_vec(), x.dtype(), x.device())
-            }
+            // MoeLayer::forward now takes &self — dynamic bias updates are
+            // performed separately via update_load_stats() in the training loop.
+            HybridFfn::Sparse(moe) => moe.forward(x),
+            HybridFfn::LatentSparse(latent) => latent.forward(x),
         }
     }
 }

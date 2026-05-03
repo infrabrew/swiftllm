@@ -22,19 +22,35 @@
 //!
 //! This module provides implementations of common transformer layers
 //! optimized for inference with PagedAttention.
+//!
+//! ## Mamba-3 layers (Phase 1)
+//! - [`mamba`] — Selective SSM with exponential-trapezoidal discretisation,
+//!   complex-valued states, and MIMO multi-head scan
+//! - [`moe`]   — LatentMoE with aux-loss-free dynamic bias balancing
+//!
+//! ## Reasoning layers (Phase 1 research extensions)
+//! - [`rlm`]                — Recursive Language Model with REPL state and
+//!   variable binding (fully missing prior to this commit)
+//! - [`dense_verification`] — Dense Verification layer: full-capacity eval pass
+//!   on drafted output against REPL execution trace (fully missing prior)
 
 pub mod attention;
+pub mod dense_verification;
 pub mod embedding;
 pub mod mamba;
 pub mod mlp;
 pub mod moe;
 pub mod normalization;
+pub mod rlm;
 
 pub use attention::{Attention, AttentionConfig, RotaryEmbedding};
+pub use dense_verification::{
+    DenseVerificationConfig, DenseVerificationLayer, VerificationResult, embed_repl_trace,
+};
 pub use embedding::{Embedding, LMHead};
 pub use mamba::{
     ComplexMambaState, DiscretizationMethod, MambaConfig, MambaConv1d, MambaLayer,
-    MambaRecurrentState, selective_scan_cpu, selective_scan_step_cpu,
+    MambaRecurrentState, mimo_scan_step_cpu, selective_scan_cpu, selective_scan_step_cpu,
 };
 pub use mlp::{GatedMlp, Mlp, MlpConfig};
 pub use moe::{
@@ -42,6 +58,9 @@ pub use moe::{
     Router, RouterOutput, RoutingStrategy, expert_choice_routing_cpu, top_k_routing_cpu,
 };
 pub use normalization::{LayerNorm, RMSNorm};
+pub use rlm::{
+    RecursionScheduler, ReplState, ReplStep, RlmConfig, RlmLayer, VariableBindingTable,
+};
 
 use swiftllm_core::config::DataType;
 use swiftllm_core::error::Result;

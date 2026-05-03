@@ -23,7 +23,12 @@
 
 This module provides the CLI for SwiftLLM, supporting:
 - serve: Start the inference server
-- generate: Run offline batch generation (with --self-consistency, --refinement, --best-of-n)
+- generate: Run offline batch generation
+    --self-consistency N        Majority vote over N reasoning chains
+    --refinement-rounds R       Iterative self-refinement (R rounds)
+    --best-of-n N               Best-of-N candidate selection
+    --rlm DEPTH                 Recursive Language Model (up to DEPTH)
+    --dense-verification        Cross-attention token/step confidence scoring
 - benchmark: Run performance benchmarks
 - convert: Convert model formats
 - info: Display model information
@@ -329,6 +334,47 @@ def _add_generate_args(parser: argparse.ArgumentParser):
         metavar="N",
         help="Enable Best-of-N: generate N candidates and return the highest-scoring "
              "one via rule-based verification (0 = disabled).",
+    )
+    # Phase 3 — model-level reasoning flags
+    parser.add_argument(
+        "--rlm",
+        type=int,
+        default=0,
+        metavar="DEPTH",
+        help="Enable Recursive Language Model with up to DEPTH levels of recursive "
+             "self-calling and an optional REPL sandbox (0 = disabled, default: 0).",
+    )
+    parser.add_argument(
+        "--rlm-no-repl",
+        action="store_true",
+        help="When --rlm is set, disable the symbolic REPL sandbox (plain recursive "
+             "generation only).",
+    )
+    parser.add_argument(
+        "--dense-verification",
+        action="store_true",
+        help="Enable Dense Verification: cross-attention token/step confidence scoring "
+             "after generation.  Uses GATE_AND_REGEN strategy by default.",
+    )
+    parser.add_argument(
+        "--dv-min-confidence",
+        type=float,
+        default=0.80,
+        metavar="CONF",
+        help="Minimum confidence threshold for Dense Verification gate (default: 0.80).",
+    )
+    parser.add_argument(
+        "--dv-max-regen",
+        type=int,
+        default=3,
+        metavar="N",
+        help="Max regeneration attempts when Dense Verification rejects a draft "
+             "(default: 3).",
+    )
+    parser.add_argument(
+        "--dv-score-only",
+        action="store_true",
+        help="With --dense-verification: score but always accept (no gating).",
     )
 
 
@@ -683,11 +729,16 @@ def cmd_generate(args: argparse.Namespace):
     use_sc = getattr(args, "self_consistency", 0) > 0
     use_rf = getattr(args, "refinement_rounds", 0) > 0
     use_bn = getattr(args, "best_of_n", 0) > 0
+    use_rlm = getattr(args, "rlm", 0) > 0
+    use_dv = getattr(args, "dense_verification", False)
 
-    mode_count = sum([use_sc, use_rf, use_bn])
+    mode_count = sum([use_sc, use_rf, use_bn, use_rlm, use_dv])
     if mode_count > 1:
-        print("Error: --self-consistency, --refinement-rounds, and --best-of-n are mutually exclusive.",
-              file=sys.stderr)
+        print(
+            "Error: --self-consistency, --refinement-rounds, --best-of-n, "
+            "--rlm, and --dense-verification are mutually exclusive.",
+            file=sys.stderr,
+        )
         sys.exit(1)
 
     if use_sc:
@@ -696,6 +747,10 @@ def cmd_generate(args: argparse.Namespace):
         mode = "refinement"
     elif use_bn:
         mode = "best-of-n"
+    elif use_rlm:
+        mode = f"rlm-depth-{args.rlm}"
+    elif use_dv:
+        mode = "dense-verification"
     else:
         mode = "standard"
 
@@ -762,6 +817,47 @@ def cmd_generate(args: argparse.Namespace):
                 "num_candidates": len(r.candidates),
             })
 
+    elif use_rlm:
+        from .config import RlmConfig, RlmMode
+        rlm_cfg = RlmConfig(
+            mode=RlmMode.DISABLED if args.rlm == 0 else RlmMode.REASONING,
+            max_depth=args.rlm,
+            enable_repl=not getattr(args, "rlm_no_repl", False),
+        )
+        rlm_results = llm.generate_with_rlm(prompts, config=rlm_cfg, base_params=params)
+        elapsed = time.time() - start_time
+        for r in rlm_results:
+            results.append({
+                "prompt": r.prompt,
+                "generated_text": r.text,
+                "recursion_depth_used": r.recursion_depth_used,
+                "repl_trace_steps": len(r.repl_trace),
+                "early_exits": r.early_exits,
+                "repl_variables": r.repl_variables,
+            })
+
+    elif use_dv:
+        from .config import DenseVerificationConfig, VerificationStrategy
+        if getattr(args, "dv_score_only", False):
+            dv_strategy = VerificationStrategy.SCORE_ONLY
+        else:
+            dv_strategy = VerificationStrategy.GATE_AND_REGEN
+        dv_cfg = DenseVerificationConfig(
+            strategy=dv_strategy,
+            min_confidence=getattr(args, "dv_min_confidence", 0.80),
+            max_regen_attempts=getattr(args, "dv_max_regen", 3),
+        )
+        dv_results = llm.generate_with_dense_verification(prompts, config=dv_cfg, base_params=params)
+        elapsed = time.time() - start_time
+        for r in dv_results:
+            results.append({
+                "prompt": r.prompt,
+                "generated_text": r.text,
+                "global_score": r.global_score,
+                "accepted_on_attempt": r.accepted_on_attempt,
+                "low_confidence_positions": len(r.low_confidence_positions),
+            })
+
     else:
         outputs = llm.generate(prompts, params)
         elapsed = time.time() - start_time
@@ -790,6 +886,18 @@ def cmd_generate(args: argparse.Namespace):
             elif "best_score" in result:
                 output_text += (f"(Best-of-{result['num_candidates']}, "
                                 f"score={result['best_score']:.3f})\n")
+            elif "recursion_depth_used" in result:
+                output_text += (
+                    f"(RLM: depth={result['recursion_depth_used']}, "
+                    f"REPL steps={result['repl_trace_steps']}, "
+                    f"early-exits={result['early_exits']})\n"
+                )
+            elif "global_score" in result:
+                output_text += (
+                    f"(Dense Verification: score={result['global_score']:.2%}, "
+                    f"accepted on attempt {result['accepted_on_attempt']}, "
+                    f"low-conf tokens={result['low_confidence_positions']})\n"
+                )
 
     if args.output:
         with open(args.output, "w") as f:
