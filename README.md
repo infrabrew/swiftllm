@@ -3252,7 +3252,7 @@ SwiftLLM includes built-in security features across the server, installer, and r
 
 ## Changelog
 
-### v2.20.4-beta
+### v2.0.4-beta
 
 **Security Audit & Hardening**
 
