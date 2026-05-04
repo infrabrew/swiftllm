@@ -24,7 +24,7 @@
 [![Logo](https://github.com/infrabrew/infrabrew.github.io/blob/master/swiftllm/assets/logo-mark-128.png?raw=true)](https://infrabrew.github.io/swiftllm/)
 
 <p align="center">
-  <img src="https://img.shields.io/badge/version-2.2.0--beta-yellow.svg" alt="v2.2.0-beta">
+  <img src="https://img.shields.io/badge/version-2.0.4--beta-yellow.svg" alt="v2.0.4-beta">
   <img src="https://img.shields.io/badge/rust-%23000000.svg?style=flat&logo=rust&logoColor=white" alt="Rust">
   <img src="https://img.shields.io/badge/python-3.8+-blue.svg" alt="Python 3.8+">
   <img src="https://img.shields.io/badge/CUDA-11.8+-green.svg" alt="CUDA 11.8+">
