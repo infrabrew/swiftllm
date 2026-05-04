@@ -35,8 +35,8 @@
 
 #### Next Version : Release May 16th 2026
 #### Status : Testing Phase
-#### Branch : 
-(https://github.com/infrabrew/swiftllm/tree/main-hybrid-rd)
+#### Branch : <a href="https://github.com/infrabrew/swiftllm/tree/main-hybrid-rd">main-hybrid-rd</a>
+
 ## Key Features
 
 - **High Throughput**: Continuous batching and efficient scheduling for maximum tokens/second
