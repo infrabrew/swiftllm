@@ -95,10 +95,11 @@
   - [After Training: Loading Your Model](#after-training-loading-your-model)
   - [Task-Specific Tips](#task-specific-tips)
 - [GRPO Reinforcement Learning Training](#grpo-reinforcement-learning-training)
-- [Test-Time Inference Enhancements](#test-time-inference-enhancements)
-- [Disaggregated Serving](#disaggregated-serving)
-- [Recursive Language Model (RLM)](#recursive-language-model-rlm)
-- [Dense Verification Layer](#dense-verification-layer)
+- [Advanced Inference Capabilities](#advanced-inference-capabilities)
+  - [Test-Time Inference Enhancements](#test-time-inference-enhancements)
+  - [Disaggregated Serving](#disaggregated-serving)
+  - [Recursive Language Model (RLM)](#recursive-language-model-rlm)
+  - [Dense Verification Layer](#dense-verification-layer)
 - [Configuration Reference](#configuration-reference)
 - [Environment Variables](#environment-variables)
 - [CLI Commands](#cli-commands)
@@ -2195,7 +2196,7 @@ Available VRAM for 7B model?
 
 ---
 
-## GRPO Reinforcement Learning Training
+### GRPO Reinforcement Learning Training
 
 GRPO (Group Relative Policy Optimization) fine-tunes models using RL without requiring a critic/value model. It samples a group of `G` rollouts per prompt, computes group-relative advantages, then applies a PPO-style clipped policy gradient update plus a KL divergence penalty against a frozen reference model.
 
@@ -2303,7 +2304,9 @@ JSONL with one JSON object per line:
 
 ---
 
-## Test-Time Inference Enhancements
+## Advanced Inference Capabilities
+
+### Test-Time Inference Enhancements
 
 SwiftLLM provides three test-time compute enhancements that require no training — they improve output quality by spending more tokens at inference time.
 
@@ -2463,7 +2466,7 @@ llm.config = EngineConfig(
 
 ---
 
-## Disaggregated Serving
+### Disaggregated Serving
 
 Disaggregated prefill/decode serving routes compute-bound **prefill** (processing the prompt) and bandwidth-bound **decode** (generating tokens) to dedicated, independently-scaled worker pools. This matches the Splitwise and DistServe architectures.
 
@@ -2503,7 +2506,7 @@ println!("Prefill workers: {n_prefill}, Decode workers: {n_decode}");
 
 ---
 
-## Recursive Language Model (RLM)
+### Recursive Language Model (RLM)
 
 ```python
 from swiftllm import LLM, RlmConfig, RlmMode, SamplingParams
@@ -2573,7 +2576,7 @@ The `RlmOutput` dataclass contains:
 
 ---
 
-## Dense Verification Layer
+### Dense Verification Layer
 
 ```python
 from swiftllm import LLM, DenseVerificationConfig, VerificationStrategy, SamplingParams
