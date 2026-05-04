@@ -34,7 +34,7 @@
 **SwiftLLM** is a high-performance LLM inference, serving, and training engine built with Rust for maximum speed and efficiency. It features state-of-the-art memory management, continuous batching, multi-GPU support, and built-in LoRA/QLoRA fine-tuning.
 
 #### Next Version : Release May 16th 2026
-#### Status : Testing Phase
+#### Status : Testing
 #### Branch : <a href="https://github.com/infrabrew/swiftllm/tree/main-hybrid-rd">main-hybrid-rd</a>
 
 ## Key Features
