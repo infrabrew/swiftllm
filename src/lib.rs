@@ -255,10 +255,15 @@ struct PyGenerationOutput {
 #[pymethods]
 impl PyGenerationOutput {
     fn __repr__(&self) -> String {
+        // Use char-boundary-aware truncation to avoid panic on multi-byte UTF-8
+        // (common with CJK, emoji, etc. in model output)
+        let truncated: String = self.text.chars().take(50).collect();
+        let ellipsis = if self.text.chars().count() > 50 { "..." } else { "" };
         format!(
-            "GenerationOutput(index={}, text='{}...', tokens={}, finish_reason={:?})",
+            "GenerationOutput(index={}, text='{}{}', tokens={}, finish_reason={:?})",
             self.index,
-            if self.text.len() > 50 { &self.text[..50] } else { &self.text },
+            truncated,
+            ellipsis,
             self.token_ids.len(),
             self.finish_reason,
         )

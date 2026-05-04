@@ -202,14 +202,39 @@ pub enum DataType {
 }
 
 impl DataType {
-    /// Get the size in bytes for this data type
+    /// Get the size in bytes for one element of this data type.
+    ///
+    /// **Note:** For sub-byte types like `Int4`, this returns 1 because
+    /// elements are packed into bytes (2 elements per byte). Use
+    /// [`size_bytes_for_elements`] to compute the correct byte count
+    /// for a given number of elements.
     pub fn size_bytes(&self) -> usize {
         match self {
             DataType::Float32 => 4,
             DataType::Float16 | DataType::BFloat16 => 2,
             DataType::Float8E4M3 | DataType::Float8E5M2 | DataType::Int8 => 1,
-            DataType::Int4 => 1, // Packed, actual size is 0.5 bytes per element
+            DataType::Int4 => 1, // Packed: 2 elements per byte (see size_bytes_for_elements)
         }
+    }
+
+    /// Get the bit width of a single element.
+    pub fn element_bit_width(&self) -> usize {
+        match self {
+            DataType::Float32 => 32,
+            DataType::Float16 | DataType::BFloat16 => 16,
+            DataType::Float8E4M3 | DataType::Float8E5M2 | DataType::Int8 => 8,
+            DataType::Int4 => 4,
+        }
+    }
+
+    /// Compute the number of bytes needed to store `num_elements` values.
+    ///
+    /// This correctly handles sub-byte packing (e.g., INT4 packs 2 elements
+    /// per byte, rounding up for odd counts).
+    pub fn size_bytes_for_elements(&self, num_elements: usize) -> usize {
+        let bits = num_elements * self.element_bit_width();
+        // Round up to the next full byte
+        (bits + 7) / 8
     }
 }
 

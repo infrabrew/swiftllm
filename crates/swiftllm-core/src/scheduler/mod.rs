@@ -516,11 +516,16 @@ impl Scheduler {
         self.swapped.read().len()
     }
 
-    /// Check if the scheduler is empty
+    /// Check if the scheduler is empty.
+    ///
+    /// Acquires all three locks atomically to avoid TOCTOU race conditions
+    /// where a request could be added between individual lock checks.
     pub fn is_empty(&self) -> bool {
-        self.running.read().is_empty()
-            && self.waiting.read().is_empty()
-            && self.swapped.read().is_empty()
+        // Hold all locks simultaneously to get a consistent snapshot
+        let running = self.running.read();
+        let waiting = self.waiting.read();
+        let swapped = self.swapped.read();
+        running.is_empty() && waiting.is_empty() && swapped.is_empty()
     }
 
     /// Get request metadata

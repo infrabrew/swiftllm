@@ -60,8 +60,8 @@ struct ServeArgs {
     #[arg(short, long)]
     model: PathBuf,
 
-    /// Host to bind to
-    #[arg(long, default_value = "0.0.0.0")]
+    /// Host to bind to (default: 127.0.0.1 for safety; use 0.0.0.0 for public)
+    #[arg(long, default_value = "127.0.0.1")]
     host: String,
 
     /// Port to bind to
@@ -77,7 +77,7 @@ struct ServeArgs {
     max_seq_len: usize,
 
     /// GPU memory utilization (0.0 - 1.0)
-    #[arg(long, default_value = "0.90")]
+    #[arg(long, default_value = "0.90", value_parser = clap::value_parser!(f32).range(0.01..=1.0))]
     gpu_memory_utilization: f32,
 
     /// Block size for PagedAttention
@@ -100,8 +100,8 @@ struct ServeArgs {
     #[arg(long, default_value = "5")]
     speculative_tokens: usize,
 
-    /// API key (optional)
-    #[arg(long)]
+    /// API key for authentication (prefer SWIFTLLM_API_KEY env var over CLI args)
+    #[arg(long, env = "SWIFTLLM_API_KEY")]
     api_key: Option<String>,
 
     /// Log level

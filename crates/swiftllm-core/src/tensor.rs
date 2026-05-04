@@ -160,7 +160,8 @@ impl Device {
 
     /// Get the CUDA device index (panics if CPU)
     ///
-    /// DEPRECATED: Use `try_cuda_device_index()` instead to avoid panics.
+    /// Use `try_cuda_device_index()` instead to avoid panics.
+    #[deprecated(since = "0.2.0", note = "Use try_cuda_device_index() which returns Result instead of panicking")]
     pub fn cuda_device_index(&self) -> usize {
         match self {
             Device::Cuda(idx) => *idx,
@@ -209,9 +210,38 @@ pub enum Storage {
     },
 }
 
-// Safety: Storage is Send/Sync because CUDA operations are synchronized
+// SAFETY: Storage is Send/Sync under the following invariants:
+//   1. `Storage::Cpu` wraps a `Vec<u8>` which is already Send + Sync.
+//   2. `Storage::Cuda` owns a device pointer exclusively (no aliasing).
+//      Cross-thread access requires CUDA stream synchronization before
+//      transferring the Storage to another thread. The Drop implementation
+//      ensures the pointer is freed exactly once.
+//   Callers that share Storage across threads MUST synchronize CUDA streams
+//   before the handoff.
 unsafe impl Send for Storage {}
 unsafe impl Sync for Storage {}
+
+impl Drop for Storage {
+    fn drop(&mut self) {
+        match self {
+            Storage::Cpu(_) => { /* Vec<u8> handles its own deallocation */ }
+            #[cfg(feature = "cuda")]
+            Storage::Cuda { ptr, size, device } => {
+                if !ptr.is_null() {
+                    #[cfg(feature = "cuda")]
+                    {
+                        if let Err(e) = swiftllm_cuda::free(*ptr) {
+                            tracing::error!(
+                                "Failed to free CUDA memory ({} bytes on device {}): {}",
+                                size, device, e
+                            );
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
 
 impl Storage {
     /// Create a new CPU storage with given size in bytes

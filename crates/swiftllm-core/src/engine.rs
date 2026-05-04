@@ -91,16 +91,34 @@ impl Engine {
         let usable_memory =
             (total_gpu_memory as f32 * config.memory.gpu_memory_utilization) as usize;
 
-        // Calculate number of blocks
+        // Calculate number of blocks using checked arithmetic to prevent overflow
         // For now, use placeholder model dimensions
         let num_layers = 32;
         let num_kv_heads = 8;
         let head_dim = 128;
 
-        let block_size_bytes = 2 * num_layers * num_kv_heads * head_dim * block_size * 2; // float16
+        // block_size_bytes = 2 (k+v) * num_layers * num_kv_heads * head_dim * block_size * 2 (float16)
+        let block_size_bytes = 2usize
+            .checked_mul(num_layers)
+            .and_then(|v| v.checked_mul(num_kv_heads))
+            .and_then(|v| v.checked_mul(head_dim))
+            .and_then(|v| v.checked_mul(block_size))
+            .and_then(|v| v.checked_mul(2))
+            .ok_or_else(|| {
+                crate::error::Error::InvalidConfig(
+                    "KV cache block size calculation overflowed — reduce block_size or model dimensions".to_string(),
+                )
+            })?;
+
+        if block_size_bytes == 0 {
+            return Err(crate::error::Error::InvalidConfig(
+                "KV cache block size calculated as zero — check block_size and model dimensions".to_string(),
+            ));
+        }
+
         let num_gpu_blocks = usable_memory / block_size_bytes;
-        let num_cpu_blocks = (config.memory.swap_space_gib * 1024.0 * 1024.0 * 1024.0) as usize
-            / block_size_bytes;
+        let swap_bytes = (config.memory.swap_space_gib * 1024.0 * 1024.0 * 1024.0) as usize;
+        let num_cpu_blocks = swap_bytes / block_size_bytes;
 
         tracing::info!(
             "Allocating {} GPU blocks and {} CPU blocks ({} tokens/block)",

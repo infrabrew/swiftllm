@@ -24,6 +24,26 @@
 
 use super::{CudaError, Result};
 
+/// Check the last CUDA error after a kernel launch.
+///
+/// This MUST be called after every kernel dispatch to catch asynchronous
+/// launch errors that would otherwise be silently swallowed.
+#[cfg(has_cuda)]
+fn check_cuda_last_error(kernel_name: &str) -> Result<()> {
+    extern "C" {
+        fn cudaGetLastError() -> i32;
+    }
+    let rc = unsafe { cudaGetLastError() };
+    if rc != 0 {
+        Err(CudaError::KernelError(format!(
+            "{} failed with CUDA error code {}",
+            kernel_name, rc
+        )))
+    } else {
+        Ok(())
+    }
+}
+
 /// PagedAttention kernel parameters
 #[derive(Debug, Clone)]
 pub struct PagedAttentionParams {
@@ -448,7 +468,7 @@ pub unsafe fn mamba3_decode(
             p.batch as i32, p.d_inner as i32, p.d_state as i32, p.dt_rank as i32,
             p.num_heads as i32, p.dt_min, p.dt_max, p.use_trapezoidal, p.use_complex,
         );
-        Ok(())
+        check_cuda_last_error("mamba3_decode_step")
     }
     #[cfg(not(has_cuda))]
     { Err(CudaError::DeviceNotFound) }
@@ -487,7 +507,7 @@ pub unsafe fn mamba3_prefill(
             p.batch as i32, p.seq_len as i32, p.d_inner as i32, p.d_state as i32,
             p.use_trapezoidal, p.use_complex,
         );
-        Ok(())
+        check_cuda_last_error("mamba3_prefill_scan")
     }
     #[cfg(not(has_cuda))]
     { Err(CudaError::DeviceNotFound) }
@@ -567,16 +587,20 @@ pub unsafe fn latent_moe_forward(
         tracing::debug!("Launching latent_moe N={} E={} k={}", p.n_tokens, p.num_experts, p.top_k);
         latent_compress(x, w_compress, z_buf,
             p.n_tokens as i32, p.d_model as i32, p.d_latent as i32);
+        check_cuda_last_error("latent_compress")?;
         moe_topk_gate(router_logits, expert_bias, expert_ids, expert_weights,
             p.n_tokens as i32, p.num_experts as i32, p.top_k as i32);
+        check_cuda_last_error("moe_topk_gate")?;
         moe_expert_dispatch(z_buf, gate_w, up_w, down_w,
             expert_ids, expert_weights, z_out,
             p.n_tokens as i32, p.top_k as i32, p.d_latent as i32,
             p.d_ffn as i32, p.num_experts as i32);
+        check_cuda_last_error("moe_expert_dispatch")?;
         moe_load_stats(expert_ids, expert_counts, p.n_tokens as i32, p.top_k as i32);
+        check_cuda_last_error("moe_load_stats")?;
         latent_expand(z_out, w_expand, y,
             p.n_tokens as i32, p.d_latent as i32, p.d_model as i32);
-        Ok(())
+        check_cuda_last_error("latent_expand")
     }
     #[cfg(not(has_cuda))]
     { Err(CudaError::DeviceNotFound) }
@@ -634,10 +658,11 @@ pub unsafe fn dense_verification(
             p.batch as i32, p.t_draft as i32, p.t_trace as i32,
             p.num_heads as i32, p.head_dim as i32, scale,
         );
+        check_cuda_last_error("dense_verif_cross_attn")?;
         dense_verif_global_conf(
             token_conf, global_conf, p.batch as i32, p.t_draft as i32,
         );
-        Ok(())
+        check_cuda_last_error("dense_verif_global_conf")
     }
     #[cfg(not(has_cuda))]
     { Err(CudaError::DeviceNotFound) }
@@ -685,7 +710,7 @@ pub unsafe fn rlm_depth_embed(
     #[cfg(has_cuda)]
     {
         rlm_add_depth_embed(x, depth_emb, n_tokens as i32, d_model as i32, depth as i32);
-        Ok(())
+        check_cuda_last_error("rlm_add_depth_embed")
     }
     #[cfg(not(has_cuda))]
     { Err(CudaError::DeviceNotFound) }
@@ -711,7 +736,7 @@ pub unsafe fn rlm_confidence(
     {
         rlm_confidence_mlp(x, w1, b1, w2, b2, conf,
             n_tokens as i32, d_model as i32, d_hidden as i32);
-        Ok(())
+        check_cuda_last_error("rlm_confidence_mlp")
     }
     #[cfg(not(has_cuda))]
     { Err(CudaError::DeviceNotFound) }
@@ -732,7 +757,7 @@ pub unsafe fn rlm_gate(
     #[cfg(has_cuda)]
     {
         rlm_gate_subproblem(gate, x_sub, x_base, out, n_tokens as i32, d_model as i32);
-        Ok(())
+        check_cuda_last_error("rlm_gate_subproblem")
     }
     #[cfg(not(has_cuda))]
     { Err(CudaError::DeviceNotFound) }
@@ -771,7 +796,7 @@ pub unsafe fn linear_f16(
             None    => (std::ptr::null(), 0i32),
         };
         linear_f16_forward(x, w, bias_ptr, y, m as i32, n as i32, k as i32, has_bias);
-        Ok(())
+        check_cuda_last_error("linear_f16_forward")
     }
     #[cfg(not(has_cuda))]
     { Err(CudaError::DeviceNotFound) }
