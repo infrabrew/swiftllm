@@ -276,11 +276,11 @@ After the RLM generation completes, the Dense Verification Layer performs one ad
 
 | Architecture | Models | Notes |
 |-------------|--------|-------|
-| **LLaMA** | LLaMA, LLaMA 2, LLaMA 3, Code Llama | |
-| **Mistral** | Mistral 7B, Mixtral 8x7B | Mixtral uses MoE FFN |
-| **Qwen** | Qwen, Qwen 2, Qwen 3 | |
-| **Phi** | Phi-2, Phi-3 | |
-| **Falcon** | Falcon | |
+| **LLaMA** |  LLaMA 3, Code Llama | |
+| **Mistral** | Mistral 7B, Mixtral 8x7B, Devstral | Mixtral uses MoE FFN |
+| **Qwen** | Qwen3, Qwen 3, Qwen 3.5 | |
+| **Phi** | Phi-3, Phi-4 | |
+| **Deepseek** | R1, V4| |
 | **Gemma** | Gemma | |
 | **Mamba** | Mamba-130M … Mamba-3B | Phase 1 — pure SSM |
 | **Jamba** | Jamba-v0.1, custom | Phase 1 — hybrid Attention + Mamba + MoE |
