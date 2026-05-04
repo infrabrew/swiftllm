@@ -3249,6 +3249,29 @@ SwiftLLM includes built-in security features across the server, installer, and r
 
 ## Changelog
 
+### v2.2.1-beta
+
+**Security Audit & Hardening**
+
+- **Critical**: Added `Drop` implementation for `Storage::Cuda` to properly call `swiftllm_cuda::free()` and prevent GPU memory leaks
+- **Critical**: Enforced `Send`/`Sync` safety invariants via documentation for CUDA stream synchronization
+- **Critical**: Added `check_cuda_last_error()` after all 10 CUDA kernel launches in `bindings.rs` to catch silent data corruption
+- **High**: Replaced variable-time string comparisons with `subtle::ConstantTimeEq` for API key authentication to prevent timing attacks
+- **High**: CORS configuration now reads from `ServerConfig.cors_origins` instead of hardcoded `Any`
+- **High**: The `/metrics` endpoint is now authenticated
+- **High**: Added comprehensive input validation to the legacy `/v1/completions` endpoint
+- **High**: Changed default API server bind address from `0.0.0.0` to `127.0.0.1` and added security warnings for network exposure
+- **High**: Hardened the install script by replacing `curl | sh` with a safer download-verify-execute pattern
+- **Medium**: Fixed integer overflow in `engine.rs` block sizing by using `checked_mul` chain
+- **Medium**: Corrected INT4 memory computation in `config.rs` with new `element_bit_width()` and `size_bytes_for_elements()`
+- **Medium**: Fixed TOCTOU race condition in `Scheduler::is_empty()` by acquiring locks atomically
+- **Medium**: Fixed UTF-8 string slicing panic in `PyGenerationOutput.__repr__` using char-safe truncation
+- **Medium**: `swiftllm-server` now reads API keys via `SWIFTLLM_API_KEY` environment variable instead of CLI argument
+- **Low**: Deprecated panicking `cuda_device_index()` method in favor of `try_cuda_device_index()`
+- **Low**: Added bounds validation for `gpu_memory_utilization` CLI argument
+
+---
+
 ### v2.1.0-beta
 
 **Phase 1 — Hybrid Model Architectures** (`crates/swiftllm-models/`)
