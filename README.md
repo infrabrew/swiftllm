@@ -3252,7 +3252,7 @@ SwiftLLM includes built-in security features across the server, installer, and r
 
 ## Changelog
 
-### v2.2.1-beta
+### v2.20.4-beta
 
 **Security Audit & Hardening**
 
@@ -3287,7 +3287,7 @@ SwiftLLM includes built-in security features across the server, installer, and r
 
 ---
 
-### v2.1.0-beta
+### v2.0.3-beta
 
 **Phase 1 — Hybrid Model Architectures** (`crates/swiftllm-models/`)
 
@@ -3347,7 +3347,7 @@ SwiftLLM includes built-in security features across the server, installer, and r
 
 ---
 
-### v2.2.0-beta
+### v2.0.2-beta
 
 **HuggingFace Dataset Support** (`python/swiftllm/dataset.py`, `training.py`, `cli.py`)
 
