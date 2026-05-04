@@ -3270,6 +3270,18 @@ SwiftLLM includes built-in security features across the server, installer, and r
 - **Low**: Deprecated panicking `cuda_device_index()` method in favor of `try_cuda_device_index()`
 - **Low**: Added bounds validation for `gpu_memory_utilization` CLI argument
 
+**CUDA Acceleration & Python Torch Integrations**
+
+- **New**: Added dedicated custom CUDA `.cu` kernels for maximum GPU performance in Phase 1 and Phase 3 architectures:
+  - `mamba3_scan.cu`: GPU-accelerated parallel scan for selective SSMs
+  - `moe_dispatch.cu`: GPU-accelerated sparse top-k routing
+  - `dense_verif_attn.cu`: GPU cross-attention scoring for Dense Verification
+  - `rlm_ops.cu`: GPU-accelerated operations for Recursive Language Model REPL traces
+  - `linear_f16.cu`: Optimized half-precision matrix multiplications
+- **New**: Added `swiftllm-cuda/src/bindings.rs` to expose the new CUDA kernels to the Rust engine
+- **New**: Added `hybrid_model.py` and `torch_model.py` in Python for seamless integration and PyTorch fallback testing
+- **New**: Added `examples/hybrid_model.py` and `examples/hybrid_model_torch.py` to demonstrate the new capabilities
+
 ---
 
 ### v2.1.0-beta
