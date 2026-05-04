@@ -24,7 +24,6 @@
 [![Logo](https://github.com/infrabrew/infrabrew.github.io/blob/master/swiftllm/assets/logo-mark-128.png?raw=true)](https://infrabrew.github.io/swiftllm/)
 
 <p align="center">
-  <img src="https://img.shields.io/badge/version-2.0-release-May-17th-2026-blue.svg" alt="May-17th-2026">
   <img src="https://img.shields.io/badge/version-2.0.1--beta-yellow.svg" alt="v2.0.1-beta">
   <img src="https://img.shields.io/badge/rust-%23000000.svg?style=flat&logo=rust&logoColor=white" alt="Rust">
   <img src="https://img.shields.io/badge/python-3.8+-blue.svg" alt="Python 3.8+">
@@ -34,6 +33,9 @@
 
 **SwiftLLM** is a high-performance LLM inference, serving, and training engine built with Rust for maximum speed and efficiency. It features state-of-the-art memory management, continuous batching, multi-GPU support, and built-in LoRA/QLoRA fine-tuning.
 
+### Next Version : Release May 16th 2026
+# Status : Testing Phase
+# Branch : (https://github.com/infrabrew/swiftllm/tree/main-hybrid-rd)
 ## Key Features
 
 - **High Throughput**: Continuous batching and efficient scheduling for maximum tokens/second
