@@ -711,7 +711,55 @@ impl MambaLayer {
         };
         let _ = disc_method; // used in CPU path; GPU kernel receives as flag
 
-        // 5. Gate and output projection
+        // ── CUDA path ─────────────────────────────────────────────────────────
+        #[cfg(feature = "cuda")]
+        {
+            use swiftllm_core::tensor::Device;
+            if let Device::Cuda(_) = hidden_states.device() {
+                let d_inner = self.config.d_inner();
+                let d_state = self.config.d_state;
+                let dt_rank = self.config.dt_rank;
+                let _ = dt_rank;
+
+                let y_scan = Tensor::zeros(
+                    vec![batch, seq, d_inner],
+                    hidden_states.dtype(),
+                    hidden_states.device(),
+                )?;
+
+                if let (Some(x_ptr), Some(dt_ptr), Some(a_ptr), Some(d_ptr), Some(y_ptr)) = (
+                    _conv_out.cuda_data_ptr(),
+                    _projected.cuda_data_ptr(),
+                    self.a_log.cuda_data_ptr(),
+                    self.d_param.cuda_data_ptr(),
+                    y_scan.cuda_data_ptr(),
+                ) {
+                    let b_ptr = dt_ptr; // B is a slice inside projected
+                    let c_ptr = dt_ptr; // C is a slice inside projected
+                    let params = swiftllm_cuda::bindings::Mamba3PrefillParams {
+                        batch, seq_len: seq, d_inner, d_state,
+                        use_trapezoidal: self.config.use_trapezoidal_disc,
+                        use_complex:     self.config.use_complex_states,
+                    };
+                    // SAFETY: all ptrs are live CUDA tensors with correct sizes.
+                    unsafe {
+                        swiftllm_cuda::bindings::mamba3_prefill(
+                            x_ptr  as *const half::f16,
+                            dt_ptr as *const half::f16,
+                            a_ptr  as *const half::f16,
+                            b_ptr  as *const half::f16,
+                            c_ptr  as *const half::f16,
+                            d_ptr  as *const half::f16,
+                            y_ptr  as *mut   half::f16,
+                            &params,
+                        ).map_err(|e| Error::Device(format!("mamba3_prefill: {e}")))?;
+                    }
+                }
+                return self.out_proj.forward(&y_scan);
+            }
+        }
+
+        // 5. Gate and output projection (CPU stub — correct shape)
         Tensor::zeros(vec![batch, seq, self.config.d_model], hidden_states.dtype(), hidden_states.device())
     }
 

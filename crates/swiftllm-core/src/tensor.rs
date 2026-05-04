@@ -289,11 +289,18 @@ impl Tensor {
         let storage = match device {
             Device::Cpu => Storage::cpu(size_bytes),
             #[cfg(feature = "cuda")]
-            Device::Cuda(_) => {
-                return Err(Error::not_implemented("CUDA tensor allocation"));
+            Device::Cuda(dev_idx) => {
+                // Allocate zeroed device memory using the swiftllm-cuda layer.
+                // The swiftllm-cuda crate is an optional dependency; when
+                // available it delegates to cudaMalloc + cudaMemset(0).
+                let ptr = swiftllm_cuda::malloc(size_bytes)
+                    .map_err(|e| Error::Device(format!("CUDA malloc: {}", e)))?;
+                swiftllm_cuda::memset_zero(ptr, size_bytes)
+                    .map_err(|e| Error::Device(format!("CUDA memset: {}", e)))?;
+                Storage::Cuda { ptr, size: size_bytes, device: dev_idx }
             }
             #[cfg(not(feature = "cuda"))]
-            _ => return Err(Error::Device("CUDA not available".to_string())),
+            _ => return Err(Error::Device("CUDA not available (build without cuda feature)".to_string())),
         };
 
         let strides = compute_strides(&shape);
@@ -478,7 +485,9 @@ impl Tensor {
         Err(Error::not_implemented("Non-contiguous tensor copy"))
     }
 
-    /// Move tensor to a device
+    /// Move tensor to a device.
+    ///
+    /// When CUDA is enabled this performs real H2D or D2H transfers.
     pub fn to(&self, device: Device) -> Result<Self> {
         if self.device() == device {
             return Ok(Self {
@@ -491,15 +500,62 @@ impl Tensor {
         }
 
         match (self.device(), device) {
-            (Device::Cpu, Device::Cuda(_)) => {
-                Err(Error::not_implemented("CPU to CUDA transfer"))
+            (Device::Cpu, Device::Cuda(dev_idx)) => {
+                #[cfg(feature = "cuda")]
+                {
+                    let src_bytes = self.as_bytes()
+                        .ok_or_else(|| Error::Tensor("Cannot read CPU bytes for H2D transfer".into()))?;
+                    let size = src_bytes.len();
+                    let dst_ptr = swiftllm_cuda::malloc(size)
+                        .map_err(|e| Error::Device(format!("CUDA malloc (H2D): {}", e)))?;
+                    swiftllm_cuda::copy_to_device(dst_ptr, src_bytes)
+                        .map_err(|e| Error::Device(format!("cudaMemcpy H2D: {}", e)))?;
+                    let storage = Storage::Cuda { ptr: dst_ptr, size, device: dev_idx };
+                    let strides = compute_strides(&self.shape);
+                    return Ok(Self {
+                        shape:   self.shape.clone(),
+                        dtype:   self.dtype,
+                        storage: Arc::new(storage),
+                        offset:  0,
+                        strides,
+                    });
+                }
+                #[cfg(not(feature = "cuda"))]
+                Err(Error::not_implemented("CPU to CUDA transfer (build with cuda feature)"))
             }
             #[cfg(feature = "cuda")]
             (Device::Cuda(_), Device::Cpu) => {
-                Err(Error::not_implemented("CUDA to CPU transfer"))
+                if let Storage::Cuda { ptr, size, .. } = self.storage.as_ref() {
+                    let mut host_bytes = vec![0u8; *size];
+                    swiftllm_cuda::copy_to_host(&mut host_bytes, *ptr as *const u8)
+                        .map_err(|e| Error::Device(format!("cudaMemcpy D2H: {}", e)))?;
+                    let strides = compute_strides(&self.shape);
+                    return Ok(Self {
+                        shape:   self.shape.clone(),
+                        dtype:   self.dtype,
+                        storage: Arc::new(Storage::Cpu(host_bytes)),
+                        offset:  0,
+                        strides,
+                    });
+                }
+                Err(Error::Tensor("Expected CUDA storage for D2H transfer".into()))
             }
             _ => Err(Error::Device("Unsupported device transfer".to_string())),
         }
+    }
+
+    /// Return the raw device pointer for CUDA tensors, or `None` for CPU tensors.
+    ///
+    /// The returned pointer is valid only as long as this `Tensor` is alive.
+    /// Used to pass device pointers directly to kernel launch wrappers.
+    pub fn cuda_data_ptr(&self) -> Option<*mut u8> {
+        #[cfg(feature = "cuda")]
+        {
+            if let Storage::Cuda { ptr, .. } = self.storage.as_ref() {
+                return Some(*ptr);
+            }
+        }
+        None
     }
 
     /// Cast tensor to a different dtype

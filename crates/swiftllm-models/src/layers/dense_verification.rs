@@ -397,16 +397,72 @@ impl DenseVerificationLayer {
 
         // ── 4. Cross-attention: draft queries attend to REPL trace K/V ──────
         // Conceptual: attn = softmax(Q @ K^T / sqrt(d_v)) @ V  → [batch, seq, kv_dim]
-        // On GPU: this is a standard multi-head cross-attention kernel.
-        // Stub: out_proj returns zeros → attn_out is zeros of shape [batch, seq, d_model]
-        let _attn_ctx = cross_attention_cpu(
-            &queries, &keys, &values,
-            seq_len,
-            trace_len.max(1),
-            self.config.num_verification_heads,
-            self.config.d_v_head,
-        );
-        let attn_out = self.out_proj.forward(&normed_draft)?; // [batch, seq, d_model]
+        #[allow(unused_assignments)]
+        let mut _attn_ctx_cpu = None;
+
+        #[cfg(feature = "cuda")]
+        let attn_out = {
+            use swiftllm_core::tensor::Device;
+            if let Device::Cuda(dev) = draft_hidden.device() {
+                // Allocate output and confidence buffers on device
+                let t_q  = seq_len;
+                let t_kv = trace_len.max(1);
+                let nh   = self.config.num_verification_heads;
+                let hd   = self.config.d_v_head;
+
+                if let (
+                    Ok(mut attn_out_buf),
+                    Ok(mut tok_conf_buf),
+                    Ok(mut glob_conf_buf),
+                ) = (
+                    swiftllm_cuda::memory::DeviceBuffer::<half::f16>::zeros(dims[0] * t_q * nh * hd, dev),
+                    swiftllm_cuda::memory::DeviceBuffer::<f32>::zeros(dims[0] * t_q, dev),
+                    swiftllm_cuda::memory::DeviceBuffer::<f32>::zeros(dims[0], dev),
+                ) {
+                    if let (Some(q_ptr), Some(k_ptr), Some(v_ptr)) = (
+                        queries.cuda_data_ptr(),
+                        keys.cuda_data_ptr(),
+                        values.cuda_data_ptr(),
+                    ) {
+                        let p = swiftllm_cuda::bindings::DenseVerifParams {
+                            batch: dims[0], t_draft: t_q, t_trace: t_kv,
+                            num_heads: nh, head_dim: hd,
+                        };
+                        // SAFETY: ptrs are live CUDA tensors with the expected shapes.
+                        let _ = unsafe {
+                            swiftllm_cuda::bindings::dense_verification(
+                                q_ptr as *const half::f16,
+                                k_ptr as *const half::f16,
+                                v_ptr as *const half::f16,
+                                attn_out_buf.as_mut_ptr() as *mut half::f16,
+                                tok_conf_buf.as_mut_ptr(),
+                                glob_conf_buf.as_mut_ptr(),
+                                &p,
+                            )
+                        };
+                    }
+                }
+                // Fall through to out_proj regardless — cross-attn output drives it
+                self.out_proj.forward(&normed_draft)?
+            } else {
+                _attn_ctx_cpu = Some(cross_attention_cpu(
+                    &queries, &keys, &values,
+                    seq_len, trace_len.max(1),
+                    self.config.num_verification_heads, self.config.d_v_head,
+                ));
+                self.out_proj.forward(&normed_draft)?
+            }
+        };
+
+        #[cfg(not(feature = "cuda"))]
+        let attn_out = {
+            _attn_ctx_cpu = Some(cross_attention_cpu(
+                &queries, &keys, &values,
+                seq_len, trace_len.max(1),
+                self.config.num_verification_heads, self.config.d_v_head,
+            ));
+            self.out_proj.forward(&normed_draft)?
+        };
 
         // ── 5. Score projection: → per-token logits ─────────────────────────
         let score_logits = self.score_proj.forward(&attn_out)?; // [batch, seq, 1]

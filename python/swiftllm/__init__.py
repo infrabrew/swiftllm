@@ -6,19 +6,25 @@
 # DATE:      2026
 # ------------------------------------------------------------------------------
 # USES:
-#   - python/swiftllm/engine.py    LLM, AsyncLLM, LLMEngine, output types
-#   - python/swiftllm/config.py    all config dataclasses
-#   - python/swiftllm/sampling.py  SamplingStrategy, SelfConsistencySampler
-#   - python/swiftllm/training.py  Trainer, GrpoTrainer, convenience functions
-#   - python/swiftllm/dataset.py   DatasetIngester, IngestionConfig, ingest_dataset
+#   - python/swiftllm/engine.py       LLM, AsyncLLM, LLMEngine, output types
+#   - python/swiftllm/config.py       all config dataclasses
+#   - python/swiftllm/sampling.py     SamplingStrategy, SelfConsistencySampler
+#   - python/swiftllm/training.py     Trainer, GrpoTrainer, convenience functions
+#   - python/swiftllm/dataset.py      DatasetIngester, IngestionConfig, ingest_dataset
+#   - python/swiftllm/model_config.py  HybridModelConfig + component configs (Phase 1)
+#   - python/swiftllm/hybrid_model.py  HybridModelBuilder, build_* presets (Phase 1)
+#   - python/swiftllm/torch_model.py   PyTorch nn.Module bridge (GPU-executable)
 # USED BY:
 #   - user code  (top-level public API)
-#   - python/swiftllm/cli.py       lazy imports via __getattr__
+#   - python/swiftllm/cli.py          lazy imports via __getattr__
 # SEE ALSO:
 #   - crates/swiftllm-core/src/lib.rs             Rust core library public API
 #   - crates/swiftllm-training/src/lib.rs         Rust training library public API
-#   - crates/swiftllm-models/src/layers/rlm.rs            RlmLayer
-#   - crates/swiftllm-models/src/layers/dense_verification.rs  DenseVerificationLayer
+#   - crates/swiftllm-models/src/layers/mamba.rs              MambaConfig
+#   - crates/swiftllm-models/src/layers/moe.rs                MoeConfig / LatentMoeConfig
+#   - crates/swiftllm-models/src/layers/rlm.rs                RlmLayer
+#   - crates/swiftllm-models/src/layers/dense_verification.rs DenseVerificationLayer
+#   - crates/swiftllm-models/src/architectures/jamba.rs       JambaConfig / HybridLayerType
 # ------------------------------------------------------------------------------
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -38,7 +44,20 @@
 SwiftLLM is a fast and memory-efficient inference engine for large language models,
 featuring PagedAttention, continuous batching, and multi-GPU support.
 
-Phase 2 (training) and Phase 3 (inference) research additions are also exposed here:
+Phase 1 (hybrid model architecture), Phase 2 (training), and Phase 3 (inference)
+research additions are also exposed here:
+
+  Hybrid Architecture (Phase 1):
+    build_mamba3_reasoning_model()   — Mamba-3 + LatentMoE + RLM + DenseVerif.
+    build_mamba3_base_model()        — Mamba-3 + LatentMoE backbone (no reasoning)
+    build_mamba3_pure_model()        — plain Mamba-3 baseline (ablation)
+    HybridModelBuilder               — fluent builder for fine-grained control
+    HybridModelConfig                — top-level architecture config
+    MambaConfig                      — Mamba-3 / Mamba-2 SSM config
+    LatentMoeConfig                  — LatentMoE config (87.5 % less inter-GPU traffic)
+    RlmConfig                        — Recursive Language Model config
+    DenseVerificationConfig          — Dense Verification pass config
+    HybridLayerType                  — per-layer type enum (Mamba / MambaMoe / …)
 
   Inference (Phase 3):
     generate_with_self_consistency()     — majority voting over N chains
@@ -56,11 +75,17 @@ Phase 2 (training) and Phase 3 (inference) research additions are also exposed h
     DatasetIngester / IngestionConfig — full-control ingestion API
     DatasetFormat                     — output format enum (pretraining / sft / code)
 
-Example usage:
+Example usage::
+
     >>> from swiftllm import LLM, SamplingParams
     >>> llm = LLM(model="meta-llama/Llama-2-7b-hf")
     >>> outputs = llm.generate(["Hello, how are you?"], SamplingParams(temperature=0.7))
     >>> print(outputs[0].outputs[0].text)
+
+    >>> from swiftllm import build_mamba3_reasoning_model, parameter_summary
+    >>> cfg = build_mamba3_reasoning_model(d_model=2048, num_layers=32)
+    >>> print(cfg.summary())
+    >>> print(parameter_summary(cfg))
 
     >>> from swiftllm.config import SelfConsistencyConfig
     >>> results = llm.generate_with_self_consistency("What is 12 × 15?",
@@ -109,6 +134,42 @@ from .config import (
 )
 from .sampling import SamplingStrategy, create_sampler, SelfConsistencySampler, SelfConsistencyResult
 from .model_resolver import resolve_model
+from .model_config import (
+    # Enums
+    RoutingStrategy,
+    HybridLayerType,
+    # Layer-level configs
+    MambaConfig,
+    MoeConfig,
+    LatentMoeConfig,
+    ModelBaseConfig,
+    # Re-export RlmConfig + DenseVerificationConfig from model_config
+    # (config.py stubs point to these; users can import from either path)
+    RlmConfig as _RlmConfigFromModel,
+    DenseVerificationConfig as _DenseVerificationConfigFromModel,
+    # Top-level architecture config
+    HybridModelConfig,
+)
+from .hybrid_model import (
+    HybridModelBuilder,
+    HybridForwardResult,
+    build_mamba3_reasoning_model,
+    build_mamba3_base_model,
+    build_mamba3_pure_model,
+    build_mamba3_hybrid_attention_model,
+    estimate_parameters,
+    parameter_summary,
+)
+from .torch_model import (
+    HybridModel,
+    HybridForwardOutput,
+    VerificationOutput,
+    build_torch_model,
+    save_checkpoint,
+    load_checkpoint,
+    load_pretrained_weights,
+    HAS_MAMBA_SSM,
+)
 from .dataset import (
     DatasetIngester,
     DatasetFormat,
@@ -135,11 +196,20 @@ __all__ = [
     "VerifiedOutput",
     "RlmOutput",
     "DenseVerificationOutput",
+    "HybridForwardResult",
     # Configuration — core
     "SamplingParams",
     "EngineConfig",
     "ServerConfig",
     "LoRARequest",
+    # Configuration — Phase 1 Hybrid Architecture
+    "RoutingStrategy",
+    "HybridLayerType",
+    "MambaConfig",
+    "MoeConfig",
+    "LatentMoeConfig",
+    "ModelBaseConfig",
+    "HybridModelConfig",
     # Configuration — Phase 3 Inference
     "SelfConsistencyConfig",
     "RefinementConfig",
@@ -169,6 +239,23 @@ __all__ = [
     "create_sampler",
     "SelfConsistencySampler",
     "SelfConsistencyResult",
+    # Hybrid model builder + presets
+    "HybridModelBuilder",
+    "build_mamba3_reasoning_model",
+    "build_mamba3_base_model",
+    "build_mamba3_pure_model",
+    "build_mamba3_hybrid_attention_model",
+    "estimate_parameters",
+    "parameter_summary",
+    # PyTorch nn.Module bridge
+    "HybridModel",
+    "HybridForwardOutput",
+    "VerificationOutput",
+    "build_torch_model",
+    "save_checkpoint",
+    "load_checkpoint",
+    "load_pretrained_weights",
+    "HAS_MAMBA_SSM",
     # Training (lazy-loaded below)
     "Trainer",
     "TrainingConfig",
@@ -267,6 +354,7 @@ def version() -> str:
 # END OF FILE: __init__.py
 # REPO PATH:   /swiftllm/python/swiftllm/__init__.py
 # INTEGRATES:  engine.py · config.py · sampling.py · training.py · model_resolver.py
+#              model_config.py · hybrid_model.py
 #              Rust: swiftllm-core · swiftllm-training · swiftllm-models
 # (c) 2026 SWIFTLLM | Apache 2.0 License
 # ------------------------------------------------------------------------------

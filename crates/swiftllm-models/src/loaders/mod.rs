@@ -24,9 +24,16 @@
 
 pub mod gguf;
 pub mod huggingface;
+pub mod hybrid;
 pub mod safetensors;
 
 pub use huggingface::{HuggingFaceLoader, load_config, detect_architecture};
+pub use hybrid::{
+    HybridWeightLoader,
+    get_weight, get_weight_opt,
+    require_weight_of_shape,
+    layer_prefix,
+};
 
 use crate::ModelConfig;
 use swiftllm_core::error::Result;

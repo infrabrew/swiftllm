@@ -717,7 +717,44 @@ impl RlmLayer {
         };
 
         // ── 5. Output normalisation ─────────────────────────────────────────
-        self.output_norm.forward(&output)
+        let normed = self.output_norm.forward(&output)?;
+
+        // ── 6. CUDA: confidence MLP via depth scheduler projections ──────────
+        // Run the depth scheduler's hidden_proj + depth_proj on GPU when available.
+        // This fires off the `rlm_confidence_mlp` kernel to score each token.
+        #[cfg(feature = "cuda")]
+        {
+            use swiftllm_core::tensor::Device;
+            if let Device::Cuda(dev) = hidden_states.device() {
+                let n_tok     = dims.iter().take(dims.len() - 1).product::<usize>();
+                let d_model   = self.config.d_model;
+                let depth_hidden = self.scheduler.hidden_proj.out_features;
+
+                if let Ok(mut conf_buf) =
+                    swiftllm_cuda::memory::DeviceBuffer::<f32>::zeros(n_tok, dev)
+                {
+                    if let (Some(x_ptr), Some(w1_ptr), Some(w2_ptr)) = (
+                        normed.cuda_data_ptr(),
+                        self.scheduler.hidden_proj.weight.cuda_data_ptr(),
+                        self.scheduler.depth_proj.weight.cuda_data_ptr(),
+                    ) {
+                        let _ = unsafe {
+                            swiftllm_cuda::bindings::rlm_confidence(
+                                x_ptr  as *const half::f16,
+                                w1_ptr as *const half::f16,
+                                std::ptr::null(),
+                                w2_ptr as *const half::f16,
+                                std::ptr::null(),
+                                conf_buf.as_mut_ptr(),
+                                n_tok, d_model, depth_hidden,
+                            )
+                        };
+                    }
+                }
+            }
+        }
+
+        Ok(normed)
     }
 }
 
