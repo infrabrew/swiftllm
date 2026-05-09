@@ -636,7 +636,7 @@ mod tests {
         let engine = Engine::new(config).unwrap();
 
         let request = Request::new(vec![1, 2, 3, 4, 5]);
-        let request_id = engine.add_request(request).unwrap();
+        let _request_id = engine.add_request(request).unwrap();
 
         assert_eq!(engine.pending_requests(), 1);
     }

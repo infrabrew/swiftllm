@@ -360,6 +360,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(unstable_name_collisions)]
     fn test_erf() {
         assert!((0.0f32.erf() - 0.0).abs() < 1e-6);
         assert!((1.0f32.erf() - 0.8427).abs() < 0.001);

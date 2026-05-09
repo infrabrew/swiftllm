@@ -576,7 +576,7 @@ mod tests {
         scheduler.add_request(request).unwrap();
 
         // Schedule
-        let output = scheduler.schedule();
+        let _output = scheduler.schedule();
 
         // Request should be running now
         assert_eq!(scheduler.num_running(), 1);
