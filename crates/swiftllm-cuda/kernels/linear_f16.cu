@@ -55,10 +55,9 @@ __global__ void linear_f16_forward_kernel(
     int row = tile_m * TILE_M + threadIdx.y;
     int col = tile_n * TILE_N + threadIdx.x;
 
-    if (row >= M || col >= N) return;
+    // All threads must participate in shared memory loading (no early return).
+    bool valid = (row < M && col < N);
 
-    // TILE_K stride for shared memory: use TILE_N as the loading width
-    // since block is [TILE_N, TILE_M]. Each thread loads 2 elements along K.
     __shared__ float As[TILE_M][TILE_K];
     __shared__ float Bs[TILE_N][TILE_K];
 
@@ -69,7 +68,7 @@ __global__ void linear_f16_forward_kernel(
         #pragma unroll
         for (int step = 0; step < TILE_K; step += TILE_N) {
             int k_a = k_start + step + threadIdx.x;
-            if (k_a < K)
+            if (row < M && k_a < K)
                 As[threadIdx.y][step + threadIdx.x] = __half2float(x[row * K + k_a]);
             else
                 As[threadIdx.y][step + threadIdx.x] = 0.f;
@@ -79,7 +78,7 @@ __global__ void linear_f16_forward_kernel(
         #pragma unroll
         for (int step = 0; step < TILE_K; step += TILE_M) {
             int k_b = k_start + step + threadIdx.y;
-            if (k_b < K)
+            if (col < N && k_b < K)
                 Bs[threadIdx.x][step + threadIdx.y] = __half2float(W[col * K + k_b]);
             else
                 Bs[threadIdx.x][step + threadIdx.y] = 0.f;
@@ -94,8 +93,10 @@ __global__ void linear_f16_forward_kernel(
         __syncthreads();
     }
 
-    if (has_bias) acc += __half2float(bias[col]);
-    y[row * N + col] = __float2half(acc);
+    if (valid) {
+        if (has_bias) acc += __half2float(bias[col]);
+        y[row * N + col] = __float2half(acc);
+    }
 }
 
 // ---------------------------------------------------------------------------
