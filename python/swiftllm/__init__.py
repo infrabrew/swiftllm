@@ -160,16 +160,27 @@ from .hybrid_model import (
     estimate_parameters,
     parameter_summary,
 )
-from .torch_model import (
-    HybridModel,
-    HybridForwardOutput,
-    VerificationOutput,
-    build_torch_model,
-    save_checkpoint,
-    load_checkpoint,
-    load_pretrained_weights,
-    HAS_MAMBA_SSM,
-)
+try:
+    from .torch_model import (
+        HybridModel,
+        HybridForwardOutput,
+        VerificationOutput,
+        build_torch_model,
+        save_checkpoint,
+        load_checkpoint,
+        load_pretrained_weights,
+        HAS_MAMBA_SSM,
+    )
+except ImportError:
+    # torch is optional; torch_model features are unavailable without it
+    HybridModel = None  # type: ignore[assignment,misc]
+    HybridForwardOutput = None  # type: ignore[assignment,misc]
+    VerificationOutput = None  # type: ignore[assignment,misc]
+    build_torch_model = None  # type: ignore[assignment]
+    save_checkpoint = None  # type: ignore[assignment]
+    load_checkpoint = None  # type: ignore[assignment]
+    load_pretrained_weights = None  # type: ignore[assignment]
+    HAS_MAMBA_SSM = False
 from .dataset import (
     DatasetIngester,
     DatasetFormat,
