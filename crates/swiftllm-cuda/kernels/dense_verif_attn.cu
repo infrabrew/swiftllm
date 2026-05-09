@@ -55,7 +55,7 @@ __device__ __forceinline__ float warp_reduce_max(float v) {
 // Dense verification cross-attention + confidence scoring
 // ---------------------------------------------------------------------------
 
-extern "C" __global__ void dense_verif_cross_attn(
+__global__ void dense_verif_cross_attn_kernel(
     // Query: draft token hiddens
     const __half* __restrict__ Q,            // [B, T_q, H, D]
     // Key/Value: trace hiddens
@@ -141,7 +141,7 @@ extern "C" __global__ void dense_verif_cross_attn(
 // Grid: [B]  Block: [min(T_q, 256)]
 // ---------------------------------------------------------------------------
 
-extern "C" __global__ void dense_verif_global_conf(
+__global__ void dense_verif_global_conf_kernel(
     const float* __restrict__ token_conf, // [B, T_q]
     float*       __restrict__ global_conf,// [B]
     int B, int T_q
@@ -153,6 +153,33 @@ extern "C" __global__ void dense_verif_global_conf(
     sum = warp_reduce_sum(sum);
     if (threadIdx.x == 0)
         global_conf[b] = sum / (float)T_q;
+}
+
+// ---------------------------------------------------------------------------
+// Host-side launchers
+// ---------------------------------------------------------------------------
+
+extern "C" void dense_verif_cross_attn(
+    const __half* Q, const __half* K, const __half* V,
+    __half* attn_out, float* token_conf, float* global_conf,
+    int B, int T_q, int T_kv, int num_heads, int head_dim, float scale
+) {
+    dim3 grid(B, T_q, num_heads);
+    int threads = min(head_dim, 256);
+    size_t smem = (T_kv + head_dim) * sizeof(float);
+    dense_verif_cross_attn_kernel<<<grid, threads, smem>>>(
+        Q, K, V, attn_out, token_conf, global_conf,
+        B, T_q, T_kv, num_heads, head_dim, scale
+    );
+}
+
+extern "C" void dense_verif_global_conf(
+    const float* token_conf, float* global_conf,
+    int B, int T_q
+) {
+    dim3 grid(B);
+    int threads = min(T_q, 256);
+    dense_verif_global_conf_kernel<<<grid, threads>>>(token_conf, global_conf, B, T_q);
 }
 
 // ==============================================================================

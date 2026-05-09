@@ -79,7 +79,7 @@ __device__ __forceinline__ float clampf(float x, float lo, float hi) {
 //   dB = dt * B * (1 + 0.5 * dt * A) / (1 - 0.5 * dt * A)
 //
 
-extern "C" __global__ void mamba3_decode_step(
+__global__ void mamba3_decode_step_kernel(
     // inputs
     const __half* __restrict__ x_t,          // [B, d_inner]         input after conv
     const __half* __restrict__ dt_t,          // [B, dt_rank]          Δ logits
@@ -196,7 +196,7 @@ extern "C" __global__ void mamba3_decode_step(
 #define CHUNK_SIZE 64
 #define INNER_PER_BLOCK 1
 
-extern "C" __global__ void mamba3_prefill_scan(
+__global__ void mamba3_prefill_scan_kernel(
     const __half* __restrict__ x,            // [B, T, d_inner]
     const __half* __restrict__ dt_proj_out,  // [B, T, d_inner]  (already projected + softplus)
     const __half* __restrict__ A_log,        // [d_inner, d_state]
@@ -268,6 +268,46 @@ extern "C" __global__ void mamba3_prefill_scan(
         }
         __syncthreads();
     }
+}
+
+// ---------------------------------------------------------------------------
+// Host-side launchers
+// ---------------------------------------------------------------------------
+
+extern "C" void mamba3_decode_step(
+    const __half* x_t, const __half* dt_t, const __half* dt_proj_w,
+    const __half* A_log, const __half* B_t, const __half* C_t,
+    const __half* D, float* h_state, __half* y_t,
+    int B, int d_inner, int d_state, int dt_rank,
+    int num_heads,
+    float dt_min, float dt_max,
+    bool use_trapezoidal, bool use_complex
+) {
+    int channels_per_head = d_inner / max(num_heads, 1);
+    int threads = min(channels_per_head, 256);
+    dim3 grid(B, num_heads);
+    mamba3_decode_step_kernel<<<grid, threads>>>(
+        x_t, dt_t, dt_proj_w, A_log, B_t, C_t, D, h_state, y_t,
+        B, d_inner, d_state, dt_rank, num_heads, dt_min, dt_max,
+        use_trapezoidal, use_complex
+    );
+}
+
+extern "C" void mamba3_prefill_scan(
+    const __half* x, const __half* dt_proj_out, const __half* A_log,
+    const __half* B, const __half* C, const __half* D,
+    __half* out,
+    int B_dim, int T, int d_inner, int d_state,
+    bool use_trapezoidal, bool use_complex
+) {
+    dim3 grid(B_dim, d_inner);
+    int threads = min(d_state, CHUNK_SIZE);
+    size_t smem = d_state * sizeof(float);
+    mamba3_prefill_scan_kernel<<<grid, threads, smem>>>(
+        x, dt_proj_out, A_log, B, C, D, out,
+        B_dim, T, d_inner, d_state,
+        use_trapezoidal, use_complex
+    );
 }
 
 // ==============================================================================

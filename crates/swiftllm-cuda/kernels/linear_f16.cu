@@ -41,7 +41,7 @@
 // Block: [TILE_N, TILE_M]
 // ---------------------------------------------------------------------------
 
-extern "C" __global__ void linear_f16_forward(
+__global__ void linear_f16_forward_kernel(
     const __half* __restrict__ x,    // [M, K]
     const __half* __restrict__ W,    // [N, K]
     const __half* __restrict__ bias, // [N]  (may be nullptr)
@@ -90,11 +90,24 @@ extern "C" __global__ void linear_f16_forward(
 }
 
 // ---------------------------------------------------------------------------
+// Host-side launcher for linear_f16_forward_kernel
+// ---------------------------------------------------------------------------
+
+extern "C" void linear_f16_forward(
+    const __half* x, const __half* W, const __half* bias,
+    __half* y, int M, int N, int K, int has_bias
+) {
+    dim3 grid((M + TILE_M - 1) / TILE_M, (N + TILE_N - 1) / TILE_N);
+    dim3 block(TILE_N, TILE_M);
+    linear_f16_forward_kernel<<<grid, block>>>(x, W, bias, y, M, N, K, has_bias);
+}
+
+// ---------------------------------------------------------------------------
 // Fused bias add: y += b  (in-place, broadcast over M)
 // Grid: [ceil(M*N / 256)]  Block: [256]
 // ---------------------------------------------------------------------------
 
-extern "C" __global__ void linear_f16_bias_add(
+__global__ void linear_f16_bias_add_kernel(
     __half*       __restrict__ y,    // [M, N]
     const __half* __restrict__ bias, // [N]
     int M, int N
@@ -104,6 +117,19 @@ extern "C" __global__ void linear_f16_bias_add(
     if (idx >= total) return;
     int col = idx % N;
     y[idx] = __float2half(__half2float(y[idx]) + __half2float(bias[col]));
+}
+
+// ---------------------------------------------------------------------------
+// Host-side launcher for linear_f16_bias_add_kernel
+// ---------------------------------------------------------------------------
+
+extern "C" void linear_f16_bias_add(
+    __half* y, const __half* bias, int M, int N
+) {
+    int total = M * N;
+    int threads = 256;
+    int blocks = (total + threads - 1) / threads;
+    linear_f16_bias_add_kernel<<<blocks, threads>>>(y, bias, M, N);
 }
 
 // ==============================================================================

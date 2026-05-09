@@ -45,7 +45,7 @@ __device__ __forceinline__ float warp_reduce_sum(float v) {
 #define TILE_M 1
 #define TILE_N 64
 
-extern "C" __global__ void latent_compress(
+__global__ void latent_compress_kernel(
     const __half* __restrict__ x,          // [N, d_model]
     const __half* __restrict__ W_compress, // [d_model, d_latent]
     __half* __restrict__ z,                // [N, d_latent]
@@ -73,7 +73,7 @@ extern "C" __global__ void latent_compress(
 // Grid: [N]  Block: [num_experts]  (≤1024)
 // ---------------------------------------------------------------------------
 
-extern "C" __global__ void moe_topk_gate(
+__global__ void moe_topk_gate_kernel(
     const float* __restrict__ router_logits, // [N, num_experts]
     const float* __restrict__ expert_bias,   // [num_experts] dynamic bias
     int32_t* __restrict__ expert_ids,        // [N, top_k]
@@ -140,7 +140,7 @@ __device__ __forceinline__ float silu(float x) {
     return x / (1.f + expf(-x));
 }
 
-extern "C" __global__ void moe_expert_dispatch(
+__global__ void moe_expert_dispatch_kernel(
     const __half*  __restrict__ z_in,          // [N, d_latent]
     const __half*  __restrict__ gate_w,        // [E, d_latent, d_ffn]
     const __half*  __restrict__ up_w,          // [E, d_latent, d_ffn]
@@ -195,7 +195,7 @@ extern "C" __global__ void moe_expert_dispatch(
 // Grid: [N]  Block: [1]
 // ---------------------------------------------------------------------------
 
-extern "C" __global__ void moe_load_stats(
+__global__ void moe_load_stats_kernel(
     const int32_t* __restrict__ expert_ids, // [N, top_k]
     int32_t* __restrict__ expert_counts,    // [num_experts] (atomicAdd)
     int N, int top_k
@@ -213,7 +213,7 @@ extern "C" __global__ void moe_load_stats(
 // Grid: [N]  Block: [min(d_model, 512)]
 // ---------------------------------------------------------------------------
 
-extern "C" __global__ void latent_expand(
+__global__ void latent_expand_kernel(
     const __half* __restrict__ z,          // [N, d_latent]
     const __half* __restrict__ W_expand,   // [d_latent, d_model]
     __half* __restrict__ y,                // [N, d_model]
@@ -228,6 +228,63 @@ extern "C" __global__ void latent_expand(
         }
         y[n * d_model + col] = __float2half(acc);
     }
+}
+
+// ---------------------------------------------------------------------------
+// Host-side launchers
+// ---------------------------------------------------------------------------
+
+extern "C" void latent_compress(
+    const __half* x, const __half* W_compress, __half* z,
+    int N, int d_model, int d_latent
+) {
+    dim3 grid(N, (d_latent + TILE_N - 1) / TILE_N);
+    latent_compress_kernel<<<grid, TILE_N>>>(x, W_compress, z, N, d_model, d_latent);
+}
+
+extern "C" void moe_topk_gate(
+    const float* router_logits, const float* expert_bias,
+    int32_t* expert_ids, float* expert_weights,
+    int N, int num_experts, int top_k
+) {
+    int threads = min(num_experts, 256);
+    size_t smem = num_experts * sizeof(float);
+    moe_topk_gate_kernel<<<N, threads, smem>>>(
+        router_logits, expert_bias, expert_ids, expert_weights,
+        N, num_experts, top_k
+    );
+}
+
+extern "C" void moe_expert_dispatch(
+    const __half* z_in, const __half* gate_w, const __half* up_w,
+    const __half* down_w, const int32_t* expert_ids, const float* expert_weights,
+    __half* z_out,
+    int N, int top_k, int d_latent, int d_ffn, int num_experts
+) {
+    dim3 grid(N, top_k);
+    int threads = min(d_latent, 256);
+    size_t smem = d_ffn * sizeof(float);
+    moe_expert_dispatch_kernel<<<grid, threads, smem>>>(
+        z_in, gate_w, up_w, down_w, expert_ids, expert_weights, z_out,
+        N, top_k, d_latent, d_ffn, num_experts
+    );
+}
+
+extern "C" void moe_load_stats(
+    const int32_t* expert_ids, int32_t* expert_counts,
+    int N, int top_k
+) {
+    int threads = min(N, 256);
+    int blocks = (N + threads - 1) / threads;
+    moe_load_stats_kernel<<<blocks, threads>>>(expert_ids, expert_counts, N, top_k);
+}
+
+extern "C" void latent_expand(
+    const __half* z, const __half* W_expand, __half* y,
+    int N, int d_latent, int d_model
+) {
+    int threads = min(d_model, 512);
+    latent_expand_kernel<<<N, threads>>>(z, W_expand, y, N, d_latent, d_model);
 }
 
 // ==============================================================================

@@ -43,7 +43,7 @@ __device__ __forceinline__ float warp_reduce_sum(float v) {
 // Grid: [B * T]  Block: [min(d_model, 512)]
 // ---------------------------------------------------------------------------
 
-extern "C" __global__ void rlm_add_depth_embed(
+__global__ void rlm_add_depth_embed_kernel(
     __half*       __restrict__ x,           // [B, T, d_model] — modified in place
     const __half* __restrict__ depth_emb,   // [max_depth, d_model]
     int N,                                   // B * T (total tokens)
@@ -70,7 +70,7 @@ extern "C" __global__ void rlm_add_depth_embed(
 // Grid: [N]  Block: [d_hidden]
 // ---------------------------------------------------------------------------
 
-extern "C" __global__ void rlm_confidence_mlp(
+__global__ void rlm_confidence_mlp_kernel(
     const __half* __restrict__ x,    // [N, d_model]
     const __half* __restrict__ W1,   // [d_model, d_hidden]
     const __half* __restrict__ b1,   // [d_hidden]
@@ -113,7 +113,7 @@ extern "C" __global__ void rlm_confidence_mlp(
 // Grid: [N]  Block: [min(d_model, 512)]
 // ---------------------------------------------------------------------------
 
-extern "C" __global__ void rlm_gate_subproblem(
+__global__ void rlm_gate_subproblem_kernel(
     const float*  __restrict__ gate,    // [N]
     const __half* __restrict__ x_sub,   // [N, d_model]
     const __half* __restrict__ x_base,  // [N, d_model]
@@ -129,6 +129,38 @@ extern "C" __global__ void rlm_gate_subproblem(
         float xb = __half2float(x_base[n * d_model + d]);
         out[n * d_model + d] = __float2half(g * xs + (1.f - g) * xb);
     }
+}
+
+// ---------------------------------------------------------------------------
+// Host-side launchers
+// ---------------------------------------------------------------------------
+
+extern "C" void rlm_add_depth_embed(
+    __half* x, const __half* depth_emb,
+    int N, int d_model, int depth
+) {
+    int threads = min(d_model, 512);
+    rlm_add_depth_embed_kernel<<<N, threads>>>(x, depth_emb, N, d_model, depth);
+}
+
+extern "C" void rlm_confidence_mlp(
+    const __half* x, const __half* W1, const __half* b1,
+    const __half* W2, const __half* b2, float* conf,
+    int N, int d_model, int d_hidden
+) {
+    int threads = min(d_hidden, 256);
+    size_t smem = d_hidden * sizeof(float);
+    rlm_confidence_mlp_kernel<<<N, threads, smem>>>(
+        x, W1, b1, W2, b2, conf, N, d_model, d_hidden
+    );
+}
+
+extern "C" void rlm_gate_subproblem(
+    const float* gate, const __half* x_sub, const __half* x_base,
+    __half* out, int N, int d_model
+) {
+    int threads = min(d_model, 512);
+    rlm_gate_subproblem_kernel<<<N, threads>>>(gate, x_sub, x_base, out, N, d_model);
 }
 
 // ==============================================================================
