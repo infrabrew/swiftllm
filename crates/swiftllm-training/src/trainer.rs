@@ -360,8 +360,6 @@ fn apply_curriculum_lr(base_lr: f64, tick: &CurriculumTick) -> f64 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::data::TextDataset;
-    use std::io::Write;
 
     #[test]
     fn test_trainer_creation() {
