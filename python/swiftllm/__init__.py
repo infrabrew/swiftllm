@@ -194,7 +194,7 @@ from .dataset import (
     DOCUMENT_EXTENSIONS,
 )
 
-__version__ = "2.2.0b1"
+__version__ = "2.0.5b1"
 __all__ = [
     # Main classes
     "LLM",

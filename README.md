@@ -24,7 +24,7 @@
 [![Logo](https://github.com/infrabrew/infrabrew.github.io/blob/master/swiftllm/assets/logo-mark-128.png?raw=true)](https://infrabrew.github.io/swiftllm/)
 
 <p align="center">
-  <img src="https://img.shields.io/badge/version-2.0.4--beta-yellow.svg" alt="v2.0.4-beta">
+  <img src="https://img.shields.io/badge/version-2.0.5--beta-yellow.svg" alt="v2.0.5-beta">
   <img src="https://img.shields.io/badge/rust-%23000000.svg?style=flat&logo=rust&logoColor=white" alt="Rust">
   <img src="https://img.shields.io/badge/python-3.8+-blue.svg" alt="Python 3.8+">
   <img src="https://img.shields.io/badge/CUDA-11.8+-green.svg" alt="CUDA 11.8+">
@@ -125,6 +125,8 @@
 - **Multiple Formats** — HuggingFace repos, GGUF quantized models, SafeTensors
 - **GGUF Inference** — Run quantized GGUF models on GPU via llama-cpp-python
 - **Air-Gapped Install** — Bundle and deploy on networks with no internet access
+- **PyTorch-Optional SDK** — Python package imports cleanly without PyTorch; torch features activate when available
+- **Lifecycle Scripts** — `install.sh`, `update.sh`, and `uninstall.sh` for full install management
 
 **Training & Data**
 - **Dataset Ingestion** — One command converts any directory of `.txt`, `.md`, `.py`, `.rs`, `.pdf`, `.docx`, `.csv`, `.html`, `.jsonl` (and 40+ more) into JSONL; 4 output schemas; SHA-256 dedup; auto-fires inside `Trainer` and `fine_tune()`
@@ -362,6 +364,25 @@ To run in offline mode at runtime:
 ```bash
 export SWIFTLLM_OFFLINE=1
 swiftllm generate -m /path/to/local/model.gguf -p "Hello"
+```
+
+### Update an Existing Installation
+
+```bash
+./update.sh              # Pull latest source + rebuild
+./update.sh --branch main-hybrid-rd  # Switch to a specific branch
+./update.sh --tag v2.0.5  # Switch to a specific tag
+./update.sh --clean      # Clean build artifacts before rebuilding
+./update.sh --no-pull    # Rebuild from current source (skip git pull)
+./update.sh --cpu        # Force CPU-only rebuild
+```
+
+### Uninstall
+
+```bash
+./uninstall.sh                # Interactive uninstall
+./uninstall.sh --keep-models  # Uninstall but keep downloaded models
+./uninstall.sh --purge --yes  # Remove everything non-interactively
 ```
 
 ### Manual Install
@@ -3251,6 +3272,39 @@ SwiftLLM includes built-in security features across the server, installer, and r
 ---
 
 ## Changelog
+
+### v2.0.5-beta
+
+**Code Quality & Zero-Warning Build**
+
+- **Fixed**: Resolved all 130+ compiler warnings across all 4 workspace crates (`swiftllm-core`, `swiftllm-models`, `swiftllm-training`, `swiftllm-cuda`)
+  - Added `#[allow(dead_code)]` annotations on scaffold structs/functions not yet wired to live code paths (attention, embedding, MLP, MoE, architecture decoders, loaders, speculative decoding, tensor parallelism)
+  - Added doc comments on all public enum variant fields (error types, refinement, verification, curriculum, PRM, LongReward)
+  - Removed unused imports in trainer, optimizer, and test modules
+  - Suppressed `unstable_name_collisions` warning for `f32::erf()` (Horner-form CPU approximation conflicts with future `std` method)
+  - Added `#![allow(missing_docs)]` at crate level for `swiftllm-models` scaffold code
+- **Fixed**: Python SDK now imports cleanly without PyTorch installed — `torch_model` features are guarded with `try/except ImportError` and degrade gracefully to `None`
+- **Fixed**: Removed unused `TextDataset`, `std::io::Write`, and `Optimizer` imports in trainer test module
+
+**Lifecycle Scripts**
+
+- **New**: `update.sh` — pull latest source, rebuild wheel, reinstall; supports `--branch`, `--tag`, `--clean`, `--no-pull`, `--cpu`/`--gpu` flags
+- **New**: `uninstall.sh` — interactive or non-interactive removal of Python package, model cache, venv, and build artifacts; supports `--purge`, `--keep-models`, `--keep-venv`, `--yes` flags
+
+**Testing**
+
+- **New**: Comprehensive Rust regression suite — 304 tests across all workspace crates, all passing with zero warnings
+- **New**: Python frontend regression suite — 48 tests covering all feature configurations:
+  - RLM modes (DISABLED/SHALLOW/REASONING/AGENTIC) — 7 tests
+  - Dense Verification strategies (DISABLED/SCORE_ONLY/GATE/GATE_AND_REGEN) — 6 tests
+  - Training methods (GRPO, CGAR, PRM, LongReward) — 10 tests
+  - Fine-Tuning (LoRA, QLoRA, dataset ingestion) — 8 tests
+  - Inference (Self-Consistency, Refinement, Best-of-N, Disaggregated Serving) — 6 tests
+  - Hybrid Model Builders (reasoning, base, pure, hybrid-attention) — 6 tests
+  - Dataset Ingestion — 3 tests
+  - Integration + Public API surface — 2 tests
+
+---
 
 ### v2.0.4-beta
 

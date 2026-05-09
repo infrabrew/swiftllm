@@ -24,7 +24,6 @@
 
 use pyo3::prelude::*;
 use pyo3::types::PyDict;
-use std::collections::HashMap;
 use std::sync::Arc;
 
 /// Python-exposed engine configuration
