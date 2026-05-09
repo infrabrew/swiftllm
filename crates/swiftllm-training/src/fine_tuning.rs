@@ -20,7 +20,7 @@
 
 //! Fine-tuning methods: Full, LoRA, QLoRA
 
-use crate::config::{FineTuningConfig, LoRAParams};
+use crate::config::LoRAParams;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 

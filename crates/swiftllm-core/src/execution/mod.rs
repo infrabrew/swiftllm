@@ -29,7 +29,7 @@ mod tensor_parallel;
 pub use speculative::{SpeculativeDecoder, SpeculativeDecodingConfig};
 pub use tensor_parallel::{TensorParallelConfig, TensorParallelExecutor};
 
-use crate::error::{Error, Result};
+use crate::error::Result;
 use crate::memory::kv_cache::BatchedCacheMetadata;
 use crate::tensor::Tensor;
 use crate::types::{ExecutionBatch, TokenId};
@@ -249,6 +249,7 @@ impl Default for ExecutionConfig {
 
 /// CUDA graph cache for accelerating inference
 #[derive(Debug)]
+#[allow(dead_code)]
 pub struct CudaGraphCache {
     /// Captured graphs (keyed by batch size)
     graphs: std::collections::HashMap<usize, CapturedGraph>,

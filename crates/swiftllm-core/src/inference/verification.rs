@@ -62,8 +62,11 @@ pub enum ScoringStrategy {
     Neural,
     /// Weighted linear combination: `w_rule * rule + w_neural * neural + w_lp * logprob`.
     Ensemble {
+        /// Weight for rule-based scoring
         rule_weight: f32,
+        /// Weight for neural scoring
         neural_weight: f32,
+        /// Weight for log-probability scoring
         logprob_weight: f32,
     },
     /// Rank by the model's own sequence log-probability (no verifier call).

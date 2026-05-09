@@ -97,6 +97,7 @@ impl Activation {
 
 /// Standard MLP layer
 #[derive(Debug)]
+#[allow(dead_code)]
 pub struct Mlp {
     /// Configuration
     config: MlpConfig,
@@ -140,6 +141,7 @@ impl Mlp {
 ///
 /// Uses SwiGLU: output = down_proj(silu(gate_proj(x)) * up_proj(x))
 #[derive(Debug)]
+#[allow(dead_code)]
 pub struct GatedMlp {
     /// Configuration
     config: MlpConfig,
@@ -188,6 +190,7 @@ impl GatedMlp {
 
 /// Fused Gated MLP (gate and up projections merged)
 #[derive(Debug)]
+#[allow(dead_code)]
 pub struct FusedGatedMlp {
     /// Configuration
     config: MlpConfig,
@@ -226,6 +229,7 @@ impl FusedGatedMlp {
 
 /// Mixture of Experts (MoE) MLP layer
 #[derive(Debug)]
+#[allow(dead_code)]
 pub struct MoeMlp {
     /// Number of experts
     num_experts: usize,
@@ -285,6 +289,7 @@ fn silu(x: f32) -> f32 {
 }
 
 /// GELU activation (exact)
+#[allow(unstable_name_collisions)]
 fn gelu(x: f32) -> f32 {
     0.5 * x * (1.0 + (x / std::f32::consts::SQRT_2).erf())
 }

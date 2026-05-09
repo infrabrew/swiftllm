@@ -26,10 +26,9 @@
 //! - Rotary Positional Embeddings (RoPE)
 //! - PagedAttention integration
 
-use swiftllm_core::config::DataType;
-use swiftllm_core::error::{Error, Result};
+use swiftllm_core::error::Result;
 use swiftllm_core::memory::paged_attention::PagedAttentionInput;
-use swiftllm_core::tensor::{Device, Tensor};
+use swiftllm_core::tensor::Tensor;
 use std::f32::consts::PI;
 
 /// Attention layer configuration
@@ -88,6 +87,7 @@ impl AttentionConfig {
 
 /// Multi-head attention layer
 #[derive(Debug)]
+#[allow(dead_code)]
 pub struct Attention {
     /// Configuration
     config: AttentionConfig,
@@ -168,8 +168,8 @@ impl Attention {
     pub fn forward_prefill(
         &self,
         hidden_states: &Tensor,
-        positions: &[usize],
-        attn_input: &PagedAttentionInput,
+        _positions: &[usize],
+        _attn_input: &PagedAttentionInput,
     ) -> Result<Tensor> {
         let dims = hidden_states.dims();
         let batch_size = dims[0];
@@ -197,8 +197,8 @@ impl Attention {
     pub fn forward_decode(
         &self,
         hidden_states: &Tensor,
-        positions: &[usize],
-        attn_input: &PagedAttentionInput,
+        _positions: &[usize],
+        _attn_input: &PagedAttentionInput,
     ) -> Result<Tensor> {
         let dims = hidden_states.dims();
         let batch_size = dims[0];
@@ -216,6 +216,7 @@ impl Attention {
 
 /// Rotary Positional Embeddings
 #[derive(Debug)]
+#[allow(dead_code)]
 pub struct RotaryEmbedding {
     /// Head dimension
     head_dim: usize,
@@ -270,7 +271,7 @@ impl RotaryEmbedding {
         &self,
         query: &Tensor,
         key: &Tensor,
-        positions: &[usize],
+        _positions: &[usize],
     ) -> Result<(Tensor, Tensor)> {
         // For each position, apply rotation:
         // q_rot = q * cos + rotate_half(q) * sin
@@ -298,6 +299,7 @@ impl RotaryEmbedding {
 }
 
 /// Apply rotary embedding to a tensor
+#[allow(dead_code)]
 fn rotate_half(x: &[f32]) -> Vec<f32> {
     // Split into two halves and rotate
     let half = x.len() / 2;
@@ -316,6 +318,7 @@ fn rotate_half(x: &[f32]) -> Vec<f32> {
 
 /// YaRN (Yet another RoPE extensioN) scaling
 #[derive(Debug)]
+#[allow(dead_code)]
 pub struct YaRNScaling {
     /// Original max position embeddings
     original_max_position_embeddings: usize,

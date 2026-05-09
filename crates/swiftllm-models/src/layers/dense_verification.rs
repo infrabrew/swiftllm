@@ -563,7 +563,7 @@ impl DenseVerificationLayer {
         }
 
         for _attempt in 0..self.config.max_regen_attempts {
-            let (new_draft, mut new_repl) = regen_fn(&best_result, repl_state)?;
+            let (new_draft, new_repl) = regen_fn(&best_result, repl_state)?;
             let new_result = self.verify(&new_draft, &new_repl)?;
 
             if new_result.global_score > best_score {

@@ -27,7 +27,6 @@
 pub mod api;
 pub mod streaming;
 
-use api::openai::OpenAIApi;
 use axum::{
     body::Body,
     extract::State,
@@ -40,7 +39,7 @@ use axum::{
 use std::net::SocketAddr;
 use std::sync::Arc;
 use subtle::ConstantTimeEq;
-use swiftllm_core::config::{EngineConfig, ServerConfig};
+use swiftllm_core::config::ServerConfig;
 use swiftllm_core::engine::Engine;
 use swiftllm_core::error::Result;
 use tower_http::cors::{Any, CorsLayer};

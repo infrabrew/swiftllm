@@ -105,7 +105,10 @@ pub enum PrmAggregation {
     /// Score of the final step only (useful when earlier steps are noisy).
     LastStep,
     /// Weighted mean with geometric decay (recent steps weighted higher).
-    WeightedMean { decay: f32 },
+    WeightedMean {
+        /// Geometric decay factor for weighting
+        decay: f32,
+    },
 }
 
 /// Full PRM output for one generated sequence.

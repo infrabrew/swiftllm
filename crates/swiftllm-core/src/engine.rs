@@ -26,20 +26,19 @@
 
 use crate::config::{EngineConfig, SamplingConfig};
 use crate::error::{Error, Result};
-use crate::execution::{ExecutionConfig, ExecutionStats, ModelExecutor};
-use crate::memory::{BlockManager, KvCache, KvCacheConfig, MemoryPool, MemoryStats};
+use crate::execution::ExecutionStats;
+use crate::memory::{BlockManager, MemoryPool, MemoryStats};
 use crate::sampling::{SamplingParams, TokenSampler};
 use crate::scheduler::{Scheduler, SchedulerStats};
 use crate::types::{
-    FinishReason, GenerationOutput, Request, RequestId, RequestMetrics, RequestOutput,
-    RequestStatus, SequenceGroup, Token, TokenId,
+    FinishReason, GenerationOutput, Request, RequestId, RequestMetrics, RequestOutput, TokenId,
 };
 use parking_lot::{Mutex, RwLock};
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
-use tokio::sync::{mpsc, oneshot, Notify};
+use tokio::sync::{mpsc, Notify};
 
 /// The main inference engine
 pub struct Engine {
@@ -181,8 +180,8 @@ impl Engine {
     /// Add a request with text prompt (requires tokenizer)
     pub fn add_request_text(
         &self,
-        prompt: String,
-        sampling_params: SamplingConfig,
+        _prompt: String,
+        _sampling_params: SamplingConfig,
     ) -> Result<RequestId> {
         // In a real implementation, we would tokenize here
         // For now, return an error

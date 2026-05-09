@@ -93,7 +93,6 @@
 //! - Hybrid Architectures paper (2026): phased specialisation, conflict analysis
 
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
 
 // ---------------------------------------------------------------------------
 // CGAR Configuration
@@ -225,6 +224,7 @@ pub struct CgarScheduler {
 }
 
 impl CgarScheduler {
+    /// Create a new CGAR scheduler with the given configuration
     pub fn new(config: CgarConfig, total_steps: usize, num_layers: usize) -> Self {
         let _ = config.validate().expect("Invalid CGAR config");
         Self { config, total_steps, num_layers, current_step: 0 }
@@ -321,7 +321,7 @@ impl CgarScheduler {
 
     /// Estimated remaining steps in the current phase
     pub fn steps_remaining_in_phase(&self) -> usize {
-        let progress = self.current_step as f32 / self.total_steps.max(1) as f32;
+        let _progress = self.current_step as f32 / self.total_steps.max(1) as f32;
         let phase_end = match self.phase() {
             CgarPhase::Shallow => self.config.shallow_fraction,
             CgarPhase::Medium => self.config.shallow_fraction + self.config.medium_fraction,
@@ -369,16 +369,19 @@ impl Default for PhasedSpecialisationConfig {
 /// Returns per-component LR multipliers at each step so the training loop
 /// can scale the effective learning rate for attention vs SSM parameters.
 pub struct PhasedSpecialisationScheduler {
+    /// Phased specialisation configuration
     pub config: PhasedSpecialisationConfig,
     total_steps: usize,
     current_step: usize,
 }
 
 impl PhasedSpecialisationScheduler {
+    /// Create a new phased specialisation scheduler
     pub fn new(config: PhasedSpecialisationConfig, total_steps: usize) -> Self {
         Self { config, total_steps, current_step: 0 }
     }
 
+    /// Advance the scheduler by one step
     pub fn step(&mut self) {
         self.current_step += 1;
     }

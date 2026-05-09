@@ -25,8 +25,8 @@
 
 use crate::config::DataType;
 use crate::error::{Error, Result};
-use bytemuck::{Pod, Zeroable};
-use half::{bf16, f16};
+use bytemuck::Pod;
+use half::f16;
 use std::sync::Arc;
 
 /// Tensor shape
@@ -530,7 +530,7 @@ impl Tensor {
         }
 
         match (self.device(), device) {
-            (Device::Cpu, Device::Cuda(dev_idx)) => {
+            (Device::Cpu, Device::Cuda(_dev_idx)) => {
                 #[cfg(feature = "cuda")]
                 {
                     let src_bytes = self.as_bytes()

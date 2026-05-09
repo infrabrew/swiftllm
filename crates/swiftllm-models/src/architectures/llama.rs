@@ -24,7 +24,7 @@
 
 use super::TransformerModel;
 use crate::layers::{
-    Attention, AttentionConfig, Embedding, GatedMlp, LMHead, Linear, MlpConfig, RMSNorm,
+    Embedding, LMHead, Linear, RMSNorm,
     RotaryEmbedding,
 };
 use crate::ModelConfig;
@@ -153,6 +153,7 @@ impl TransformerModel for LlamaModel {
 }
 
 /// LLaMA decoder layer
+#[allow(dead_code)]
 struct LlamaDecoderLayer {
     /// Layer index
     layer_idx: usize,
@@ -211,13 +212,13 @@ impl LlamaDecoderLayer {
         is_prefill: bool,
     ) -> Result<Tensor> {
         // Self-attention with residual
-        let residual = hidden_states;
+        let _residual = hidden_states;
         let hidden_states = self.input_layernorm.forward(hidden_states)?;
         let hidden_states = self.self_attn.forward(&hidden_states, positions, cache_metadata, is_prefill)?;
         // residual connection would be: hidden_states = residual + hidden_states
 
         // MLP with residual
-        let residual = &hidden_states;
+        let _residual = &hidden_states;
         let hidden_states = self.post_attention_layernorm.forward(&hidden_states)?;
         let hidden_states = self.mlp.forward(&hidden_states)?;
         // residual connection would be: hidden_states = residual + hidden_states
@@ -227,6 +228,7 @@ impl LlamaDecoderLayer {
 }
 
 /// LLaMA attention
+#[allow(dead_code)]
 struct LlamaAttention {
     /// Query projection
     q_proj: Linear,
@@ -313,16 +315,16 @@ impl LlamaAttention {
         &self,
         hidden_states: &Tensor,
         positions: &[usize],
-        cache_metadata: &BatchedCacheMetadata,
-        is_prefill: bool,
+        _cache_metadata: &BatchedCacheMetadata,
+        _is_prefill: bool,
     ) -> Result<Tensor> {
         // 1. Project Q, K, V
         let q = self.q_proj.forward(hidden_states)?;
         let k = self.k_proj.forward(hidden_states)?;
-        let v = self.v_proj.forward(hidden_states)?;
+        let _v = self.v_proj.forward(hidden_states)?;
 
         // 2. Apply rotary embeddings
-        let (q, k) = self.rotary_emb.apply(&q, &k, positions)?;
+        let (q, _k) = self.rotary_emb.apply(&q, &k, positions)?;
 
         // 3. Apply attention (with PagedAttention for decode)
         // In real implementation, this would call the attention kernel
@@ -377,7 +379,7 @@ impl LlamaMLP {
     fn forward(&self, hidden_states: &Tensor) -> Result<Tensor> {
         // SwiGLU: down_proj(silu(gate_proj(x)) * up_proj(x))
         let gate = self.gate_proj.forward(hidden_states)?;
-        let up = self.up_proj.forward(hidden_states)?;
+        let _up = self.up_proj.forward(hidden_states)?;
         // Apply SiLU to gate and multiply with up
         // Then apply down projection
         self.down_proj.forward(&gate)

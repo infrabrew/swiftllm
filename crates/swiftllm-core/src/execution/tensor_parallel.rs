@@ -25,7 +25,6 @@
 
 use crate::error::{Error, Result};
 use crate::tensor::{Device, Tensor};
-use std::sync::Arc;
 
 /// Tensor parallel configuration
 #[derive(Debug, Clone)]
@@ -83,6 +82,7 @@ pub enum CommunicationBackend {
 }
 
 /// Tensor parallel executor
+#[allow(dead_code)]
 pub struct TensorParallelExecutor {
     /// Configuration
     config: TensorParallelConfig,
@@ -93,6 +93,7 @@ pub struct TensorParallelExecutor {
 
 /// Handle for collective communications
 #[derive(Debug)]
+#[allow(dead_code)]
 pub struct CommunicationHandle {
     /// World size
     world_size: usize,
@@ -132,7 +133,7 @@ impl TensorParallelExecutor {
     }
 
     /// Perform all-reduce operation
-    pub fn all_reduce(&self, tensor: &mut Tensor, op: ReduceOp) -> Result<()> {
+    pub fn all_reduce(&self, _tensor: &mut Tensor, _op: ReduceOp) -> Result<()> {
         if self.config.is_single_gpu() {
             return Ok(());
         }
@@ -152,7 +153,7 @@ impl TensorParallelExecutor {
     }
 
     /// Perform reduce-scatter operation
-    pub fn reduce_scatter(&self, tensor: &Tensor, op: ReduceOp) -> Result<Tensor> {
+    pub fn reduce_scatter(&self, tensor: &Tensor, _op: ReduceOp) -> Result<Tensor> {
         if self.config.is_single_gpu() {
             return Ok(tensor.clone());
         }
@@ -161,7 +162,7 @@ impl TensorParallelExecutor {
     }
 
     /// Broadcast tensor from source rank
-    pub fn broadcast(&self, tensor: &mut Tensor, src: usize) -> Result<()> {
+    pub fn broadcast(&self, _tensor: &mut Tensor, _src: usize) -> Result<()> {
         if self.config.is_single_gpu() {
             return Ok(());
         }
@@ -212,7 +213,7 @@ impl TensorParallelExecutor {
     }
 
     /// Unshard a tensor (gather from all ranks)
-    pub fn unshard_tensor(&self, tensor: &Tensor, dim: usize) -> Result<Tensor> {
+    pub fn unshard_tensor(&self, tensor: &Tensor, _dim: usize) -> Result<Tensor> {
         if self.config.is_single_gpu() {
             return Ok(tensor.clone());
         }
@@ -250,6 +251,7 @@ pub enum ReduceOp {
 }
 
 /// Parallel linear layer that shards weights across GPUs
+#[allow(dead_code)]
 pub struct ParallelLinear {
     /// Weight tensor (sharded)
     weight: Tensor,
@@ -270,6 +272,7 @@ pub struct ParallelLinear {
     tp_config: TensorParallelConfig,
 }
 
+#[allow(dead_code)]
 impl ParallelLinear {
     /// Create a new parallel linear layer
     pub fn new(
@@ -313,6 +316,7 @@ impl ParallelLinear {
 }
 
 /// Vocabulary parallel embedding that shards vocabulary across GPUs
+#[allow(dead_code)]
 pub struct VocabParallelEmbedding {
     /// Embedding weight (sharded by vocabulary)
     weight: Tensor,
@@ -336,6 +340,7 @@ pub struct VocabParallelEmbedding {
     tp_config: TensorParallelConfig,
 }
 
+#[allow(dead_code)]
 impl VocabParallelEmbedding {
     /// Create a new vocabulary parallel embedding
     pub fn new(

@@ -34,13 +34,13 @@ use crate::config::SchedulerConfig;
 use crate::error::{Error, Result};
 use crate::memory::BlockManager;
 use crate::types::{
-    Request, RequestId, RequestStatus, ScheduledSequenceGroup, SchedulerOutput, SequenceGroup,
+    Request, RequestId, RequestStatus, SchedulerOutput, SequenceGroup,
     SequenceGroupState,
 };
 use parking_lot::{Mutex, RwLock};
 use std::collections::{HashMap, VecDeque};
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::Instant;
 
 /// Scheduler statistics
 #[derive(Debug, Clone, Default)]

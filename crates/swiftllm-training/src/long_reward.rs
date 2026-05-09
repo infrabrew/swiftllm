@@ -98,7 +98,10 @@ pub enum DenseAggregation {
     /// Reward assigned only at the last token position.
     LastToken,
     /// Use only the top-k most-informative tokens (by abs value).
-    TopK { k: usize },
+    TopK {
+        /// Number of top tokens to use
+        k: usize,
+    },
 }
 
 /// Per-token reward entry.

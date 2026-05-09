@@ -31,8 +31,7 @@
 use crate::error::{Error, Result};
 use crate::types::SequenceId;
 use parking_lot::{Mutex, RwLock};
-use std::collections::{HashMap, HashSet, VecDeque};
-use std::sync::Arc;
+use std::collections::{HashMap, VecDeque};
 
 /// Physical block ID
 pub type PhysicalBlockId = usize;
@@ -125,6 +124,7 @@ impl PhysicalBlock {
 
 /// Block allocator for GPU or CPU memory
 #[derive(Debug)]
+#[allow(dead_code)]
 pub struct BlockAllocator {
     /// Total number of blocks
     num_blocks: usize,
@@ -257,6 +257,7 @@ impl BlockAllocator {
 
 /// Block manager that coordinates allocation across GPU and CPU
 #[derive(Debug)]
+#[allow(dead_code)]
 pub struct BlockManager {
     /// Block size in tokens
     block_size: usize,

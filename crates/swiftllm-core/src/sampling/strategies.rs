@@ -23,7 +23,6 @@
 //! This module provides composable sampling strategies that can be
 //! chained together to create complex sampling pipelines.
 
-use crate::error::Result;
 use crate::types::TokenId;
 
 /// Trait for sampling strategies
@@ -415,6 +414,7 @@ impl Default for SamplerChain {
 }
 
 /// Create a standard sampling chain from parameters
+#[allow(dead_code)]
 pub fn create_sampler_chain(
     temperature: f32,
     top_k: i32,

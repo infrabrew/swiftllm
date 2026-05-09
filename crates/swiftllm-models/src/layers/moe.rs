@@ -58,7 +58,7 @@
 
 use super::Linear;
 use swiftllm_core::config::DataType;
-use swiftllm_core::error::{Error, Result};
+use swiftllm_core::error::Result;
 use swiftllm_core::tensor::{Device, Tensor};
 
 // ---------------------------------------------------------------------------
@@ -929,6 +929,7 @@ fn sigmoid(x: f32) -> f32 {
 }
 
 #[inline]
+#[allow(dead_code)]
 fn softmax_inplace(logits: &mut [f32]) {
     let max = logits.iter().cloned().fold(f32::NEG_INFINITY, f32::max);
     let mut sum = 0.0f32;

@@ -24,11 +24,10 @@
 //! timeouts, priorities, and various queuing policies.
 
 use crate::error::{Error, Result};
-use crate::types::{Request, RequestId, RequestStatus};
+use crate::types::{Request, RequestId};
 use parking_lot::{Condvar, Mutex, RwLock};
 use std::collections::{HashMap, VecDeque};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
-use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 /// Configuration for the request queue

@@ -22,7 +22,6 @@
 //!
 //! Implements the OpenAI API specification for chat completions and completions.
 
-use crate::streaming::SseStream;
 use crate::AppState;
 use axum::{
     extract::{Path, State},
@@ -496,7 +495,7 @@ pub async fn chat_completions(
 
     // Add to engine
     match state.engine.add_request(inference_request) {
-        Ok(request_id) => {
+        Ok(_request_id) => {
             if request.stream {
                 // Streaming response
                 // In a real implementation, we would stream tokens as they're generated
@@ -687,7 +686,7 @@ fn validate_completion_request(request: &CompletionRequest) -> std::result::Resu
 
 /// Completions endpoint (legacy)
 pub async fn completions(
-    State(state): State<AppState>,
+    State(_state): State<AppState>,
     Json(request): Json<CompletionRequest>,
 ) -> impl IntoResponse {
     // Validate request

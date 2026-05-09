@@ -62,7 +62,6 @@ pub use rlm::{
     RecursionScheduler, ReplState, ReplStep, RlmConfig, RlmLayer, VariableBindingTable,
 };
 
-use swiftllm_core::config::DataType;
 use swiftllm_core::error::Result;
 use swiftllm_core::tensor::Tensor;
 
@@ -117,7 +116,7 @@ impl Linear {
     ///   - CUDA tensor + `cuda` feature enabled → `linear_f16` CUDA kernel
     ///   - Otherwise → `Tensor::zeros` stub (CPU placeholder, correct shape)
     pub fn forward(&self, input: &Tensor) -> Result<Tensor> {
-        use swiftllm_core::tensor::Device;
+        
 
         let input_dims = input.dims();
         let batch_dims = &input_dims[..input_dims.len() - 1];

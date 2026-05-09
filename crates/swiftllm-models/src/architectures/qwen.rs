@@ -123,6 +123,7 @@ impl TransformerModel for QwenModel {
     }
 }
 
+#[allow(dead_code)]
 struct QwenDecoderLayer {
     layer_idx: usize,
     self_attn: QwenAttention,
@@ -170,6 +171,7 @@ impl QwenDecoderLayer {
     }
 }
 
+#[allow(dead_code)]
 struct QwenAttention {
     q_proj: Linear,
     k_proj: Linear,
@@ -252,9 +254,9 @@ impl QwenAttention {
     ) -> Result<Tensor> {
         let q = self.q_proj.forward(hidden_states)?;
         let k = self.k_proj.forward(hidden_states)?;
-        let v = self.v_proj.forward(hidden_states)?;
+        let _v = self.v_proj.forward(hidden_states)?;
 
-        let (q, k) = self.rotary_emb.apply(&q, &k, positions)?;
+        let (q, _k) = self.rotary_emb.apply(&q, &k, positions)?;
 
         self.o_proj.forward(&q)
     }

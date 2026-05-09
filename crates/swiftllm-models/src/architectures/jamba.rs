@@ -54,13 +54,12 @@
 use super::TransformerModel;
 use crate::layers::{
     mamba::{MambaConfig, MambaLayer, MambaRecurrentState},
-    moe::{LatentMoeConfig, LatentMoeLayer, MoeConfig, MoeLayer},
-    Attention, AttentionConfig, Embedding, GatedMlp, LMHead, Linear, MlpConfig, RMSNorm,
+    moe::{LatentMoeConfig, LatentMoeLayer, MoeConfig, MoeLayer}, Embedding, GatedMlp, LMHead, Linear, MlpConfig, RMSNorm,
     RotaryEmbedding,
 };
 use crate::ModelConfig;
 use swiftllm_core::config::DataType;
-use swiftllm_core::error::{Error, Result};
+use swiftllm_core::error::Result;
 use swiftllm_core::memory::kv_cache::BatchedCacheMetadata;
 use swiftllm_core::tensor::{Device, Tensor};
 use swiftllm_core::types::TokenId;
@@ -481,6 +480,7 @@ impl HybridFfn {
 }
 
 /// Attention sub-block used within hybrid layers
+#[allow(dead_code)]
 struct HybridAttention {
     q_proj: Linear,
     k_proj: Linear,
@@ -527,7 +527,7 @@ impl HybridAttention {
     ) -> Result<Tensor> {
         let q = self.q_proj.forward(hidden_states)?;
         let k = self.k_proj.forward(hidden_states)?;
-        let (q, k) = self.rotary_emb.apply(&q, &k, positions)?;
+        let (q, _k) = self.rotary_emb.apply(&q, &k, positions)?;
         // Flash attention + paged attention KV cache access would happen here
         self.o_proj.forward(&q)
     }

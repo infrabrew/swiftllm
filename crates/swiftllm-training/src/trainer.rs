@@ -24,7 +24,7 @@ use crate::config::{TrainingConfig, WarmupConfig};
 use crate::curriculum::{CurriculumState, CurriculumTick};
 use crate::data::{DataLoader, Dataset, TrainingSample};
 use crate::metrics::TrainingMetrics;
-use crate::optimizer::{LearningRateScheduler, Optimizer, SchedulerType};
+use crate::optimizer::{LearningRateScheduler, SchedulerType};
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 use thiserror::Error;
@@ -253,7 +253,7 @@ impl Trainer {
     }
 
     /// Run a single training step (simulated)
-    fn train_step(&self, batch: &[&TrainingSample], _lr: f64) -> f64 {
+    fn train_step(&self, _batch: &[&TrainingSample], _lr: f64) -> f64 {
         // In a full implementation, this would:
         // 1. Forward pass through the model
         // 2. Compute cross-entropy loss

@@ -76,7 +76,6 @@
 //! - Schulman et al. "Proximal Policy Optimization" (2017)
 
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
 
 // ---------------------------------------------------------------------------
 // Configuration

@@ -30,9 +30,10 @@ use std::fs::File;
 use std::path::{Path, PathBuf};
 use swiftllm_core::config::DataType;
 use swiftllm_core::error::{Error, Result};
-use swiftllm_core::tensor::{Device, Tensor};
+use swiftllm_core::tensor::Tensor;
 
 /// SafeTensors file loader
+#[allow(dead_code)]
 pub struct SafeTensorsLoader {
     /// File paths
     files: Vec<PathBuf>,

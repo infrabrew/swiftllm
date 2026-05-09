@@ -213,7 +213,7 @@ pub fn majority_vote(
 
     // Sort by vote count desc, then by min-sum-logprob (highest probability) for ties.
     let mut tallies: Vec<(String, Vec<usize>)> = vote_map.into_iter().collect();
-    tallies.sort_by(|(ans_a, idxs_a), (ans_b, idxs_b)| {
+    tallies.sort_by(|(_ans_a, idxs_a), (_ans_b, idxs_b)| {
         let cmp = idxs_b.len().cmp(&idxs_a.len());
         if cmp != std::cmp::Ordering::Equal || !config.tiebreak_by_logprob {
             return cmp;

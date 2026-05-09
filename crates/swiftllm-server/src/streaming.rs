@@ -22,9 +22,7 @@
 //!
 //! Provides SSE formatting for OpenAI-compatible streaming chat/completion responses.
 
-use axum::response::sse::{Event, Sse};
 use futures::stream::Stream;
-use std::convert::Infallible;
 use std::pin::Pin;
 use std::task::{Context, Poll};
 

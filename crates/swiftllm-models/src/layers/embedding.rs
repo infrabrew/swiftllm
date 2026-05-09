@@ -142,6 +142,7 @@ impl Embedding {
 
 /// Vocabulary parallel embedding (sharded across GPUs)
 #[derive(Debug)]
+#[allow(dead_code)]
 pub struct VocabParallelEmbedding {
     /// Local embedding weights
     weight: Tensor,
@@ -235,6 +236,7 @@ impl VocabParallelEmbedding {
 ///
 /// Often tied to the input embeddings
 #[derive(Debug)]
+#[allow(dead_code)]
 pub struct LMHead {
     /// Weight matrix [vocab_size, hidden_size]
     /// May be tied to embedding weight

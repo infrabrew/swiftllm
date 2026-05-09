@@ -58,9 +58,17 @@ pub enum StoppingCriterion {
     /// Stop after a fixed number of rounds regardless of improvement.
     MaxRounds,
     /// Stop when the improvement score falls below `threshold`.
-    MinImprovement { threshold: f32 },
+    MinImprovement {
+        /// Minimum improvement threshold
+        threshold: f32,
+    },
     /// Stop when both max rounds is reached OR improvement < threshold.
-    Either { max_rounds: usize, threshold: f32 },
+    Either {
+        /// Maximum number of rounds
+        max_rounds: usize,
+        /// Minimum improvement threshold
+        threshold: f32,
+    },
 }
 
 /// How to score the improvement between two consecutive outputs.

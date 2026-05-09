@@ -28,8 +28,8 @@ use crate::config::SchedulerConfig;
 use crate::error::{Error, Result};
 use crate::memory::BlockManager;
 use crate::types::{
-    Request, RequestId, ScheduledSequenceGroup, SchedulerOutput, SequenceGroup,
-    SequenceGroupState, SequenceStatus,
+    Request, RequestId, SchedulerOutput, SequenceGroup,
+    SequenceGroupState,
 };
 use parking_lot::RwLock;
 use std::collections::{BinaryHeap, HashMap, VecDeque};
@@ -85,6 +85,7 @@ pub struct ContinuousBatchingScheduler {
 
 /// Internal request info
 #[derive(Debug, Clone)]
+#[allow(dead_code)]
 struct RequestInfo {
     /// Request ID
     request_id: RequestId,
@@ -302,7 +303,7 @@ impl ContinuousBatchingScheduler {
         let mut swapped = self.swapped.write();
 
         // Check memory pressure
-        let num_running = running.len();
+        let _num_running = running.len();
         let free_blocks = self.block_manager.num_free_gpu_blocks();
 
         // Preempt if no free blocks and we have running sequences
@@ -432,7 +433,7 @@ impl ContinuousBatchingScheduler {
     }
 
     /// Build the final scheduled groups
-    fn build_scheduled_groups(&self, output: &mut SchedulerOutput) {
+    fn build_scheduled_groups(&self, _output: &mut SchedulerOutput) {
         let running = self.running.read();
         let request_info = self.request_info.read();
 
@@ -445,7 +446,7 @@ impl ContinuousBatchingScheduler {
             let info = request_info.get(&request_id);
 
             // Determine chunk size
-            let token_chunk_size = if let Some(info) = info {
+            let _token_chunk_size = if let Some(info) = info {
                 if info.is_prefill && self.enable_chunked_prefill {
                     std::cmp::min(info.prefill_remaining, self.max_prefill_tokens)
                 } else if info.is_prefill {

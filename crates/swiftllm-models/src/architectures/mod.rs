@@ -88,7 +88,7 @@ pub trait TransformerModel: Send + Sync {
 pub fn create_model(
     architecture: ModelArchitecture,
     config: ModelConfig,
-    weights_path: &std::path::Path,
+    _weights_path: &std::path::Path,
 ) -> Result<Box<dyn TransformerModel>> {
     match architecture {
         ModelArchitecture::Llama => Ok(Box::new(LlamaModel::new(config)?)),
