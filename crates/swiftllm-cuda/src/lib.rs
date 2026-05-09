@@ -128,6 +128,7 @@ pub fn get_device_info(device_id: usize) -> Result<DeviceInfo> {
 }
 
 /// Set the current CUDA device
+#[allow(unused_variables)]
 pub fn set_device(device_id: usize) -> Result<()> {
     #[cfg(has_cuda)]
     {

@@ -160,7 +160,7 @@ extern "C" __global__ void moe_expert_dispatch(
     // Each thread computes partial sums for a slice of d_ffn
     extern __shared__ float smem[];
     float* gate_buf = smem;              // [d_ffn]
-    float* up_buf   = smem + d_ffn;     // [d_ffn]
+    // up_buf overlaps smem region — gate_buf is reused in-place for SwiGLU
 
     // Gate and up projections: z_in @ gate_w[e], z_in @ up_w[e]
     for (int j = threadIdx.x; j < d_ffn; j += blockDim.x) {

@@ -70,6 +70,7 @@ pub struct PagedAttentionParams {
 }
 
 /// Launch PagedAttention prefill kernel
+#[allow(unused_variables)]
 pub fn paged_attention_prefill(
     output: *mut half::f16,
     query: *const half::f16,
@@ -94,6 +95,7 @@ pub fn paged_attention_prefill(
 }
 
 /// Launch PagedAttention decode kernel
+#[allow(unused_variables)]
 pub fn paged_attention_decode(
     output: *mut half::f16,
     query: *const half::f16,
@@ -132,6 +134,7 @@ pub struct ReshapeCacheParams {
 }
 
 /// Launch reshape and cache kernel
+#[allow(unused_variables)]
 pub fn reshape_and_cache(
     key: *const half::f16,
     value: *const half::f16,
@@ -153,6 +156,7 @@ pub fn reshape_and_cache(
 }
 
 /// RMS normalization kernel
+#[allow(unused_variables)]
 pub fn rms_norm(
     output: *mut half::f16,
     input: *const half::f16,
@@ -174,6 +178,7 @@ pub fn rms_norm(
 }
 
 /// Fused add + RMS normalization kernel
+#[allow(unused_variables)]
 pub fn fused_add_rms_norm(
     output: *mut half::f16,
     residual: *mut half::f16,
@@ -196,6 +201,7 @@ pub fn fused_add_rms_norm(
 }
 
 /// Rotary embedding kernel
+#[allow(unused_variables)]
 pub fn rotary_embedding(
     positions: *const i32,
     query: *mut half::f16,
@@ -220,6 +226,7 @@ pub fn rotary_embedding(
 }
 
 /// SiLU activation kernel
+#[allow(unused_variables)]
 pub fn silu_and_mul(
     output: *mut half::f16,
     input: *const half::f16,
@@ -239,6 +246,7 @@ pub fn silu_and_mul(
 }
 
 /// Copy blocks between GPU and CPU
+#[allow(unused_variables)]
 pub fn copy_blocks(
     key_caches: &[*mut half::f16],
     value_caches: &[*mut half::f16],
@@ -262,6 +270,7 @@ pub fn copy_blocks(
 }
 
 /// Swap blocks between GPU and CPU
+#[allow(unused_variables)]
 pub fn swap_blocks(
     src: *const half::f16,
     dst: *mut half::f16,
@@ -282,6 +291,7 @@ pub fn swap_blocks(
 }
 
 /// Quantized GEMM (INT4)
+#[allow(unused_variables)]
 pub fn gemm_int4(
     output: *mut half::f16,
     input: *const half::f16,
@@ -306,6 +316,7 @@ pub fn gemm_int4(
 }
 
 /// Quantized GEMM (INT8)
+#[allow(unused_variables)]
 pub fn gemm_int8(
     output: *mut half::f16,
     input: *const half::f16,
@@ -328,6 +339,7 @@ pub fn gemm_int8(
 }
 
 /// Softmax kernel
+#[allow(unused_variables)]
 pub fn softmax(
     output: *mut half::f16,
     input: *const half::f16,
@@ -347,6 +359,7 @@ pub fn softmax(
 }
 
 /// Top-k sampling kernel
+#[allow(unused_variables)]
 pub fn top_k_sampling(
     output_ids: *mut i32,
     output_probs: *mut f32,
@@ -369,6 +382,7 @@ pub fn top_k_sampling(
 }
 
 /// Top-p (nucleus) sampling kernel
+#[allow(unused_variables)]
 pub fn top_p_sampling(
     output_ids: *mut i32,
     output_probs: *mut f32,
@@ -398,7 +412,7 @@ pub fn top_p_sampling(
 // Mamba-3 SSM scan kernel declarations
 // ---------------------------------------------------------------------------
 
-/// extern "C" declarations for compiled mamba3_scan.cu
+// extern "C" declarations for compiled mamba3_scan.cu
 #[cfg(has_cuda)]
 extern "C" {
     fn mamba3_decode_step(
