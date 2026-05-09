@@ -56,7 +56,7 @@ fn main() {
     // a static archive that Cargo links automatically.
     //
     // sm_80 = Ampere (A100); sm_86 = GA10x (RTX 30xx); sm_89 = Ada (RTX 40xx)
-    // sm_90 = Hopper (H100).  Add more targets as needed.
+    // sm_90 = Hopper (H100); sm_120 = Blackwell (RTX PRO 4000 / B200).
     let kernels = [
         "kernels/mamba3_scan.cu",
         "kernels/moe_dispatch.cu",
@@ -66,6 +66,9 @@ fn main() {
         "kernels/paged_attention.cu",
     ];
 
+    // ── Detect CUDA toolkit version for conditional gencode flags ──────────
+    let cuda_version_major = detect_cuda_major_version(&cuda_path);
+
     let mut build = cc::Build::new();
     build
         .cuda(true)
@@ -74,7 +77,17 @@ fn main() {
         .flag("--generate-code=arch=compute_80,code=sm_80")
         .flag("--generate-code=arch=compute_86,code=sm_86")
         .flag("--generate-code=arch=compute_89,code=sm_89")
-        .flag("--generate-code=arch=compute_90,code=sm_90")
+        .flag("--generate-code=arch=compute_90,code=sm_90");
+
+    // sm_120 (Blackwell) requires CUDA 13.0+
+    if cuda_version_major >= 13 {
+        build.flag("--generate-code=arch=compute_120,code=sm_120");
+        println!("cargo:warning=Blackwell (sm_120) target enabled (CUDA {}).", cuda_version_major);
+    } else {
+        println!("cargo:warning=CUDA {} detected; skipping Blackwell (sm_120). Needs CUDA >= 13.", cuda_version_major);
+    }
+
+    build
         .include(&cuda_include)
         .define("__CUDA_NO_HALF_OPERATORS__", None)   // let us use __half2float etc
         .define("CUDA_HAS_FP16", Some("1"));
@@ -89,6 +102,51 @@ fn main() {
     }
 
     build.compile("swiftllm_kernels");
+}
+
+// ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
+
+/// Try to detect the CUDA toolkit major version from `version.json` or
+/// `version.txt` in the CUDA installation directory.  Falls back to 12
+/// (a safe conservative default that won't emit unsupported gencode flags).
+fn detect_cuda_major_version(cuda_path: &str) -> u32 {
+    // Method 1: version.json (CUDA 11.6+)
+    let version_json = format!("{}/version.json", cuda_path);
+    if let Ok(contents) = std::fs::read_to_string(&version_json) {
+        // Look for "version" : "13.0.88"  (crude parse — avoid serde dep)
+        if let Some(pos) = contents.find("\"version\"") {
+            let rest = &contents[pos..];
+            // Find first digit sequence after the colon
+            if let Some(colon) = rest.find(':') {
+                let after_colon = &rest[colon + 1..];
+                let trimmed = after_colon.trim().trim_matches('"');
+                if let Some(dot) = trimmed.find('.') {
+                    if let Ok(major) = trimmed[..dot].parse::<u32>() {
+                        return major;
+                    }
+                }
+            }
+        }
+    }
+
+    // Method 2: version.txt (older toolkits)
+    let version_txt = format!("{}/version.txt", cuda_path);
+    if let Ok(contents) = std::fs::read_to_string(&version_txt) {
+        // e.g. "CUDA Version 12.4.1"
+        for word in contents.split_whitespace() {
+            if let Some(dot) = word.find('.') {
+                if let Ok(major) = word[..dot].parse::<u32>() {
+                    return major;
+                }
+            }
+        }
+    }
+
+    // Fallback: conservative default
+    println!("cargo:warning=Could not detect CUDA version; assuming 12.x");
+    12
 }
 
 // ------------------------------------------------------------------------------
