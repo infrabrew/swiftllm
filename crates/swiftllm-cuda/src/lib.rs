@@ -106,6 +106,7 @@ pub fn device_count() -> Result<usize> {
 }
 
 /// Get device information
+#[allow(unused_variables)]
 pub fn get_device_info(device_id: usize) -> Result<DeviceInfo> {
     // In a real implementation, this would query CUDA device properties
     #[cfg(has_cuda)]

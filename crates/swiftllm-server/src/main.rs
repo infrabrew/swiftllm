@@ -29,6 +29,15 @@ use swiftllm_core::config::{EngineConfig, ServerConfig};
 use swiftllm_core::engine::Engine;
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
+/// Parse and validate GPU memory utilization (must be in 0.01..=1.0).
+fn parse_gpu_mem_util(s: &str) -> Result<f32, String> {
+    let val: f32 = s.parse().map_err(|e| format!("invalid float: {e}"))?;
+    if !(0.01..=1.0).contains(&val) {
+        return Err(format!("gpu_memory_utilization must be between 0.01 and 1.0, got {val}"));
+    }
+    Ok(val)
+}
+
 /// SwiftLLM - High-performance LLM inference engine
 #[derive(Parser)]
 #[command(name = "swiftllm")]
@@ -76,8 +85,8 @@ struct ServeArgs {
     #[arg(long, default_value = "4096")]
     max_seq_len: usize,
 
-    /// GPU memory utilization (0.0 - 1.0)
-    #[arg(long, default_value = "0.90", value_parser = clap::value_parser!(f32).range(0.01..=1.0))]
+    /// GPU memory utilization (0.01 - 1.0)
+    #[arg(long, default_value = "0.90", value_parser = parse_gpu_mem_util)]
     gpu_memory_utilization: f32,
 
     /// Block size for PagedAttention

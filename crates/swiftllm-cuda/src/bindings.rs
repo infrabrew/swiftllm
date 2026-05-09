@@ -462,6 +462,7 @@ pub struct Mamba3DecodeParams {
 ///
 /// # Safety
 /// All pointer arguments must point to valid GPU memory of the expected sizes.
+#[allow(unused_variables)]
 pub unsafe fn mamba3_decode(
     x_t:       *const half::f16,
     dt_t:      *const half::f16,
@@ -503,6 +504,7 @@ pub struct Mamba3PrefillParams {
 ///
 /// # Safety
 /// All pointer arguments must point to valid GPU memory of the expected sizes.
+#[allow(unused_variables)]
 pub unsafe fn mamba3_prefill(
     x:           *const half::f16,
     dt_proj_out: *const half::f16,
@@ -578,7 +580,7 @@ pub struct LatentMoeParams {
 ///
 /// # Safety
 /// All pointer arguments must point to valid GPU memory of the expected sizes.
-#[allow(clippy::too_many_arguments)]
+#[allow(clippy::too_many_arguments, unused_variables)]
 pub unsafe fn latent_moe_forward(
     x:             *const half::f16,
     w_compress:    *const half::f16,
@@ -654,6 +656,7 @@ pub struct DenseVerifParams {
 ///
 /// # Safety
 /// All pointer arguments must point to valid GPU memory of the expected sizes.
+#[allow(unused_variables)]
 pub unsafe fn dense_verification(
     q:          *const half::f16,
     k:          *const half::f16,
@@ -714,6 +717,7 @@ extern "C" {
 ///
 /// # Safety
 /// All pointer arguments must point to valid GPU memory of the expected sizes.
+#[allow(unused_variables)]
 pub unsafe fn rlm_depth_embed(
     x:         *mut half::f16,
     depth_emb: *const half::f16,
@@ -734,7 +738,7 @@ pub unsafe fn rlm_depth_embed(
 ///
 /// # Safety
 /// All pointer arguments must point to valid GPU memory of the expected sizes.
-#[allow(clippy::too_many_arguments)]
+#[allow(clippy::too_many_arguments, unused_variables)]
 pub unsafe fn rlm_confidence(
     x:        *const half::f16,
     w1:       *const half::f16,
@@ -760,6 +764,7 @@ pub unsafe fn rlm_confidence(
 ///
 /// # Safety
 /// All pointer arguments must point to valid GPU memory of the expected sizes.
+#[allow(unused_variables)]
 pub unsafe fn rlm_gate(
     gate:     *const f32,
     x_sub:    *const half::f16,
@@ -794,6 +799,7 @@ extern "C" {
 ///
 /// # Safety
 /// All pointer arguments must point to valid GPU memory of the expected sizes.
+#[allow(unused_variables)]
 pub unsafe fn linear_f16(
     x:        *const half::f16,
     w:        *const half::f16,
