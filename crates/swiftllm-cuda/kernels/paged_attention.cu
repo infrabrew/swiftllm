@@ -11,7 +11,7 @@
 
 // Constants
 constexpr int WARP_SIZE = 32;
-constexpr int MAX_THREADS_PER_BLOCK = 1024;
+// constexpr int MAX_THREADS_PER_BLOCK = 1024;  // reserved for future multi-block reduction
 
 // Utility functions
 __device__ __forceinline__ float warp_reduce_sum(float val) {
@@ -61,7 +61,8 @@ __global__ void paged_attention_v1_kernel(
     extern __shared__ char smem[];
     float* shared_query = reinterpret_cast<float*>(smem);
     float* shared_logits = shared_query + HEAD_DIM;
-    float* shared_output = shared_logits + BLOCK_SIZE;
+    // shared_output region reserved for future cross-warp output reduction
+    (void)(shared_logits + BLOCK_SIZE);
 
     // Load query into shared memory
     const scalar_t* query_ptr = query + seq_idx * q_stride + head_idx * HEAD_DIM;

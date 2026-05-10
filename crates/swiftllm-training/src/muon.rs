@@ -191,7 +191,7 @@ impl Muon {
         // Best-effort square-ish factorisation
         let sqrt = (n as f64).sqrt() as usize;
         for c in (1..=sqrt).rev() {
-            if n % c == 0 {
+            if n.is_multiple_of(c) {
                 return (n / c, c);
             }
         }
@@ -200,6 +200,7 @@ impl Muon {
 
     // ── Muon step (>=2D) ───────────────────────────────────────────────
 
+    #[allow(clippy::needless_range_loop)]
     fn step_muon(&mut self, param: &mut [f32], grad: &[f32], param_name: &str) {
         let n = param.len();
         let (rows, cols) = self.infer_shape(param_name, n);
@@ -514,7 +515,7 @@ mod tests {
         let mut param = vec![1.0f32; 16];
 
         for _ in 0..20 {
-            let grad: Vec<f32> = param.iter().map(|&p| p).collect();
+            let grad: Vec<f32> = param.to_vec();
             opt.step(&mut param, &grad, "w");
         }
 

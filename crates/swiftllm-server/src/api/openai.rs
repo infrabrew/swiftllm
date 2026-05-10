@@ -22,7 +22,6 @@
 //!
 //! Implements the OpenAI API specification for chat completions and completions.
 
-use crate::streaming::SseStream;
 use crate::AppState;
 use axum::{
     extract::{Path, State},
@@ -345,7 +344,7 @@ pub struct OpenAIApi;
 impl OpenAIApi {
     /// Generate a response ID
     fn generate_id(prefix: &str) -> String {
-        format!("{}-{}", prefix, Uuid::new_v4().to_string().replace("-", "")[..24].to_string())
+        format!("{}-{}", prefix, &Uuid::new_v4().to_string().replace("-", "")[..24])
     }
 
     /// Get system fingerprint
@@ -496,7 +495,7 @@ pub async fn chat_completions(
 
     // Add to engine
     match state.engine.add_request(inference_request) {
-        Ok(request_id) => {
+        Ok(_request_id) => {
             if request.stream {
                 // Streaming response
                 // In a real implementation, we would stream tokens as they're generated
@@ -618,11 +617,83 @@ pub async fn chat_completions(
     }
 }
 
+/// Validate completion request parameters
+fn validate_completion_request(request: &CompletionRequest) -> std::result::Result<(), ErrorResponse> {
+    if request.prompt.is_empty() {
+        return Err(ErrorResponse {
+            error: ErrorDetail {
+                message: "prompt must not be empty".to_string(),
+                error_type: "invalid_request_error".to_string(),
+                code: Some("invalid_prompt".to_string()),
+            },
+        });
+    }
+
+    if request.prompt.len() > 1_000_000 {
+        return Err(ErrorResponse {
+            error: ErrorDetail {
+                message: "prompt exceeds maximum length".to_string(),
+                error_type: "invalid_request_error".to_string(),
+                code: Some("prompt_too_long".to_string()),
+            },
+        });
+    }
+
+    if request.temperature < 0.0 || request.temperature > 2.0 {
+        return Err(ErrorResponse {
+            error: ErrorDetail {
+                message: "temperature must be between 0.0 and 2.0".to_string(),
+                error_type: "invalid_request_error".to_string(),
+                code: Some("invalid_temperature".to_string()),
+            },
+        });
+    }
+
+    if request.top_p < 0.0 || request.top_p > 1.0 {
+        return Err(ErrorResponse {
+            error: ErrorDetail {
+                message: "top_p must be between 0.0 and 1.0".to_string(),
+                error_type: "invalid_request_error".to_string(),
+                code: Some("invalid_top_p".to_string()),
+            },
+        });
+    }
+
+    if request.n == 0 || request.n > 128 {
+        return Err(ErrorResponse {
+            error: ErrorDetail {
+                message: "n must be between 1 and 128".to_string(),
+                error_type: "invalid_request_error".to_string(),
+                code: Some("invalid_n".to_string()),
+            },
+        });
+    }
+
+    if let Some(max_tokens) = request.max_tokens {
+        if max_tokens == 0 || max_tokens > 128_000 {
+            return Err(ErrorResponse {
+                error: ErrorDetail {
+                    message: "max_tokens must be between 1 and 128000".to_string(),
+                    error_type: "invalid_request_error".to_string(),
+                    code: Some("invalid_max_tokens".to_string()),
+                },
+            });
+        }
+    }
+
+    Ok(())
+}
+
 /// Completions endpoint (legacy)
 pub async fn completions(
-    State(state): State<AppState>,
+    State(_state): State<AppState>,
     Json(request): Json<CompletionRequest>,
 ) -> impl IntoResponse {
+    // Validate request
+    if let Err(error) = validate_completion_request(&request) {
+        return (StatusCode::BAD_REQUEST, Json(serde_json::json!(error))).into_response();
+    }
+
     let id = OpenAIApi::generate_id("cmpl");
     let created = Utc::now().timestamp();
 
@@ -643,7 +714,7 @@ pub async fn completions(
         },
     };
 
-    Json(response)
+    Json(response).into_response()
 }
 
 /// List models endpoint

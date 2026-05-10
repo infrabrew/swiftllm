@@ -316,7 +316,23 @@ elif $AIRGAP; then
     fi
 else
     info "Rust not found. Installing via rustup..."
-    curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --quiet
+    # Download rustup-init to a temp file instead of piping directly to sh.
+    # This is safer: we can inspect the file before execution and avoid
+    # partial-download attacks from network interruptions.
+    RUSTUP_TMP="$SCRIPT_DIR/.rustup-init-$$"
+    curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs -o "$RUSTUP_TMP" || fail "Failed to download rustup installer"
+    # Basic sanity: ensure file is non-empty and looks like a shell script
+    if [[ ! -s "$RUSTUP_TMP" ]]; then
+        rm -f "$RUSTUP_TMP"
+        fail "Downloaded rustup installer is empty — possible network error"
+    fi
+    if ! head -1 "$RUSTUP_TMP" | grep -q '^#!/'; then
+        rm -f "$RUSTUP_TMP"
+        fail "Downloaded file does not look like a shell script — aborting for safety"
+    fi
+    chmod +x "$RUSTUP_TMP"
+    "$RUSTUP_TMP" -y --quiet
+    rm -f "$RUSTUP_TMP"
     source "$HOME/.cargo/env" 2>/dev/null || true
     if command_exists rustc; then
         RUST_VERSION=$(rustc --version | awk '{print $2}')

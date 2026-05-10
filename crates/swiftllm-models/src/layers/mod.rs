@@ -22,18 +22,46 @@
 //!
 //! This module provides implementations of common transformer layers
 //! optimized for inference with PagedAttention.
+//!
+//! ## Mamba-3 layers (Phase 1)
+//! - [`mamba`] — Selective SSM with exponential-trapezoidal discretisation,
+//!   complex-valued states, and MIMO multi-head scan
+//! - [`moe`]   — LatentMoE with aux-loss-free dynamic bias balancing
+//!
+//! ## Reasoning layers (Phase 1 research extensions)
+//! - [`rlm`]                — Recursive Language Model with REPL state and
+//!   variable binding (fully missing prior to this commit)
+//! - [`dense_verification`] — Dense Verification layer: full-capacity eval pass
+//!   on drafted output against REPL execution trace (fully missing prior)
 
 pub mod attention;
+pub mod dense_verification;
 pub mod embedding;
+pub mod mamba;
 pub mod mlp;
+pub mod moe;
 pub mod normalization;
+pub mod rlm;
 
 pub use attention::{Attention, AttentionConfig, RotaryEmbedding};
+pub use dense_verification::{
+    DenseVerificationConfig, DenseVerificationLayer, VerificationResult, embed_repl_trace,
+};
 pub use embedding::{Embedding, LMHead};
-pub use mlp::{Mlp, MlpConfig, GatedMlp};
+pub use mamba::{
+    ComplexMambaState, DiscretizationMethod, MambaConfig, MambaConv1d, MambaLayer,
+    MambaRecurrentState, mimo_scan_step_cpu, selective_scan_cpu, selective_scan_step_cpu,
+};
+pub use mlp::{GatedMlp, Mlp, MlpConfig};
+pub use moe::{
+    DynamicBiasState, ExpertMlp, LatentMoeConfig, LatentMoeLayer, MoeConfig, MoeLayer,
+    Router, RouterOutput, RoutingStrategy, expert_choice_routing_cpu, top_k_routing_cpu,
+};
 pub use normalization::{LayerNorm, RMSNorm};
+pub use rlm::{
+    RecursionScheduler, ReplState, ReplStep, RlmConfig, RlmLayer, VariableBindingTable,
+};
 
-use swiftllm_core::config::DataType;
 use swiftllm_core::error::Result;
 use swiftllm_core::tensor::Tensor;
 
@@ -82,18 +110,50 @@ impl Linear {
         })
     }
 
-    /// Forward pass
+    /// Forward pass: output = input @ weight.T + bias
+    ///
+    /// Dispatch path:
+    ///   - CUDA tensor + `cuda` feature enabled → `linear_f16` CUDA kernel
+    ///   - Otherwise → `Tensor::zeros` stub (CPU placeholder, correct shape)
     pub fn forward(&self, input: &Tensor) -> Result<Tensor> {
-        // In a real implementation, this would:
-        // 1. Compute output = input @ weight.T
-        // 2. Add bias if present
+        
 
-        // Placeholder: return zeros with correct shape
         let input_dims = input.dims();
         let batch_dims = &input_dims[..input_dims.len() - 1];
         let mut output_shape = batch_dims.to_vec();
         output_shape.push(self.out_features);
 
+        // ── CUDA kernel path ──────────────────────────────────────────────────
+        #[cfg(feature = "cuda")]
+        if let Device::Cuda(_) = input.device() {
+            let m = batch_dims.iter().product::<usize>();
+            let n = self.out_features;
+            let k = self.in_features;
+
+            let out = Tensor::zeros(output_shape.clone(), input.dtype(), input.device())?;
+
+            let x_ptr  = input.cuda_data_ptr()
+                .ok_or_else(|| swiftllm_core::error::Error::Tensor("No CUDA ptr on input".into()))?;
+            let w_ptr  = self.weight.cuda_data_ptr()
+                .ok_or_else(|| swiftllm_core::error::Error::Tensor("No CUDA ptr on weight".into()))?;
+            let y_ptr  = out.cuda_data_ptr()
+                .ok_or_else(|| swiftllm_core::error::Error::Tensor("No CUDA ptr on output".into()))?;
+            let b_ptr  = self.bias.as_ref().and_then(|b| b.cuda_data_ptr());
+
+            // SAFETY: ptrs are valid GPU memory owned by live Tensors; dims verified above.
+            unsafe {
+                swiftllm_cuda::bindings::linear_f16(
+                    x_ptr as *const half::f16,
+                    w_ptr as *const half::f16,
+                    b_ptr.map(|p| p as *const half::f16),
+                    y_ptr as *mut half::f16,
+                    m, n, k,
+                ).map_err(|e| swiftllm_core::error::Error::Device(format!("linear_f16: {}", e)))?;
+            }
+            return Ok(out);
+        }
+
+        // ── CPU placeholder path ──────────────────────────────────────────────
         Tensor::zeros(output_shape, input.dtype(), input.device())
     }
 

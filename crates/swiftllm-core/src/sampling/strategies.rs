@@ -23,7 +23,6 @@
 //! This module provides composable sampling strategies that can be
 //! chained together to create complex sampling pipelines.
 
-use crate::error::Result;
 use crate::types::TokenId;
 
 /// Trait for sampling strategies
@@ -389,8 +388,8 @@ impl SamplerChain {
         }
     }
 
-    /// Add a sampler to the chain
-    pub fn add<S: Sampler + 'static>(mut self, sampler: S) -> Self {
+    /// Add a sampler to the chain (builder pattern)
+    pub fn with_sampler<S: Sampler + 'static>(mut self, sampler: S) -> Self {
         self.samplers.push(Box::new(sampler));
         self
     }
@@ -415,6 +414,7 @@ impl Default for SamplerChain {
 }
 
 /// Create a standard sampling chain from parameters
+#[allow(dead_code)]
 pub fn create_sampler_chain(
     temperature: f32,
     top_k: i32,
@@ -426,32 +426,32 @@ pub fn create_sampler_chain(
 
     // Add repetition penalty first
     if repetition_penalty != 1.0 {
-        chain = chain.add(RepetitionPenalty::new(repetition_penalty));
+        chain = chain.with_sampler(RepetitionPenalty::new(repetition_penalty));
     }
 
     // Temperature scaling
     if temperature > 0.0 && temperature != 1.0 {
-        chain = chain.add(TemperatureSampler::new(temperature));
+        chain = chain.with_sampler(TemperatureSampler::new(temperature));
     }
 
     // Min-p filtering (before top-k/top-p)
     if min_p > 0.0 {
-        chain = chain.add(MinPSampler::new(min_p));
+        chain = chain.with_sampler(MinPSampler::new(min_p));
     }
 
     // Top-k filtering
     if top_k > 0 {
-        chain = chain.add(TopKSampler::new(top_k as usize));
+        chain = chain.with_sampler(TopKSampler::new(top_k as usize));
     }
 
     // Top-p filtering
     if top_p < 1.0 && top_p > 0.0 {
-        chain = chain.add(TopPSampler::new(top_p));
+        chain = chain.with_sampler(TopPSampler::new(top_p));
     }
 
     // Greedy if temperature is 0
     if temperature == 0.0 {
-        chain = chain.add(GreedySampler::new());
+        chain = chain.with_sampler(GreedySampler::new());
     }
 
     chain
@@ -483,9 +483,9 @@ mod tests {
         // Only top 2 (indices 1 and 3) should remain
         assert!(logits[1].is_finite());
         assert!(logits[3].is_finite());
-        assert!(logits[0].is_neg_infinity());
-        assert!(logits[2].is_neg_infinity());
-        assert!(logits[4].is_neg_infinity());
+        assert_eq!(logits[0], f32::NEG_INFINITY);
+        assert_eq!(logits[2], f32::NEG_INFINITY);
+        assert_eq!(logits[4], f32::NEG_INFINITY);
     }
 
     #[test]
@@ -516,9 +516,9 @@ mod tests {
     #[test]
     fn test_sampler_chain() {
         let chain = SamplerChain::new()
-            .add(RepetitionPenalty::new(1.5))
-            .add(TemperatureSampler::new(0.8))
-            .add(TopKSampler::new(3));
+            .with_sampler(RepetitionPenalty::new(1.5))
+            .with_sampler(TemperatureSampler::new(0.8))
+            .with_sampler(TopKSampler::new(3));
 
         let names = chain.names();
         assert_eq!(names, vec!["repetition_penalty", "temperature", "top_k"]);

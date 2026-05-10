@@ -26,9 +26,16 @@ authors.workspace = true
 license.workspace = true
 description = "Model implementations for SwiftLLM"
 
+[features]
+# Enable native CUDA kernel dispatch in model layers.
+# When enabled, Linear::forward, MambaLayer::forward, etc. call the compiled
+# .cu kernels via swiftllm-cuda instead of returning Tensor::zeros stubs.
+cuda = ["swiftllm-cuda"]
+
 [dependencies]
 # Internal crates
 swiftllm-core = { path = "../swiftllm-core" }
+swiftllm-cuda = { path = "../swiftllm-cuda", optional = true }
 
 # Serialization
 serde = { workspace = true }

@@ -90,7 +90,7 @@ cudarc = { version = "0.12", features = ["cuda-12040"] }
 # Web server
 axum = { version = "0.7", features = ["ws", "macros"] }
 tower = "0.4"
-tower-http = { version = "0.5", features = ["cors", "trace", "compression-gzip"] }
+tower-http = { version = "0.5", features = ["cors", "trace", "compression-gzip", "limit"] }
 hyper = { version = "1.1", features = ["full"] }
 
 # Logging and tracing

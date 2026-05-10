@@ -187,7 +187,7 @@ impl FusedAddRMSNorm {
     }
 
     /// Forward pass with residual
-    pub fn forward(&self, input: &Tensor, residual: &Tensor) -> Result<(Tensor, Tensor)> {
+    pub fn forward(&self, input: &Tensor, _residual: &Tensor) -> Result<(Tensor, Tensor)> {
         // Returns (normalized output, new residual)
         // new_residual = input + residual
         // output = rmsnorm(new_residual)

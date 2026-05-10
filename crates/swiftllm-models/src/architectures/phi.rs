@@ -129,6 +129,7 @@ impl TransformerModel for PhiModel {
     }
 }
 
+#[allow(dead_code)]
 struct PhiDecoderLayer {
     layer_idx: usize,
     self_attn: PhiAttention,
@@ -170,13 +171,14 @@ impl PhiDecoderLayer {
 
         let normed = self.input_layernorm.forward(hidden_states)?;
         let attn_output = self.self_attn.forward(&normed, positions, cache_metadata, is_prefill)?;
-        let mlp_output = self.mlp.forward(&normed)?;
+        let _mlp_output = self.mlp.forward(&normed)?;
 
         // In real implementation: hidden_states + attn_output + mlp_output
         Ok(attn_output)
     }
 }
 
+#[allow(dead_code)]
 struct PhiAttention {
     q_proj: Linear,
     k_proj: Linear,
@@ -270,9 +272,9 @@ impl PhiAttention {
     ) -> Result<Tensor> {
         let q = self.q_proj.forward(hidden_states)?;
         let k = self.k_proj.forward(hidden_states)?;
-        let v = self.v_proj.forward(hidden_states)?;
+        let _v = self.v_proj.forward(hidden_states)?;
 
-        let (q, k) = self.rotary_emb.apply(&q, &k, positions)?;
+        let (q, _k) = self.rotary_emb.apply(&q, &k, positions)?;
 
         self.dense.forward(&q)
     }

@@ -32,8 +32,7 @@
 use crate::config::DataType;
 use crate::error::{Error, Result};
 use crate::memory::block_manager::PhysicalBlockId;
-use crate::tensor::{Device, Shape, Tensor};
-use std::collections::HashMap;
+use crate::tensor::Tensor;
 
 /// Configuration for PagedAttention
 #[derive(Debug, Clone)]
@@ -104,6 +103,7 @@ impl PagedAttentionConfig {
 
 /// PagedAttention operator
 #[derive(Debug)]
+#[allow(dead_code)]
 pub struct PagedAttention {
     /// Configuration
     config: PagedAttentionConfig,
@@ -175,10 +175,10 @@ impl PagedAttention {
         &self,
         query: &Tensor,
         key: &Tensor,
-        value: &Tensor,
-        key_cache: &mut Tensor,
-        value_cache: &mut Tensor,
-        slot_mapping: &[usize],
+        _value: &Tensor,
+        _key_cache: &mut Tensor,
+        _value_cache: &mut Tensor,
+        _slot_mapping: &[usize],
     ) -> Result<Tensor> {
         // Validate shapes
         let q_dims = query.dims();
@@ -222,16 +222,17 @@ impl PagedAttention {
     ///
     /// # Returns
     /// * Output tensor [batch_size, 1, num_heads, head_dim]
+    #[allow(clippy::too_many_arguments)]
     pub fn decode(
         &self,
         query: &Tensor,
-        key: &Tensor,
-        value: &Tensor,
-        key_cache: &mut Tensor,
-        value_cache: &mut Tensor,
-        block_tables: &[Vec<PhysicalBlockId>],
-        context_lens: &[usize],
-        slot_mapping: &[usize],
+        _key: &Tensor,
+        _value: &Tensor,
+        _key_cache: &mut Tensor,
+        _value_cache: &mut Tensor,
+        _block_tables: &[Vec<PhysicalBlockId>],
+        _context_lens: &[usize],
+        _slot_mapping: &[usize],
     ) -> Result<Tensor> {
         let q_dims = query.dims();
 
@@ -263,9 +264,9 @@ impl PagedAttention {
     pub fn reshape_and_cache(
         &self,
         key: &Tensor,
-        value: &Tensor,
-        key_cache: &mut Tensor,
-        value_cache: &mut Tensor,
+        _value: &Tensor,
+        _key_cache: &mut Tensor,
+        _value_cache: &mut Tensor,
         slot_mapping: &[usize],
     ) -> Result<()> {
         // This would copy key/value data into the cache at the specified slots

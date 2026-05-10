@@ -28,7 +28,6 @@ use crate::error::{Error, Result};
 use crate::memory::block_manager::{BlockManager, PhysicalBlockId};
 use crate::tensor::{Device, Shape, Tensor};
 use crate::types::SequenceId;
-use std::collections::HashMap;
 use std::sync::Arc;
 
 /// Configuration for KV cache

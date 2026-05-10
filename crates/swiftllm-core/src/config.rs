@@ -27,7 +27,7 @@ use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
 /// Main engine configuration
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct EngineConfig {
     /// Model configuration
     pub model: ModelConfig,
@@ -43,18 +43,6 @@ pub struct EngineConfig {
 
     /// Speculative decoding configuration (optional)
     pub speculative: Option<SpeculativeConfig>,
-}
-
-impl Default for EngineConfig {
-    fn default() -> Self {
-        Self {
-            model: ModelConfig::default(),
-            scheduler: SchedulerConfig::default(),
-            memory: MemoryConfig::default(),
-            device: DeviceConfig::default(),
-            speculative: None,
-        }
-    }
 }
 
 impl EngineConfig {
@@ -170,6 +158,15 @@ pub enum ModelArchitecture {
     Gemma,
     /// DeepSeek
     DeepSeek,
+    /// Jamba: Hybrid Mamba-SSM + Transformer + (optional) MoE
+    /// AI21 Labs ICLR 2025 — 1:7 attention ratio, 256K context, single 80GB GPU
+    Jamba,
+    /// Pure Mamba-2/3 SSM architecture (no attention layers)
+    Mamba,
+    /// Zamba: weight-shared attention + Mamba hybrid (Zyphra 2024)
+    Zamba,
+    /// Nemotron-H: NVIDIA hybrid 56B — matches Llama-3.1-70B at 3x throughput
+    NemotronH,
 }
 
 /// Data types for model weights and computation
@@ -193,14 +190,38 @@ pub enum DataType {
 }
 
 impl DataType {
-    /// Get the size in bytes for this data type
+    /// Get the size in bytes for one element of this data type.
+    ///
+    /// **Note:** For sub-byte types like `Int4`, this returns 1 because
+    /// elements are packed into bytes (2 elements per byte). Use
+    /// [`size_bytes_for_elements`] to compute the correct byte count
+    /// for a given number of elements.
     pub fn size_bytes(&self) -> usize {
         match self {
             DataType::Float32 => 4,
             DataType::Float16 | DataType::BFloat16 => 2,
             DataType::Float8E4M3 | DataType::Float8E5M2 | DataType::Int8 => 1,
-            DataType::Int4 => 1, // Packed, actual size is 0.5 bytes per element
+            DataType::Int4 => 1, // Packed: 2 elements per byte (see size_bytes_for_elements)
         }
+    }
+
+    /// Get the bit width of a single element.
+    pub fn element_bit_width(&self) -> usize {
+        match self {
+            DataType::Float32 => 32,
+            DataType::Float16 | DataType::BFloat16 => 16,
+            DataType::Float8E4M3 | DataType::Float8E5M2 | DataType::Int8 => 8,
+            DataType::Int4 => 4,
+        }
+    }
+
+    /// Compute the number of bytes needed to store `num_elements` values.
+    ///
+    /// This correctly handles sub-byte packing (e.g., INT4 packs 2 elements
+    /// per byte, rounding up for odd counts).
+    pub fn size_bytes_for_elements(&self, num_elements: usize) -> usize {
+        let bits = num_elements * self.element_bit_width();
+        bits.div_ceil(8)
     }
 }
 

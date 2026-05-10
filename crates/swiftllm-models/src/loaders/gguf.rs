@@ -26,7 +26,7 @@ use super::WeightLoader;
 use crate::ModelConfig;
 use std::collections::HashMap;
 use std::fs::File;
-use std::io::{BufReader, Read, Seek, SeekFrom};
+use std::io::{BufReader, Read, Seek};
 use std::path::{Path, PathBuf};
 use swiftllm_core::config::{DataType, ModelArchitecture};
 use swiftllm_core::error::{Error, Result};
@@ -96,7 +96,7 @@ impl GgufType {
         }
     }
 
-    fn to_dtype(&self) -> DataType {
+    fn as_dtype(&self) -> DataType {
         match self {
             Self::F32 => DataType::Float32,
             Self::F16 => DataType::Float16,
@@ -108,6 +108,7 @@ impl GgufType {
         }
     }
 
+    #[allow(dead_code)]
     fn block_size(&self) -> usize {
         match self {
             Self::F32 | Self::I8 | Self::I16 | Self::I32 | Self::I64 => 1,
@@ -155,6 +156,7 @@ impl GgufValue {
         }
     }
 
+    #[allow(dead_code)]
     fn as_f32(&self) -> Option<f32> {
         match self {
             Self::Float32(v) => Some(*v),
@@ -173,6 +175,7 @@ impl GgufValue {
 
 /// Tensor info from GGUF file
 #[derive(Debug, Clone)]
+#[allow(dead_code)]
 struct GgufTensorInfo {
     name: String,
     n_dims: u32,
@@ -309,7 +312,7 @@ impl WeightLoader for GgufLoader {
             let numel: usize = shape.iter().product();
 
             // Calculate byte size based on dtype
-            let dtype = info.dtype.to_dtype();
+            let dtype = info.dtype.as_dtype();
             let bytes_per_elem = dtype.size_bytes();
             let byte_len = numel * bytes_per_elem;
 
@@ -337,7 +340,7 @@ impl WeightLoader for GgufLoader {
         let offset = (self.data_offset + info.offset) as usize;
         let shape: Vec<usize> = info.dims.iter().map(|&d| d as usize).collect();
         let numel: usize = shape.iter().product();
-        let dtype = info.dtype.to_dtype();
+        let dtype = info.dtype.as_dtype();
         let byte_len = numel * dtype.size_bytes();
 
         let end = offset.checked_add(byte_len).ok_or_else(|| {
@@ -480,7 +483,7 @@ fn read_value<R: Read>(reader: &mut R) -> Result<GgufValue> {
         8 => Ok(GgufValue::String(read_string(reader)?)),
         9 => {
             // Array
-            let arr_type = read_u32(reader)?;
+            let _arr_type = read_u32(reader)?;
             let arr_len = read_u64(reader)? as usize;
             let mut arr = Vec::with_capacity(arr_len);
             for _ in 0..arr_len {

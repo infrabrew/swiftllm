@@ -27,7 +27,6 @@
 pub mod api;
 pub mod streaming;
 
-use api::openai::OpenAIApi;
 use axum::{
     body::Body,
     extract::State,
@@ -39,7 +38,8 @@ use axum::{
 };
 use std::net::SocketAddr;
 use std::sync::Arc;
-use swiftllm_core::config::{EngineConfig, ServerConfig};
+use subtle::ConstantTimeEq;
+use swiftllm_core::config::ServerConfig;
 use swiftllm_core::engine::Engine;
 use swiftllm_core::error::Result;
 use tower_http::cors::{Any, CorsLayer};
@@ -67,9 +67,9 @@ async fn auth_middleware(
     req: Request<Body>,
     next: Next,
 ) -> std::result::Result<Response, StatusCode> {
-    // Skip auth for health check and metrics
+    // Skip auth for health check only — metrics requires auth
     let path = req.uri().path();
-    if path == "/health" || path == "/v1/health" || path == "/metrics" {
+    if path == "/health" || path == "/v1/health" {
         return Ok(next.run(req).await);
     }
 
@@ -88,7 +88,14 @@ async fn auth_middleware(
     match auth_header {
         Some(header_val) => {
             let token = header_val.strip_prefix("Bearer ").unwrap_or(header_val);
-            if token == expected_key {
+            // Constant-time comparison to prevent timing side-channel attacks.
+            // We first check lengths (which leaks only the length, not content),
+            // then compare bytes in constant time.
+            let token_bytes = token.as_bytes();
+            let expected_bytes = expected_key.as_bytes();
+            let length_match = token_bytes.len() == expected_bytes.len();
+            let content_match = token_bytes.ct_eq(expected_bytes).into();
+            if length_match && content_match {
                 Ok(next.run(req).await)
             } else {
                 tracing::warn!("Invalid API key from {:?}", req.headers().get("x-forwarded-for"));
@@ -124,10 +131,32 @@ async fn security_headers(req: Request<Body>, next: Next) -> Response {
 
 /// Create the API router
 pub fn create_router(state: AppState) -> Router {
-    let cors = CorsLayer::new()
-        .allow_origin(Any)
-        .allow_methods([Method::GET, Method::POST, Method::OPTIONS])
-        .allow_headers([header::CONTENT_TYPE, header::AUTHORIZATION]);
+    // Build CORS layer from config — default to localhost-only, not Any.
+    // This prevents cross-origin credential theft from arbitrary websites.
+    let cors = {
+        let origins = &state.config.cors_origins;
+        let is_wildcard = origins.iter().any(|o| o == "*");
+        if is_wildcard {
+            tracing::warn!(
+                "CORS configured with wildcard origin ('*'). \
+                 This allows ANY website to make cross-origin requests to this server. \
+                 Consider restricting cors_origins in production."
+            );
+            CorsLayer::new()
+                .allow_origin(Any)
+                .allow_methods([Method::GET, Method::POST, Method::OPTIONS])
+                .allow_headers([header::CONTENT_TYPE, header::AUTHORIZATION])
+        } else {
+            let allowed: Vec<_> = origins
+                .iter()
+                .filter_map(|o| o.parse::<axum::http::HeaderValue>().ok())
+                .collect();
+            CorsLayer::new()
+                .allow_origin(allowed)
+                .allow_methods([Method::GET, Method::POST, Method::OPTIONS])
+                .allow_headers([header::CONTENT_TYPE, header::AUTHORIZATION])
+        }
+    };
 
     Router::new()
         // Health check
@@ -251,6 +280,21 @@ pub async fn start_server(
     tracing::info!("Starting server on {}", addr);
     if config.api_key.is_some() {
         tracing::info!("API key authentication enabled");
+    } else {
+        tracing::warn!(
+            "No API key configured — all endpoints are unauthenticated. \
+             Set --api-key or SWIFTLLM_API_KEY for production use."
+        );
+    }
+
+    // Warn about network exposure
+    if config.host == "0.0.0.0" {
+        tracing::warn!(
+            "Server is binding to 0.0.0.0 (all interfaces). \
+             This exposes the server on all network interfaces including public ones. \
+             Without TLS, API keys and inference data are transmitted in plaintext. \
+             Use --host 127.0.0.1 for local-only access."
+        );
     }
 
     // Create listener

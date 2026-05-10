@@ -25,10 +25,8 @@
 //! the target model, potentially accelerating inference.
 
 use crate::error::{Error, Result};
-use crate::sampling::TokenSampler;
-use crate::types::{Token, TokenId};
+use crate::types::TokenId;
 use rand::Rng;
-use std::sync::Arc;
 
 /// Configuration for speculative decoding
 #[derive(Debug, Clone)]
@@ -312,6 +310,7 @@ impl SpeculativeStats {
 
 /// Ngram-based speculation (no draft model required)
 #[derive(Debug)]
+#[allow(dead_code)]
 pub struct NgramSpeculator {
     /// Ngram lookup table
     ngram_table: std::collections::HashMap<Vec<TokenId>, Vec<(TokenId, usize)>>,
@@ -323,6 +322,7 @@ pub struct NgramSpeculator {
     max_candidates: usize,
 }
 
+#[allow(dead_code)]
 impl NgramSpeculator {
     /// Create a new ngram speculator
     pub fn new(max_ngram_size: usize, max_candidates: usize) -> Self {
@@ -339,7 +339,7 @@ impl NgramSpeculator {
             let start = context.len() - n;
             let ngram: Vec<TokenId> = context[start..].to_vec();
 
-            let entry = self.ngram_table.entry(ngram).or_insert_with(Vec::new);
+            let entry = self.ngram_table.entry(ngram).or_default();
 
             // Update count for this token
             if let Some(pos) = entry.iter().position(|(t, _)| *t == next_token) {

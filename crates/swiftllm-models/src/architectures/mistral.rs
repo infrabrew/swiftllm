@@ -140,6 +140,7 @@ impl TransformerModel for MistralModel {
 }
 
 /// Mistral decoder layer
+#[allow(dead_code)]
 struct MistralDecoderLayer {
     layer_idx: usize,
     self_attn: MistralAttention,
@@ -193,6 +194,7 @@ impl MistralDecoderLayer {
 }
 
 /// Mistral attention with sliding window
+#[allow(dead_code)]
 struct MistralAttention {
     q_proj: Linear,
     k_proj: Linear,
@@ -258,14 +260,14 @@ impl MistralAttention {
         &self,
         hidden_states: &Tensor,
         positions: &[usize],
-        cache_metadata: &BatchedCacheMetadata,
-        is_prefill: bool,
+        _cache_metadata: &BatchedCacheMetadata,
+        _is_prefill: bool,
     ) -> Result<Tensor> {
         let q = self.q_proj.forward(hidden_states)?;
         let k = self.k_proj.forward(hidden_states)?;
-        let v = self.v_proj.forward(hidden_states)?;
+        let _v = self.v_proj.forward(hidden_states)?;
 
-        let (q, k) = self.rotary_emb.apply(&q, &k, positions)?;
+        let (q, _k) = self.rotary_emb.apply(&q, &k, positions)?;
 
         // Apply sliding window attention
         // In real implementation, attention mask would be modified for sliding window
@@ -312,7 +314,7 @@ impl MistralMLP {
 
     fn forward(&self, hidden_states: &Tensor) -> Result<Tensor> {
         let gate = self.gate_proj.forward(hidden_states)?;
-        let up = self.up_proj.forward(hidden_states)?;
+        let _up = self.up_proj.forward(hidden_states)?;
         self.down_proj.forward(&gate)
     }
 }

@@ -31,8 +31,7 @@
 use crate::error::{Error, Result};
 use crate::types::SequenceId;
 use parking_lot::{Mutex, RwLock};
-use std::collections::{HashMap, HashSet, VecDeque};
-use std::sync::Arc;
+use std::collections::{HashMap, VecDeque};
 
 /// Physical block ID
 pub type PhysicalBlockId = usize;
@@ -125,6 +124,7 @@ impl PhysicalBlock {
 
 /// Block allocator for GPU or CPU memory
 #[derive(Debug)]
+#[allow(dead_code)]
 pub struct BlockAllocator {
     /// Total number of blocks
     num_blocks: usize,
@@ -213,10 +213,8 @@ impl BlockAllocator {
 
     /// Free a block
     pub fn free(&mut self, block_id: PhysicalBlockId) {
-        if block_id < self.num_blocks {
-            if self.blocks[block_id].dec_ref() {
-                self.free_blocks.push_back(block_id);
-            }
+        if block_id < self.num_blocks && self.blocks[block_id].dec_ref() {
+            self.free_blocks.push_back(block_id);
         }
     }
 
@@ -257,6 +255,7 @@ impl BlockAllocator {
 
 /// Block manager that coordinates allocation across GPU and CPU
 #[derive(Debug)]
+#[allow(dead_code)]
 pub struct BlockManager {
     /// Block size in tokens
     block_size: usize,
@@ -291,6 +290,7 @@ pub struct BlockManager {
 
 impl BlockManager {
     /// Create a new block manager
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         block_size: usize,
         num_gpu_blocks: usize,
@@ -338,10 +338,7 @@ impl BlockManager {
 
     /// Calculate number of blocks needed for given number of tokens
     pub fn blocks_needed(&self, num_tokens: usize) -> usize {
-        if num_tokens == 0 {
-            return 0;
-        }
-        (num_tokens + self.block_size - 1) / self.block_size
+        num_tokens.div_ceil(self.block_size)
     }
 
     /// Validate that max_seq_len can be represented in the block table.
@@ -376,7 +373,7 @@ impl BlockManager {
         let needed = self.blocks_needed(num_tokens);
 
         let mut tables = self.block_tables.write();
-        let table = tables.entry(seq_id).or_insert_with(BlockTable::new);
+        let table = tables.entry(seq_id).or_default();
 
         let current = table.len();
         if needed <= current {

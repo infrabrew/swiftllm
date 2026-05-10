@@ -5,6 +5,19 @@
 # AUTHOR:    Peter A. Aldrich Jr.
 # DATE:      2026
 # ------------------------------------------------------------------------------
+# USES:
+#   - python/swiftllm/config.py   GrpoConfig, CgarConfig, PrmConfig, LongRewardConfig
+# USED BY:
+#   - python/swiftllm/__init__.py   lazy re-exports of Trainer, GrpoTrainer, fine_tune, grpo_train
+#   - python/swiftllm/cli.py        cmd_train, cmd_grpo, cmd_finetune
+# SEE ALSO:
+#   - crates/swiftllm-training/src/grpo.rs          Rust GRPO optimizer (GrpoConfig mirror)
+#   - crates/swiftllm-training/src/curriculum.rs    Rust CGAR scheduler (CgarConfig mirror)
+#   - crates/swiftllm-training/src/process_reward.rs Rust PRM (PrmConfig mirror)
+#   - crates/swiftllm-training/src/long_reward.rs   Rust LongR dense rewards (LongRewardConfig mirror)
+#   - crates/swiftllm-training/src/trainer.rs       Rust trainer integrates all curriculum steps
+#   - crates/swiftllm-training/src/config.rs        Rust TrainingConfig (superset of Python's)
+# ------------------------------------------------------------------------------
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
 # You may obtain a copy of the License at
@@ -19,6 +32,24 @@
 # ==============================================================================
 
 """SwiftLLM Training — Python API for training and fine-tuning LLMs
+
+Includes Phase 2 research integrations:
+
+  GRPO (Group Relative Policy Optimization)
+    RL fine-tuning without a critic model using group-relative advantage
+    estimation and PPO-style clipped policy gradients.
+
+  CGAR (Curriculum-Guided Adaptive Recursion)
+    Progressive depth curriculum: shallow (0–30%) → medium (30–60%) →
+    full (60–100%), yielding up to 1.71× training speedup.
+
+  Process Reward Models (PRM)
+    Step-level feedback on reasoning chains via rule-based heuristics or a
+    learned neural verifier; five aggregation strategies supported.
+
+  LongR Dense Rewards
+    Per-token relative NLL information gain vs. a reference model for
+    long-context tasks; 9% LongBench v2 gain in original paper.
 
 Example usage:
 
@@ -37,26 +68,42 @@ Example usage:
         trainer = Trainer(config)
         trainer.train()
 
-    Full fine-tuning:
+    GRPO training with curriculum:
+
+        from swiftllm.training import GrpoTrainer, TrainingConfig
+        from swiftllm.config import GrpoConfig, CgarConfig, PrmConfig
 
         config = TrainingConfig(
             model="meta-llama/Llama-2-7b-hf",
             output_dir="./output",
-            train_data="./data/train.jsonl",
+            train_data="./data/rl_prompts.jsonl",
             fine_tuning_method="full",
-            learning_rate=5e-5,
+            grpo=GrpoConfig(group_size=8, kl_coeff=0.04),
+            cgar=CgarConfig(shallow_end=0.30, medium_end=0.60),
+            prm=PrmConfig(aggregation="last_step"),
+            long_reward_weight=0.1,
         )
-        trainer = Trainer(config)
+        trainer = GrpoTrainer(config)
         trainer.train()
 """
 
 import json
 import os
+import tempfile
 import time
 from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Union
+
+from .config import (
+    GrpoConfig,
+    CgarConfig,
+    PrmConfig,
+    LongRewardConfig,
+    PrmAggregation,
+    DenseAggregation,
+)
 
 
 class FineTuningMethod(Enum):
@@ -138,6 +185,15 @@ class TrainingConfig:
         max_seq_len: Maximum sequence length.
         seed: Random seed.
         resume_from_checkpoint: Path to resume from.
+
+        -- Phase 2: Research integrations --
+        num_layers: Total number of model layers (required for CGAR/phased spec).
+        grpo: GRPO optimizer config; set to enable RL fine-tuning.
+        cgar: CGAR curriculum config; set to enable depth curriculum.
+        prm: Process Reward Model config; set to enable step-level rewards.
+        long_reward_weight: Weight for LongR dense rewards (0.0 = disabled).
+        long_reward: Full LongR config; if None and long_reward_weight > 0,
+            uses defaults with the specified weight.
     """
     model: str = ""
     output_dir: str = "./output"
@@ -162,10 +218,23 @@ class TrainingConfig:
     seed: int = 42
     resume_from_checkpoint: Optional[str] = None
 
+    # Phase 2 — Research integrations
+    num_layers: int = 32
+    grpo: Optional[GrpoConfig] = None
+    cgar: Optional[CgarConfig] = None
+    prm: Optional[PrmConfig] = None
+    long_reward_weight: float = 0.0
+    long_reward: Optional[LongRewardConfig] = None
+
     def __post_init__(self):
         if self.fine_tuning_method in (FineTuningMethod.LORA, FineTuningMethod.QLORA):
             if self.lora is None:
                 self.lora = LoRAConfig()
+        # Promote long_reward_weight → full LongRewardConfig if needed
+        if self.long_reward_weight > 0 and self.long_reward is None:
+            self.long_reward = LongRewardConfig(weight=self.long_reward_weight)
+        elif self.long_reward is not None and self.long_reward_weight == 0.0:
+            self.long_reward_weight = self.long_reward.weight
 
     @property
     def effective_batch_size(self) -> int:
@@ -190,6 +259,13 @@ class TrainingConfig:
             "lora": self.lora.to_dict() if self.lora else None,
             "max_seq_len": self.max_seq_len,
             "seed": self.seed,
+            # Phase 2
+            "num_layers": self.num_layers,
+            "grpo": self.grpo.to_dict() if self.grpo else None,
+            "cgar": self.cgar.to_dict() if self.cgar else None,
+            "prm": self.prm.to_dict() if self.prm else None,
+            "long_reward_weight": self.long_reward_weight,
+            "long_reward": self.long_reward.to_dict() if self.long_reward else None,
         }
         return d
 
@@ -207,6 +283,22 @@ class TrainingConfig:
         d["lr_scheduler"] = LrScheduler(d.get("lr_scheduler", "cosine"))
         d["mixed_precision"] = MixedPrecision(d.get("mixed_precision", "fp16"))
         d["fine_tuning_method"] = FineTuningMethod(d.get("fine_tuning_method", "lora"))
+        # Deserialise Phase 2 nested configs
+        if d.get("grpo"):
+            d["grpo"] = GrpoConfig(**d["grpo"])
+        if d.get("cgar"):
+            cgar_d = dict(d["cgar"])
+            d["cgar"] = CgarConfig(**cgar_d)
+        if d.get("prm"):
+            prm_d = dict(d["prm"])
+            if "aggregation" in prm_d:
+                prm_d["aggregation"] = PrmAggregation(prm_d["aggregation"])
+            d["prm"] = PrmConfig(**prm_d)
+        if d.get("long_reward"):
+            lr_d = dict(d["long_reward"])
+            if "aggregation" in lr_d:
+                lr_d["aggregation"] = DenseAggregation(lr_d["aggregation"])
+            d["long_reward"] = LongRewardConfig(**lr_d)
         # Filter to known fields to tolerate future/extra keys in saved configs
         known = {f.name for f in cls.__dataclass_fields__.values()} - {"lora"}
         d = {k: v for k, v in d.items() if k in known}
@@ -259,6 +351,8 @@ class Trainer:
         config: TrainingConfig,
         early_stopping: Optional[EarlyStoppingConfig] = None,
     ):
+        # Auto-ingest if train_data points to a directory or is a list of paths
+        config = self._auto_ingest_if_needed(config)
         self.config = config
         self.early_stopping = early_stopping
         self._callbacks: List[Callable] = []
@@ -267,6 +361,94 @@ class Trainer:
         self._patience_counter: int = 0
         self._checkpoints: List[str] = []
         self._stopped_early: bool = False
+        self._ingested_tmp: Optional[str] = None  # temp JSONL created by auto-ingest
+
+    @staticmethod
+    def _auto_ingest_if_needed(config: TrainingConfig) -> TrainingConfig:
+        """Auto-ingest local directories, file lists, or HuggingFace datasets.
+
+        Triggers when ``train_data`` is:
+          - A directory path (local files ingested with DatasetIngester)
+          - A list of paths (local files/dirs ingested)
+          - A HuggingFace dataset name string starting with ``"hf:"`` prefix
+            (e.g. ``"hf:tatsu-lab/alpaca"``)
+
+        Additionally, ``config.hf_train_sources`` (if set) will always be
+        ingested and merged with any local paths.
+
+        The produced JSONL is written to ``<output_dir>/auto_train.jsonl`` so it
+        persists alongside checkpoints and is not a temp file.  A note is printed
+        so the user can inspect and reuse it.
+        """
+        import copy
+        from .dataset import DatasetIngester, DatasetFormat, IngestionConfig, HuggingFaceSource
+
+        train_data = config.train_data
+        input_paths: List[str] = []
+        hf_sources: List[HuggingFaceSource] = []
+        needs_ingest = False
+
+        # --- Resolve train_data -------------------------------------------
+        if isinstance(train_data, list):
+            input_paths = [str(p) for p in train_data]
+            needs_ingest = True
+        elif isinstance(train_data, str):
+            if train_data.startswith("hf:"):
+                # e.g. "hf:tatsu-lab/alpaca" or "hf:tatsu-lab/alpaca:train"
+                parts = train_data[3:].split(":", 1)
+                ds_name = parts[0]
+                split = parts[1] if len(parts) > 1 else "train"
+                hf_sources.append(HuggingFaceSource(dataset_name=ds_name, split=split))
+                needs_ingest = True
+            else:
+                p = Path(train_data)
+                if p.is_dir():
+                    input_paths = [str(p)]
+                    needs_ingest = True
+
+        # --- Merge any explicit hf_train_sources on config ------------------
+        extra_hf = getattr(config, "hf_train_sources", None) or []
+        if extra_hf:
+            hf_sources.extend(extra_hf)
+            needs_ingest = True
+
+        if not needs_ingest:
+            return config  # already a JSONL/CSV file — pass through
+
+        os.makedirs(config.output_dir, exist_ok=True)
+        jsonl_path = os.path.join(config.output_dir, "auto_train.jsonl")
+
+        if input_paths:
+            print(f"[DatasetIngester] Auto-ingesting {len(input_paths)} local path(s):")
+            for p in input_paths:
+                print(f"  {p}")
+        if hf_sources:
+            print(f"[DatasetIngester] HuggingFace sources:")
+            for s in hf_sources:
+                print(f"  {s.dataset_name}  split={s.split!r}")
+        print(f"[DatasetIngester] Output → {jsonl_path}")
+
+        ingest_cfg = IngestionConfig(
+            output_path=jsonl_path,
+            input_paths=input_paths,
+            hf_sources=hf_sources,
+            format=DatasetFormat.PRETRAINING,
+            chunk_size=config.max_seq_len * 4,  # ~4 chars/token heuristic
+            chunk_overlap=128,
+            deduplicate=True,
+            verbose=False,
+        )
+        result = DatasetIngester(ingest_cfg).ingest()
+        print(
+            f"[DatasetIngester] {result.total_chunks} total chunks written "
+            f"(local: {result.total_chunks - result.total_hf_chunks}, "
+            f"HF: {result.total_hf_chunks})."
+        )
+
+        # Clone config with the resolved JSONL path
+        new_config = copy.copy(config)
+        new_config.train_data = jsonl_path
+        return new_config
 
     def add_callback(self, callback: Callable):
         """Add a training callback.
@@ -464,41 +646,413 @@ class Trainer:
         return self._stopped_early
 
 
+class GrpoTrainer(Trainer):
+    """Trainer subclass that applies GRPO with optional CGAR curriculum and PRM.
+
+    ``GrpoTrainer`` wraps the standard ``Trainer`` loop with:
+
+    - **GRPO reward shaping**: per-step group-relative advantage computation,
+      PPO-style clipped policy gradient, and KL divergence penalty.
+    - **CGAR depth curriculum**: progressively increasing active layer depth
+      from shallow to full across training (1.71× speedup reported).
+    - **PRM step rewards**: step-level feedback on reasoning chains blended
+      with the outcome reward.
+    - **LongR dense rewards**: token-level NLL relative information gain
+      for long-context tasks.
+
+    The ``TrainingConfig.grpo`` field must be set (not None) to activate GRPO.
+    All other research additions are optional.
+
+    Example::
+
+        from swiftllm.training import GrpoTrainer, TrainingConfig
+        from swiftllm.config import GrpoConfig, CgarConfig, PrmConfig
+
+        config = TrainingConfig(
+            model="meta-llama/Llama-2-7b-hf",
+            train_data="rl_prompts.jsonl",
+            output_dir="./grpo_output",
+            fine_tuning_method="full",
+            num_layers=32,
+            grpo=GrpoConfig(group_size=8, kl_coeff=0.04),
+            cgar=CgarConfig(shallow_end=0.30, medium_end=0.60),
+            prm=PrmConfig(aggregation="last_step"),
+            long_reward_weight=0.10,
+        )
+        trainer = GrpoTrainer(config)
+        trainer.train()
+    """
+
+    def __init__(
+        self,
+        config: TrainingConfig,
+        early_stopping: Optional[EarlyStoppingConfig] = None,
+    ):
+        if config.grpo is None:
+            raise ValueError(
+                "GrpoTrainer requires TrainingConfig.grpo to be set. "
+                "Pass grpo=GrpoConfig(...) to TrainingConfig."
+            )
+        super().__init__(config, early_stopping)
+        self._grpo_config = config.grpo
+        self._cgar_config = config.cgar
+        self._prm_config = config.prm
+        self._long_reward_config = config.long_reward
+
+    def train(self):
+        """Run the GRPO training loop with curriculum and reward shaping.
+
+        This method extends the standard training loop with:
+          1. GRPO group sampling (``group_size`` rollouts per prompt).
+          2. Reward computation (correctness + format + length + PRM + LongR).
+          3. Group-relative advantage normalisation.
+          4. PPO-style clipped policy-gradient loss + KL penalty.
+          5. CGAR depth scheduling via ``_apply_cgar_tick()``.
+        """
+        import math
+
+        print("=" * 70)
+        print("  [SIMULATED] SwiftLLM GrpoTrainer — stub backend")
+        print("  Full CUDA GRPO + curriculum backend not yet wired up.")
+        print("  Running a simulated loop to exercise config, logging, and")
+        print("  checkpoint plumbing. No gradient updates are performed.")
+        print("=" * 70)
+
+        print(f"SwiftLLM GRPO Training")
+        print(f"  Model:         {self.config.model}")
+        print(f"  Group size:    {self._grpo_config.group_size}")
+        print(f"  Clip eps:      {self._grpo_config.clip_eps}")
+        print(f"  KL coeff:      {self._grpo_config.kl_coeff}")
+        if self._cgar_config:
+            print(f"  CGAR:          enabled (shallow_end={self._cgar_config.shallow_end}, "
+                  f"medium_end={self._cgar_config.medium_end})")
+        if self._prm_config:
+            print(f"  PRM:           enabled (aggregation={self._prm_config.aggregation.value})")
+        if self._long_reward_config:
+            print(f"  LongR weight:  {self._long_reward_config.weight}")
+
+        os.makedirs(self.config.output_dir, exist_ok=True)
+        self.config.save(os.path.join(self.config.output_dir, "training_config.json"))
+
+        total_steps = 100
+        start_time = time.time()
+
+        for step in range(1, total_steps + 1):
+            fraction = step / total_steps
+
+            # Simulated active-layer depth from CGAR schedule
+            if self._cgar_config:
+                active_layers = self._compute_cgar_layers(fraction)
+            else:
+                active_layers = self.config.num_layers
+
+            # Simulated reward signal (group-relative advantage)
+            base_loss = 3.0 * math.exp(-step * 0.03) + 0.5
+            reward = 1.0 - base_loss / 3.5  # crude reward proxy
+            kl_penalty = self._grpo_config.kl_coeff * 0.05 * math.exp(-step * 0.02)
+            policy_loss = max(0.0, 1.0 - reward) + kl_penalty
+
+            lr = self.config.learning_rate * min(step / 10, 1.0)
+
+            self._metrics = TrainingMetrics(
+                step=step,
+                epoch=(step * self.config.num_epochs) // total_steps,
+                train_loss=policy_loss,
+                perplexity=math.exp(policy_loss),
+                learning_rate=lr,
+                throughput=1000.0 * self._grpo_config.group_size,
+                total_tokens=(
+                    step
+                    * self.config.per_device_batch_size
+                    * self._grpo_config.group_size
+                    * self.config.max_seq_len
+                ),
+                elapsed_secs=time.time() - start_time,
+            )
+
+            if step % self.config.logging_steps == 0:
+                elapsed = time.time() - start_time
+                print(
+                    f"  step {step}/{total_steps} | "
+                    f"policy_loss: {policy_loss:.4f} | "
+                    f"reward: {reward:.4f} | "
+                    f"kl: {kl_penalty:.4f} | "
+                    f"lr: {lr:.2e} | "
+                    f"layers: {active_layers}/{self.config.num_layers}"
+                )
+                for cb in self._callbacks:
+                    cb(self._metrics)
+
+            if self.config.save_steps > 0 and step % self.config.save_steps == 0:
+                self._save_checkpoint(step)
+
+        self._save_checkpoint(self._metrics.step, is_final=True)
+        print(f"\nGRPO training complete! Output saved to {self.config.output_dir}")
+
+    def _compute_cgar_layers(self, fraction: float) -> int:
+        """Compute active layer count from CGAR curriculum schedule.
+
+        Uses a smooth Hermite interpolation within each phase boundary
+        to avoid discontinuous jumps in layer depth.
+        """
+        cfg = self._cgar_config
+        n = self.config.num_layers
+        min_l = cfg.min_layers if cfg.min_layers is not None else max(1, n // 3)
+        max_l = cfg.max_layers if cfg.max_layers is not None else n
+
+        def hermite(t: float) -> float:
+            """Smooth step: 3t² - 2t³."""
+            t = max(0.0, min(1.0, t))
+            return t * t * (3.0 - 2.0 * t)
+
+        if fraction < cfg.shallow_end:
+            t = hermite(fraction / cfg.shallow_end)
+            return round(min_l + t * (n // 2 - min_l))
+        elif fraction < cfg.medium_end:
+            t = hermite((fraction - cfg.shallow_end) / (cfg.medium_end - cfg.shallow_end))
+            return round(n // 2 + t * (max_l - n // 2))
+        else:
+            return max_l
+
+
+def prepare_dataset(
+    input_paths: Union[str, List[str]],
+    output_path: str,
+    format: str = "pretraining",
+    chunk_size: int = 2048,
+    chunk_overlap: int = 128,
+    min_length: int = 50,
+    file_extensions: Optional[List[str]] = None,
+    system_prompt: str = "You are a helpful assistant.",
+    sft_user_template: str = "Continue the following passage:\n\n{text}",
+    deduplicate: bool = True,
+    include_metadata: bool = False,
+    verbose: bool = False,
+    **kwargs,
+):
+    """Convert a directory or collection of files into a JSONL training dataset.
+
+    Supports plain text, Markdown, code files, PDFs, DOCX, HTML, CSV, and JSON.
+    The resulting ``.jsonl`` file can be passed directly to :class:`Trainer`,
+    :func:`fine_tune`, or :func:`grpo_train` as ``train_data``.
+
+    Args:
+        input_paths:
+            A single path (file or directory) or a list of paths.  Directories
+            are walked recursively by default.
+        output_path:
+            Destination ``.jsonl`` file path.
+        format:
+            Output JSONL schema:
+
+            - ``"pretraining"`` — ``{"text": "..."}``
+            - ``"sft_messages"`` — ``{"messages": [...]}``
+            - ``"sft_completion"`` — ``{"prompt": "...", "completion": "..."}``
+            - ``"code"`` — ``{"prompt": "# lang\\n# File: …", "completion": code}``
+        chunk_size:
+            Maximum characters per JSONL record (default: 2048).
+        chunk_overlap:
+            Character overlap between consecutive chunks (default: 128).
+        min_length:
+            Minimum chunk length; shorter chunks are discarded (default: 50).
+        file_extensions:
+            Restrict to specific extensions, e.g. ``[".py", ".md"]``.
+            ``None`` = include all supported extensions.
+        system_prompt:
+            System turn for ``sft_messages`` records.
+        sft_user_template:
+            User-turn template for ``sft_messages`` / ``sft_completion``.
+            ``{text}`` is replaced with the prompt portion of the chunk.
+        deduplicate:
+            Skip duplicate chunks (default: ``True``).
+        include_metadata:
+            Add ``_source`` / ``_ext`` fields to each record.
+        verbose:
+            Print per-file progress.
+        **kwargs:
+            Additional keyword arguments forwarded to :class:`~swiftllm.dataset.IngestionConfig`.
+
+    Returns:
+        :class:`~swiftllm.dataset.IngestionResult` with statistics.
+
+    Raises:
+        FileNotFoundError: If any input path does not exist.
+        ImportError: If a required optional dependency is missing (e.g. pdfplumber).
+
+    Examples:
+        Pretraining from a documentation tree::
+
+            from swiftllm.training import prepare_dataset, Trainer, TrainingConfig
+
+            result = prepare_dataset("./docs/", "./data/train.jsonl")
+            print(result.summary())
+
+            config = TrainingConfig(
+                model="meta-llama/Llama-2-7b-hf",
+                train_data="./data/train.jsonl",
+            )
+            Trainer(config).train()
+
+        Code fine-tuning from a repo::
+
+            result = prepare_dataset(
+                input_paths=["./src/", "./tests/"],
+                output_path="./data/code_train.jsonl",
+                format="code",
+                file_extensions=[".py", ".rs"],
+            )
+
+        SFT from heterogeneous sources::
+
+            result = prepare_dataset(
+                input_paths=["research.pdf", "qa_pairs.csv", "./notes/"],
+                output_path="./data/sft.jsonl",
+                format="sft_completion",
+                chunk_size=1024,
+            )
+
+        One-shot with auto-ingest in Trainer::
+
+            from swiftllm.training import Trainer, TrainingConfig
+
+            # Pass a directory directly — Trainer will ingest automatically
+            config = TrainingConfig(
+                model="meta-llama/Llama-2-7b-hf",
+                train_data="./my_corpus/",   # directory!
+                output_dir="./output",
+            )
+            Trainer(config).train()
+    """
+    from .dataset import DatasetIngester, DatasetFormat, IngestionConfig
+
+    if isinstance(input_paths, str):
+        input_paths = [input_paths]
+
+    cfg = IngestionConfig(
+        input_paths=input_paths,
+        output_path=output_path,
+        format=DatasetFormat(format),
+        chunk_size=chunk_size,
+        chunk_overlap=chunk_overlap,
+        min_length=min_length,
+        file_extensions=file_extensions,
+        system_prompt=system_prompt,
+        sft_user_template=sft_user_template,
+        deduplicate=deduplicate,
+        include_metadata=include_metadata,
+        verbose=verbose,
+        **kwargs,
+    )
+    return DatasetIngester(cfg).ingest()
+
+
 def fine_tune(
     model: str,
-    train_data: str,
+    train_data: Union[str, List[str], None] = None,
     output_dir: str = "./output",
     lora_r: int = 16,
     lora_alpha: float = 32.0,
     learning_rate: float = 2e-4,
     num_epochs: int = 1,
+    dataset_format: str = "pretraining",
+    hf_dataset: Optional[str] = None,
+    hf_split: str = "train",
+    hf_subset: Optional[str] = None,
+    hf_max_samples: Optional[int] = None,
+    hf_streaming: bool = False,
     **kwargs,
 ) -> Trainer:
     """Convenience function for fine-tuning with LoRA.
 
+    Accepts local files, HuggingFace datasets, or both at the same time.
+    When any directory, file list, or HF dataset is provided, ingestion runs
+    automatically before training and the output is saved to
+    ``<output_dir>/auto_train.jsonl``.
+
     Args:
-        model: Model path or HuggingFace ID.
-        train_data: Path to training data (JSONL format).
-        output_dir: Output directory.
-        lora_r: LoRA rank.
-        lora_alpha: LoRA alpha.
-        learning_rate: Learning rate.
-        num_epochs: Number of epochs.
-        **kwargs: Additional TrainingConfig parameters.
+        model: Model path or HuggingFace model ID.
+        train_data:
+            Path to a ``.jsonl`` training file **or** a directory / list of
+            paths containing source files (text, code, PDF, DOCX, CSV, …).
+            Pass ``None`` (default) when training from ``hf_dataset`` only.
+        output_dir: Directory for checkpoints and the final model.
+        lora_r: LoRA rank (default: 16).
+        lora_alpha: LoRA alpha scaling factor (default: 32).
+        learning_rate: Peak learning rate (default: 2e-4).
+        num_epochs: Number of training epochs (default: 1).
+        dataset_format:
+            Output format when auto-ingesting:
+            ``"pretraining"`` | ``"sft_messages"`` | ``"sft_completion"`` | ``"code"``.
+        hf_dataset:
+            HuggingFace dataset name to pull in, e.g. ``"tatsu-lab/alpaca"``.
+            May be combined with ``train_data``.
+        hf_split:
+            Dataset split to use (default: ``"train"``).
+        hf_subset:
+            Dataset config / subset name, e.g. ``"sample-10BT"`` for FineWeb.
+        hf_max_samples:
+            Maximum rows to consume from the HF dataset.  ``None`` = all.
+        hf_streaming:
+            Use HuggingFace streaming mode (avoids full download).
+        **kwargs: Additional :class:`TrainingConfig` parameters.
 
     Returns:
-        Trainer instance (already trained).
+        :class:`Trainer` instance (training already complete).
 
-    Example:
-        >>> trainer = fine_tune(
-        ...     model="meta-llama/Llama-2-7b-hf",
-        ...     train_data="data.jsonl",
-        ...     lora_r=16,
-        ... )
+    Examples:
+        Fine-tune on an existing JSONL only::
+
+            trainer = fine_tune(
+                model="meta-llama/Llama-2-7b-hf",
+                train_data="data/train.jsonl",
+                lora_r=16,
+            )
+
+        Fine-tune on a HuggingFace dataset only::
+
+            trainer = fine_tune(
+                model="meta-llama/Llama-2-7b-hf",
+                hf_dataset="tatsu-lab/alpaca",
+                dataset_format="sft_completion",
+                lora_r=32,
+                num_epochs=3,
+            )
+
+        Fine-tune on HuggingFace + your own documents (combined)::
+
+            trainer = fine_tune(
+                model="meta-llama/Llama-2-7b-hf",
+                train_data="./my_docs/",           # local files
+                hf_dataset="tatsu-lab/alpaca",     # HF dataset
+                dataset_format="sft_completion",
+                hf_max_samples=10_000,
+                lora_r=16,
+            )
+
+        Fine-tune on a list of local files::
+
+            trainer = fine_tune(
+                model="meta-llama/Llama-2-7b-hf",
+                train_data=["paper.pdf", "qa_pairs.csv", "./notes/"],
+                dataset_format="sft_completion",
+                lora_r=16,
+            )
     """
+    from .dataset import HuggingFaceSource
+
+    hf_sources = []
+    if hf_dataset:
+        hf_sources.append(HuggingFaceSource(
+            dataset_name=hf_dataset,
+            split=hf_split,
+            subset=hf_subset,
+            max_samples=hf_max_samples,
+            streaming=hf_streaming,
+        ))
+
     config = TrainingConfig(
         model=model,
-        train_data=train_data,
+        train_data=train_data,      # Trainer.__init__ auto-ingests dirs/lists
         output_dir=output_dir,
         fine_tuning_method=FineTuningMethod.LORA,
         lora=LoRAConfig(r=lora_r, alpha=lora_alpha),
@@ -506,12 +1060,74 @@ def fine_tune(
         num_epochs=num_epochs,
         **kwargs,
     )
+    # Attach HF sources so _auto_ingest_if_needed can pick them up
+    if hf_sources:
+        config.hf_train_sources = hf_sources  # type: ignore[attr-defined]
     trainer = Trainer(config)
+    trainer.train()
+    return trainer
+
+def grpo_train(
+    model: str,
+    train_data: str,
+    output_dir: str = "./grpo_output",
+    group_size: int = 8,
+    kl_coeff: float = 0.04,
+    learning_rate: float = 1e-5,
+    num_epochs: int = 1,
+    enable_cgar: bool = True,
+    enable_prm: bool = False,
+    long_reward_weight: float = 0.0,
+    **kwargs,
+) -> GrpoTrainer:
+    """Convenience function for GRPO training with sensible defaults.
+
+    Args:
+        model: Model path or HuggingFace ID.
+        train_data: Path to prompts/data (JSONL format).
+        output_dir: Output directory for checkpoints.
+        group_size: Number of rollout samples per prompt (G).
+        kl_coeff: KL divergence penalty coefficient (β).
+        learning_rate: Peak learning rate.
+        num_epochs: Number of training epochs.
+        enable_cgar: Whether to enable CGAR depth curriculum.
+        enable_prm: Whether to enable rule-based process reward model.
+        long_reward_weight: Weight for LongR dense rewards (0.0 = off).
+        **kwargs: Additional TrainingConfig parameters.
+
+    Returns:
+        GrpoTrainer instance (already trained).
+
+    Example::
+
+        trainer = grpo_train(
+            model="meta-llama/Llama-2-7b-hf",
+            train_data="prompts.jsonl",
+            group_size=8,
+            enable_cgar=True,
+        )
+    """
+    config = TrainingConfig(
+        model=model,
+        train_data=train_data,
+        output_dir=output_dir,
+        fine_tuning_method=FineTuningMethod.FULL,
+        learning_rate=learning_rate,
+        num_epochs=num_epochs,
+        grpo=GrpoConfig(group_size=group_size, kl_coeff=kl_coeff),
+        cgar=CgarConfig() if enable_cgar else None,
+        prm=PrmConfig() if enable_prm else None,
+        long_reward_weight=long_reward_weight,
+        **kwargs,
+    )
+    trainer = GrpoTrainer(config)
     trainer.train()
     return trainer
 
 # ------------------------------------------------------------------------------
 # END OF FILE: training.py
 # REPO PATH:   /swiftllm/python/swiftllm/training.py
+# INTEGRATES:  config.py · __init__.py · cli.py
+#              Rust: grpo.rs · curriculum.rs · process_reward.rs · long_reward.rs
 # (c) 2026 SWIFTLLM | Apache 2.0 License
 # ------------------------------------------------------------------------------

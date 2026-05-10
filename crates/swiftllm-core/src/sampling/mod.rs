@@ -25,10 +25,15 @@
 //! and other advanced techniques.
 
 mod strategies;
+pub mod self_consistency;
 
 pub use strategies::{
     BeamSearchSampler, GreedySampler, MinPSampler, RepetitionPenalty, Sampler, SamplerChain,
     TemperatureSampler, TopKSampler, TopPSampler,
+};
+pub use self_consistency::{
+    build_candidates, majority_vote, normalise_answer, self_consistency_vote, AnswerExtractor,
+    ConsistencyCandidate, ConsistencyResult, SelfConsistencyConfig,
 };
 
 use crate::config::SamplingConfig;
@@ -210,7 +215,7 @@ impl TokenSampler {
 
         // Apply repetition penalty
         if self.params.repetition_penalty != 1.0 {
-            for (&token_id, _) in &self.token_counts {
+            for &token_id in self.token_counts.keys() {
                 if (token_id as usize) < logits.len() {
                     let logit = logits[token_id as usize];
                     if logit > 0.0 {
@@ -295,9 +300,9 @@ impl TokenSampler {
         if self.params.min_p > 0.0 {
             let max_prob = logits[indices[0]];
             let threshold = max_prob * self.params.min_p;
-            for i in 0..vocab_size {
-                if logits[i] < threshold {
-                    logits[i] = 0.0;
+            for logit in logits.iter_mut().take(vocab_size) {
+                if *logit < threshold {
+                    *logit = 0.0;
                 }
             }
         }
@@ -462,7 +467,7 @@ mod tests {
         let logits = vec![1.0, 2.0, 3.0, 4.0, 5.0];
 
         // With low temperature, should favor higher logits
-        let mut counts = vec![0; 5];
+        let mut counts = [0; 5];
         for _ in 0..1000 {
             sampler.reset();
             let token = sampler.sample(&logits).unwrap();

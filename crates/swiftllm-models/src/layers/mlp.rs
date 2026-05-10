@@ -97,6 +97,7 @@ impl Activation {
 
 /// Standard MLP layer
 #[derive(Debug)]
+#[allow(dead_code)]
 pub struct Mlp {
     /// Configuration
     config: MlpConfig,
@@ -140,6 +141,7 @@ impl Mlp {
 ///
 /// Uses SwiGLU: output = down_proj(silu(gate_proj(x)) * up_proj(x))
 #[derive(Debug)]
+#[allow(dead_code)]
 pub struct GatedMlp {
     /// Configuration
     config: MlpConfig,
@@ -188,6 +190,7 @@ impl GatedMlp {
 
 /// Fused Gated MLP (gate and up projections merged)
 #[derive(Debug)]
+#[allow(dead_code)]
 pub struct FusedGatedMlp {
     /// Configuration
     config: MlpConfig,
@@ -226,6 +229,7 @@ impl FusedGatedMlp {
 
 /// Mixture of Experts (MoE) MLP layer
 #[derive(Debug)]
+#[allow(dead_code)]
 pub struct MoeMlp {
     /// Number of experts
     num_experts: usize,
@@ -285,13 +289,14 @@ fn silu(x: f32) -> f32 {
 }
 
 /// GELU activation (exact)
+#[allow(unstable_name_collisions)]
 fn gelu(x: f32) -> f32 {
     0.5 * x * (1.0 + (x / std::f32::consts::SQRT_2).erf())
 }
 
 /// GELU approximation using tanh
 fn gelu_tanh(x: f32) -> f32 {
-    const SQRT_2_OVER_PI: f32 = 0.7978845608028654;
+    const SQRT_2_OVER_PI: f32 = 0.797_884_6;
     0.5 * x * (1.0 + (SQRT_2_OVER_PI * (x + 0.044715 * x.powi(3))).tanh())
 }
 
@@ -308,11 +313,11 @@ trait Erf {
 impl Erf for f32 {
     fn erf(self) -> f32 {
         // Horner form approximation
-        let a1 = 0.254829592;
-        let a2 = -0.284496736;
-        let a3 = 1.421413741;
-        let a4 = -1.453152027;
-        let a5 = 1.061405429;
+        let a1 = 0.254_829_6;
+        let a2 = -0.284_496_72;
+        let a3 = 1.421_413_8;
+        let a4 = -1.453_152_1;
+        let a5 = 1.061_405_4;
         let p = 0.3275911;
 
         let sign = if self < 0.0 { -1.0 } else { 1.0 };
@@ -355,6 +360,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(unstable_name_collisions)]
     fn test_erf() {
         assert!((0.0f32.erf() - 0.0).abs() < 1e-6);
         assert!((1.0f32.erf() - 0.8427).abs() < 0.001);

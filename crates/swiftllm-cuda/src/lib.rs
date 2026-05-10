@@ -22,12 +22,17 @@
 //!
 //! High-performance CUDA kernels for LLM inference:
 //! - PagedAttention
-//! - Quantized operations
-//! - Fused kernels
+//! - Mamba-3 selective SSM scan (prefill + decode)
+//! - LatentMoE dispatch (compress → gate → expert FFN → expand)
+//! - Dense Verification cross-attention + confidence scoring
+//! - RLM depth embedding, confidence MLP, sub-problem gating
+//! - F16 linear (GEMM) fallback
 
 #![warn(clippy::all)]
+#![allow(clippy::too_many_arguments)] // CUDA kernel signatures require many parameters
 
 pub mod bindings;
+pub mod memory;
 
 use thiserror::Error;
 
@@ -102,6 +107,7 @@ pub fn device_count() -> Result<usize> {
 }
 
 /// Get device information
+#[allow(unused_variables)]
 pub fn get_device_info(device_id: usize) -> Result<DeviceInfo> {
     // In a real implementation, this would query CUDA device properties
     #[cfg(has_cuda)]
@@ -124,6 +130,7 @@ pub fn get_device_info(device_id: usize) -> Result<DeviceInfo> {
 }
 
 /// Set the current CUDA device
+#[allow(unused_variables)]
 pub fn set_device(device_id: usize) -> Result<()> {
     #[cfg(has_cuda)]
     {
@@ -151,58 +158,133 @@ pub fn synchronize() -> Result<()> {
     }
 }
 
-/// Memory allocation on GPU
+/// Allocate `size` bytes on the current CUDA device.
+///
+/// Returns a raw device pointer.  Must be freed with [`free`].
 pub fn malloc(size: usize) -> Result<*mut u8> {
     #[cfg(has_cuda)]
     {
-        // cuMemAlloc
-        Err(CudaError::NotSupported("Direct malloc not implemented".into()))
+        use std::ffi::c_void;
+        extern "C" {
+            fn cudaMalloc(devPtr: *mut *mut c_void, size: usize) -> i32;
+        }
+        let mut ptr: *mut c_void = std::ptr::null_mut();
+        let rc = unsafe { cudaMalloc(&mut ptr as *mut *mut c_void, size) };
+        if rc != 0 {
+            return Err(CudaError::MemoryError(format!(
+                "cudaMalloc({} bytes) failed with code {}", size, rc
+            )));
+        }
+        Ok(ptr as *mut u8)
     }
 
     #[cfg(not(has_cuda))]
     {
+        let _ = size;
         Err(CudaError::DeviceNotFound)
     }
 }
 
-/// Free GPU memory
+/// Free device memory previously allocated with [`malloc`].
 pub fn free(ptr: *mut u8) -> Result<()> {
     #[cfg(has_cuda)]
     {
-        // cuMemFree
+        use std::ffi::c_void;
+        extern "C" {
+            fn cudaFree(devPtr: *mut c_void) -> i32;
+        }
+        let rc = unsafe { cudaFree(ptr as *mut c_void) };
+        if rc != 0 {
+            return Err(CudaError::MemoryError(format!("cudaFree failed with code {}", rc)));
+        }
         Ok(())
     }
 
     #[cfg(not(has_cuda))]
     {
+        let _ = ptr;
         Err(CudaError::DeviceNotFound)
     }
 }
 
-/// Copy host to device
+/// Copy `src` (host slice) to `dst` (device pointer).
 pub fn copy_to_device(dst: *mut u8, src: &[u8]) -> Result<()> {
     #[cfg(has_cuda)]
     {
-        // cuMemcpyHtoD
+        use std::ffi::c_void;
+        // cudaMemcpyKind::cudaMemcpyHostToDevice = 1
+        extern "C" {
+            fn cudaMemcpy(dst: *mut c_void, src: *const c_void, count: usize, kind: i32) -> i32;
+        }
+        let rc = unsafe {
+            cudaMemcpy(
+                dst as *mut c_void,
+                src.as_ptr() as *const c_void,
+                src.len(),
+                1, // H2D
+            )
+        };
+        if rc != 0 {
+            return Err(CudaError::MemoryError(format!("cudaMemcpy H2D failed with code {}", rc)));
+        }
         Ok(())
     }
 
     #[cfg(not(has_cuda))]
     {
+        let _ = (dst, src);
         Err(CudaError::DeviceNotFound)
     }
 }
 
-/// Copy device to host
+/// Copy `src` (device pointer) to `dst` (host slice).
 pub fn copy_to_host(dst: &mut [u8], src: *const u8) -> Result<()> {
     #[cfg(has_cuda)]
     {
-        // cuMemcpyDtoH
+        use std::ffi::c_void;
+        // cudaMemcpyKind::cudaMemcpyDeviceToHost = 2
+        extern "C" {
+            fn cudaMemcpy(dst: *mut c_void, src: *const c_void, count: usize, kind: i32) -> i32;
+        }
+        let rc = unsafe {
+            cudaMemcpy(
+                dst.as_mut_ptr() as *mut c_void,
+                src as *const c_void,
+                dst.len(),
+                2, // D2H
+            )
+        };
+        if rc != 0 {
+            return Err(CudaError::MemoryError(format!("cudaMemcpy D2H failed with code {}", rc)));
+        }
         Ok(())
     }
 
     #[cfg(not(has_cuda))]
     {
+        let _ = (dst, src);
+        Err(CudaError::DeviceNotFound)
+    }
+}
+
+/// Set `count` bytes starting at `ptr` to zero on device.
+pub fn memset_zero(ptr: *mut u8, count: usize) -> Result<()> {
+    #[cfg(has_cuda)]
+    {
+        use std::ffi::c_void;
+        extern "C" {
+            fn cudaMemset(devPtr: *mut c_void, value: i32, count: usize) -> i32;
+        }
+        let rc = unsafe { cudaMemset(ptr as *mut c_void, 0, count) };
+        if rc != 0 {
+            return Err(CudaError::MemoryError(format!("cudaMemset failed with code {}", rc)));
+        }
+        Ok(())
+    }
+
+    #[cfg(not(has_cuda))]
+    {
+        let _ = (ptr, count);
         Err(CudaError::DeviceNotFound)
     }
 }

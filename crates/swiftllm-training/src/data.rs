@@ -20,9 +20,7 @@
 
 //! Data loading and preprocessing for training
 
-use crate::config::{DataConfig, DataFormat};
 use serde::{Deserialize, Serialize};
-use std::collections::VecDeque;
 use std::path::Path;
 use thiserror::Error;
 
@@ -256,7 +254,7 @@ impl<D: Dataset> DataLoader<D> {
 
     /// Number of batches per epoch
     pub fn num_batches(&self) -> usize {
-        (self.dataset.len() + self.batch_size - 1) / self.batch_size
+        self.dataset.len().div_ceil(self.batch_size)
     }
 
     /// Current epoch

@@ -26,20 +26,19 @@
 
 use crate::config::{EngineConfig, SamplingConfig};
 use crate::error::{Error, Result};
-use crate::execution::{ExecutionConfig, ExecutionStats, ModelExecutor};
-use crate::memory::{BlockManager, KvCache, KvCacheConfig, MemoryPool, MemoryStats};
+use crate::execution::ExecutionStats;
+use crate::memory::{BlockManager, MemoryPool, MemoryStats};
 use crate::sampling::{SamplingParams, TokenSampler};
 use crate::scheduler::{Scheduler, SchedulerStats};
 use crate::types::{
-    FinishReason, GenerationOutput, Request, RequestId, RequestMetrics, RequestOutput,
-    RequestStatus, SequenceGroup, Token, TokenId,
+    FinishReason, GenerationOutput, Request, RequestId, RequestMetrics, RequestOutput, TokenId,
 };
 use parking_lot::{Mutex, RwLock};
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
-use tokio::sync::{mpsc, oneshot, Notify};
+use tokio::sync::{mpsc, Notify};
 
 /// The main inference engine
 pub struct Engine {
@@ -91,16 +90,34 @@ impl Engine {
         let usable_memory =
             (total_gpu_memory as f32 * config.memory.gpu_memory_utilization) as usize;
 
-        // Calculate number of blocks
+        // Calculate number of blocks using checked arithmetic to prevent overflow
         // For now, use placeholder model dimensions
         let num_layers = 32;
         let num_kv_heads = 8;
         let head_dim = 128;
 
-        let block_size_bytes = 2 * num_layers * num_kv_heads * head_dim * block_size * 2; // float16
+        // block_size_bytes = 2 (k+v) * num_layers * num_kv_heads * head_dim * block_size * 2 (float16)
+        let block_size_bytes = 2usize
+            .checked_mul(num_layers)
+            .and_then(|v| v.checked_mul(num_kv_heads))
+            .and_then(|v| v.checked_mul(head_dim))
+            .and_then(|v| v.checked_mul(block_size))
+            .and_then(|v| v.checked_mul(2))
+            .ok_or_else(|| {
+                crate::error::Error::InvalidConfig(
+                    "KV cache block size calculation overflowed — reduce block_size or model dimensions".to_string(),
+                )
+            })?;
+
+        if block_size_bytes == 0 {
+            return Err(crate::error::Error::InvalidConfig(
+                "KV cache block size calculated as zero — check block_size and model dimensions".to_string(),
+            ));
+        }
+
         let num_gpu_blocks = usable_memory / block_size_bytes;
-        let num_cpu_blocks = (config.memory.swap_space_gib * 1024.0 * 1024.0 * 1024.0) as usize
-            / block_size_bytes;
+        let swap_bytes = (config.memory.swap_space_gib * 1024.0 * 1024.0 * 1024.0) as usize;
+        let num_cpu_blocks = swap_bytes / block_size_bytes;
 
         tracing::info!(
             "Allocating {} GPU blocks and {} CPU blocks ({} tokens/block)",
@@ -163,8 +180,8 @@ impl Engine {
     /// Add a request with text prompt (requires tokenizer)
     pub fn add_request_text(
         &self,
-        prompt: String,
-        sampling_params: SamplingConfig,
+        _prompt: String,
+        _sampling_params: SamplingConfig,
     ) -> Result<RequestId> {
         // In a real implementation, we would tokenize here
         // For now, return an error
@@ -619,7 +636,7 @@ mod tests {
         let engine = Engine::new(config).unwrap();
 
         let request = Request::new(vec![1, 2, 3, 4, 5]);
-        let request_id = engine.add_request(request).unwrap();
+        let _request_id = engine.add_request(request).unwrap();
 
         assert_eq!(engine.pending_requests(), 1);
     }

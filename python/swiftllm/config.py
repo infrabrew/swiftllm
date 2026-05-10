@@ -5,6 +5,26 @@
 # AUTHOR:    Peter A. Aldrich Jr.
 # DATE:      2026
 # ------------------------------------------------------------------------------
+# USES:
+#   - (stdlib only — no internal imports)
+# USED BY:
+#   - python/swiftllm/__init__.py      public re-exports
+#   - python/swiftllm/engine.py        EngineConfig, SamplingParams, new inference configs
+#   - python/swiftllm/training.py      GrpoConfig, CgarConfig, PrmConfig, LongRewardConfig
+#   - python/swiftllm/sampling.py      SelfConsistencyConfig
+#   - python/swiftllm/cli.py           argument → config mapping
+# SEE ALSO:
+#   - crates/swiftllm-core/src/sampling/self_consistency.rs   Rust counterpart for SelfConsistencyConfig
+#   - crates/swiftllm-core/src/inference/refinement.rs        Rust counterpart for RefinementConfig
+#   - crates/swiftllm-core/src/inference/verification.rs      Rust counterpart for VerificationConfig
+#   - crates/swiftllm-core/src/serving/disaggregated.rs       Rust counterpart for DisaggregatedServingConfig
+#   - crates/swiftllm-training/src/grpo.rs                    Rust counterpart for GrpoConfig
+#   - crates/swiftllm-training/src/curriculum.rs              Rust counterpart for CgarConfig
+#   - crates/swiftllm-training/src/process_reward.rs          Rust counterpart for PrmConfig
+#   - crates/swiftllm-training/src/long_reward.rs             Rust counterpart for LongRewardConfig
+#   - crates/swiftllm-models/src/layers/rlm.rs                Rust counterpart for RlmConfig
+#   - crates/swiftllm-models/src/layers/dense_verification.rs Rust counterpart for DenseVerificationConfig
+# ------------------------------------------------------------------------------
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
 # You may obtain a copy of the License at
@@ -20,7 +40,27 @@
 
 """SwiftLLM Configuration Classes
 
-This module provides configuration classes for the SwiftLLM inference engine.
+This module provides configuration classes for the SwiftLLM inference engine,
+training pipeline, and all research-derived features added in Phases 1-3:
+
+  Phase 1 — Hybrid Model Architecture:
+    (configured at model-load time via JambaConfig in Rust)
+
+  Phase 2 — Training:
+    GrpoConfig         Group Relative Policy Optimization (GRPO)
+    CgarConfig         Curriculum-Guided Adaptive Recursion (CGAR)
+    PrmConfig          Process Reward Model configuration
+    LongRewardConfig   LongR dense token-level rewards
+
+  Phase 3 — Inference:
+    SelfConsistencyConfig      Self-consistency majority voting (Wang et al., 2022)
+    RefinementConfig           Multi-round self-refinement (Madaan et al., 2023)
+    VerificationConfig         Best-of-N dense verification & reranking
+    DisaggregatedServingConfig Disaggregated prefill/decode serving (Splitwise)
+
+  Phase 3 — Model-level Reasoning (new):
+    RlmConfig                  Recursive Language Model (REPL state, variable binding)
+    DenseVerificationConfig    Dense Verification Layer (full-capacity eval pass)
 
 All configuration options can be overridden via environment variables with the
 ``SWIFTLLM_`` prefix.  For example, ``SWIFTLLM_GPU_MEMORY_UTILIZATION=0.95``
@@ -108,6 +148,585 @@ class PreemptionMode(Enum):
     """Mode for handling preemption."""
     SWAP = "swap"           # Swap to CPU memory
     RECOMPUTE = "recompute" # Recompute from beginning
+
+
+# ---------------------------------------------------------------------------
+# Phase 3 — Inference Enhancements
+# ---------------------------------------------------------------------------
+
+class AnswerExtractor(Enum):
+    """Strategy for extracting the final answer from generated text.
+
+    Used by SelfConsistencyConfig. Mirrors ``AnswerExtractor`` in
+    ``crates/swiftllm-core/src/sampling/self_consistency.rs``.
+    """
+    HEURISTIC = "heuristic"       # Last number / boxed expression heuristic
+    AFTER_SENTINEL = "sentinel"   # Text after a configurable sentinel string
+    LAST_LINE = "last_line"       # Last non-empty line of the output
+    XML_TAG = "xml_tag"           # Content of a configurable XML tag
+
+
+class StoppingCriterion(Enum):
+    """When to stop the refinement loop.
+
+    Mirrors ``StoppingCriterion`` in
+    ``crates/swiftllm-core/src/inference/refinement.rs``.
+    """
+    MAX_ROUNDS = "max_rounds"           # Stop after a fixed number of rounds
+    MIN_IMPROVEMENT = "min_improvement" # Stop when improvement falls below threshold
+    EITHER = "either"                   # Stop when either condition is met
+
+
+class ImprovementMetric(Enum):
+    """How to measure improvement between refinement rounds.
+
+    Mirrors ``ImprovementMetric`` in
+    ``crates/swiftllm-core/src/inference/refinement.rs``.
+    """
+    EDIT_DISTANCE = "edit_distance"   # Normalised Levenshtein distance
+    ANY_CHANGE = "any_change"         # 1.0 if text changed, 0.0 otherwise
+    EXTERNAL_SCORE = "external_score" # Provided by caller via callback
+
+
+class ScoringStrategy(Enum):
+    """How to score candidates for Best-of-N selection.
+
+    Mirrors ``ScoringStrategy`` in
+    ``crates/swiftllm-core/src/inference/verification.rs``.
+    """
+    RULE_BASED = "rule_based"             # Heuristic rule scoring only
+    NEURAL = "neural"                     # Neural PRM scorer only
+    ENSEMBLE = "ensemble"                 # Weighted mix of rule, neural, logprob
+    SEQUENCE_LOG_PROB = "sequence_logprob" # Raw sequence log-probability
+
+
+class DisaggregatedPolicy(Enum):
+    """Scheduling policy for disaggregated prefill/decode workers.
+
+    Mirrors ``SchedulingPolicy`` in
+    ``crates/swiftllm-core/src/serving/disaggregated.rs``.
+    """
+    ROUND_ROBIN = "round_robin"       # Cycle through workers in order
+    LEAST_LOADED = "least_loaded"     # Route to worker with fewest active requests
+    LOCALITY_AWARE = "locality_aware" # Prefer worker that already holds the KV cache
+
+
+@dataclass
+class SelfConsistencyConfig:
+    """Configuration for self-consistency majority voting (Wang et al., 2022).
+
+    Generates ``num_samples`` independent reasoning chains and returns the
+    plurality-majority answer.  Corresponds to
+    ``SelfConsistencyConfig`` in ``sampling/self_consistency.rs``.
+
+    Attributes:
+        num_samples: Number of independent samples to generate (≥ 2).
+        extractor: Strategy to extract the final answer from each sample.
+        answer_sentinel: Sentinel string used by ``AFTER_SENTINEL`` extractor
+            (e.g. ``"The answer is"``).
+        answer_tag: XML tag name used by ``XML_TAG`` extractor
+            (e.g. ``"answer"`` matches ``<answer>…</answer>``).
+        temperature: Sampling temperature (should be > 0 for diversity).
+    """
+    num_samples: int = 8
+    extractor: AnswerExtractor = AnswerExtractor.HEURISTIC
+    answer_sentinel: str = "The answer is"
+    answer_tag: str = "answer"
+    temperature: float = 0.8
+
+    def __post_init__(self):
+        if self.num_samples < 2:
+            raise ValueError(f"num_samples must be >= 2, got {self.num_samples}")
+        if self.temperature <= 0:
+            raise ValueError(f"temperature must be > 0 for self-consistency, got {self.temperature}")
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "num_samples": self.num_samples,
+            "extractor": self.extractor.value,
+            "answer_sentinel": self.answer_sentinel,
+            "answer_tag": self.answer_tag,
+            "temperature": self.temperature,
+        }
+
+
+@dataclass
+class RefinementConfig:
+    """Configuration for multi-round self-refinement (Madaan et al., 2023).
+
+    Corresponds to ``RefinementConfig`` in ``inference/refinement.rs``.
+
+    Attributes:
+        max_rounds: Maximum number of critique→revision cycles (1–20).
+        min_improvement: Improvement threshold below which refinement stops
+            (used by ``MIN_IMPROVEMENT`` and ``EITHER`` criteria, 0.0–1.0).
+        stopping_criterion: When to stop refinement.
+        improvement_metric: How to measure improvement between rounds.
+        critique_template: Optional prompt template prepended to each critique
+            call; ``{output}`` is replaced with the current candidate text.
+    """
+    max_rounds: int = 3
+    min_improvement: float = 0.05
+    stopping_criterion: StoppingCriterion = StoppingCriterion.EITHER
+    improvement_metric: ImprovementMetric = ImprovementMetric.EDIT_DISTANCE
+    critique_template: Optional[str] = None
+
+    def __post_init__(self):
+        if self.max_rounds < 1:
+            raise ValueError(f"max_rounds must be >= 1, got {self.max_rounds}")
+        if not 0.0 <= self.min_improvement <= 1.0:
+            raise ValueError(f"min_improvement must be in [0, 1], got {self.min_improvement}")
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "max_rounds": self.max_rounds,
+            "min_improvement": self.min_improvement,
+            "stopping_criterion": self.stopping_criterion.value,
+            "improvement_metric": self.improvement_metric.value,
+            "critique_template": self.critique_template,
+        }
+
+
+@dataclass
+class VerificationConfig:
+    """Configuration for dense verification and Best-of-N reranking.
+
+    Corresponds to ``VerificationConfig`` in ``inference/verification.rs``.
+
+    Attributes:
+        num_candidates: Number of candidates to generate and then rank (≥ 2).
+        scoring_strategy: How to score and rank candidates.
+        rule_weight: Weight for the rule-based score in ``ENSEMBLE`` mode.
+        neural_weight: Weight for the neural PRM score in ``ENSEMBLE`` mode.
+        logprob_weight: Weight for the sequence log-prob in ``ENSEMBLE`` mode.
+        neural_model: Path to the neural PRM model (``NEURAL``/``ENSEMBLE`` only).
+    """
+    num_candidates: int = 8
+    scoring_strategy: ScoringStrategy = ScoringStrategy.RULE_BASED
+    rule_weight: float = 0.5
+    neural_weight: float = 0.3
+    logprob_weight: float = 0.2
+    neural_model: Optional[str] = None
+
+    def __post_init__(self):
+        if self.num_candidates < 2:
+            raise ValueError(f"num_candidates must be >= 2, got {self.num_candidates}")
+        if self.scoring_strategy in (ScoringStrategy.NEURAL, ScoringStrategy.ENSEMBLE):
+            if self.neural_model is None:
+                import warnings
+                warnings.warn(
+                    "scoring_strategy requires a neural model; set neural_model= "
+                    "or switch to RULE_BASED / SEQUENCE_LOG_PROB.",
+                    UserWarning,
+                    stacklevel=2,
+                )
+        if abs(self.rule_weight + self.neural_weight + self.logprob_weight - 1.0) > 1e-5:
+            import warnings
+            warnings.warn(
+                f"Ensemble weights sum to {self.rule_weight + self.neural_weight + self.logprob_weight:.4f}, "
+                "not 1.0; results will be rescaled internally.",
+                UserWarning,
+                stacklevel=2,
+            )
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "num_candidates": self.num_candidates,
+            "scoring_strategy": self.scoring_strategy.value,
+            "rule_weight": self.rule_weight,
+            "neural_weight": self.neural_weight,
+            "logprob_weight": self.logprob_weight,
+            "neural_model": self.neural_model,
+        }
+
+
+@dataclass
+class DisaggregatedServingConfig:
+    """Configuration for disaggregated prefill/decode serving (Splitwise/DistServe).
+
+    Routes prefill (compute-bound) and decode (bandwidth-bound) onto dedicated
+    worker pools.  Corresponds to ``DisaggregatedConfig`` in
+    ``serving/disaggregated.rs``.
+
+    Attributes:
+        num_prefill_workers: Number of dedicated prefill workers (≥ 1).
+        num_decode_workers: Number of dedicated decode workers (≥ 1).
+        scheduling_policy: How to assign requests to workers.
+        kv_transfer_timeout_ms: Timeout for KV-cache transfers between workers (ms).
+        enable_auto_ratio: Automatically compute the optimal prefill/decode ratio
+            using ``optimal_worker_ratio()`` at startup.
+    """
+    num_prefill_workers: int = 2
+    num_decode_workers: int = 6
+    scheduling_policy: DisaggregatedPolicy = DisaggregatedPolicy.LEAST_LOADED
+    kv_transfer_timeout_ms: int = 100
+    enable_auto_ratio: bool = False
+
+    def __post_init__(self):
+        if self.num_prefill_workers < 1:
+            raise ValueError(f"num_prefill_workers must be >= 1, got {self.num_prefill_workers}")
+        if self.num_decode_workers < 1:
+            raise ValueError(f"num_decode_workers must be >= 1, got {self.num_decode_workers}")
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "num_prefill_workers": self.num_prefill_workers,
+            "num_decode_workers": self.num_decode_workers,
+            "scheduling_policy": self.scheduling_policy.value,
+            "kv_transfer_timeout_ms": self.kv_transfer_timeout_ms,
+            "enable_auto_ratio": self.enable_auto_ratio,
+        }
+
+
+# ---------------------------------------------------------------------------
+# Phase 3 — Model-level Reasoning (RLM + Dense Verification)
+# ---------------------------------------------------------------------------
+
+class RlmMode(Enum):
+    """Operating mode for the Recursive Language Model layer.
+
+    Mirrors ``RlmMode`` in ``crates/swiftllm-models/src/layers/rlm.rs``.
+    """
+    DISABLED   = "disabled"    # Pass-through; no recursion or REPL side-effects
+    SHALLOW    = "shallow"     # max_depth=1; single sub-call, no REPL state
+    REASONING  = "reasoning"   # max_depth=3; full REPL + variable binding
+    AGENTIC    = "agentic"     # max_depth=5; for multi-step agentic tasks
+
+
+class VerificationStrategy(Enum):
+    """Scoring strategy for the Dense Verification Layer.
+
+    Mirrors ``VerificationStrategy`` in
+    ``crates/swiftllm-models/src/layers/dense_verification.rs``.
+    """
+    DISABLED       = "disabled"        # Skip verification entirely
+    SCORE_ONLY     = "score_only"      # Score but always accept
+    GATE           = "gate"            # Reject drafts below min_confidence
+    GATE_AND_REGEN = "gate_and_regen"  # Reject and regenerate (up to max_attempts)
+
+
+@dataclass
+class RlmConfig:
+    """Configuration for the Recursive Language Model (RLM) layer.
+
+    The RLM extends autoregressive generation with bounded recursive self-
+    calling and a symbolic REPL sandbox.  Complex sub-problems are solved
+    recursively at shallower depth and the sub-solutions are integrated back
+    into the main hidden state via a learned gating mechanism.
+
+    Corresponds to ``RlmConfig`` in
+    ``crates/swiftllm-models/src/layers/rlm.rs``.
+
+    References:
+        "Architecting the Next-Generation Agentic Paradigm: A Hybrid
+         Synthesis of Mamba-3, Mixture of Experts, Recursive Language
+         Models, and Dense Verification" (2024)
+
+    Attributes:
+        mode: Operating mode (disabled / shallow / reasoning / agentic).
+        max_depth: Maximum recursion depth (0 = direct solve, no sub-calls).
+            Paper recommendation: 2–4 for math/coding, 1 for language tasks.
+        enable_repl: Enable the symbolic REPL sandbox with variable binding.
+            When False the RLM acts as a plain pass-through MLP.
+        var_binding_slots: Number of soft key-value memory slots in the
+            REPL variable binding table.  Default: 32.
+        depth_hidden_size: Hidden size of the complexity-classifier MLP.
+            Defaults to d_model // 4 (set by the Rust layer at construction).
+        early_exit_threshold: Confidence threshold for skipping deeper recursion.
+            If the scheduler assigns depth 0 with confidence ≥ threshold the
+            sub-call is skipped even if the model predicted deeper recursion.
+        d_subproblem: Projection size for sub-problem embeddings passed to
+            recursive sub-calls.  Defaults to d_model // 2.
+    """
+    mode: RlmMode = RlmMode.REASONING
+    max_depth: int = 3
+    enable_repl: bool = True
+    var_binding_slots: int = 32
+    depth_hidden_size: Optional[int] = None   # None → d_model // 4 (set in Rust)
+    early_exit_threshold: float = 0.92
+    d_subproblem: Optional[int] = None         # None → d_model // 2 (set in Rust)
+
+    def __post_init__(self):
+        if self.max_depth < 0:
+            raise ValueError(f"max_depth must be >= 0, got {self.max_depth}")
+        if self.var_binding_slots < 1:
+            raise ValueError(f"var_binding_slots must be >= 1, got {self.var_binding_slots}")
+        if not 0.0 < self.early_exit_threshold <= 1.0:
+            raise ValueError(
+                f"early_exit_threshold must be in (0, 1], got {self.early_exit_threshold}"
+            )
+        if self.mode == RlmMode.DISABLED:
+            self.max_depth = 0
+            self.enable_repl = False
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "mode": self.mode.value,
+            "max_depth": self.max_depth,
+            "enable_repl": self.enable_repl,
+            "var_binding_slots": self.var_binding_slots,
+            "depth_hidden_size": self.depth_hidden_size,
+            "early_exit_threshold": self.early_exit_threshold,
+            "d_subproblem": self.d_subproblem,
+        }
+
+    @classmethod
+    def from_dict(cls, d: Dict[str, Any]) -> "RlmConfig":
+        d = dict(d)
+        if "mode" in d:
+            d["mode"] = RlmMode(d["mode"])
+        return cls(**d)
+
+
+@dataclass
+class DenseVerificationConfig:
+    """Configuration for the Dense Verification Layer.
+
+    After generation completes the Dense Verification Layer performs one
+    additional read-over pass on the full output, scoring each token and
+    reasoning step against the REPL execution trace.  Outputs below
+    ``min_confidence`` trigger re-generation up to ``max_regen_attempts`` times.
+
+    Corresponds to ``DenseVerificationConfig`` in
+    ``crates/swiftllm-models/src/layers/dense_verification.rs``.
+
+    References:
+        "Hybrid_Mamba3-RLM-Reasoning-Architecture.pdf", §3.5
+        "Let's Verify Step by Step" — Lightman et al. 2023
+
+    Attributes:
+        strategy: When / how to act on verification scores.
+        num_verification_heads: Cross-attention heads for draft ↔ REPL-trace
+            attention.  Default: 8.
+        min_confidence: Global score threshold below which the draft is
+            rejected.  Range (0, 1].  Default: 0.80 for reasoning tasks.
+        max_regen_attempts: Maximum re-generation attempts when
+            strategy = GATE_AND_REGEN.  Default: 3.
+        score_repl_steps: Also compute per-REPL-step confidence scores
+            (uses explicit ``Verify`` step confidences from the trace).
+    """
+    strategy: VerificationStrategy = VerificationStrategy.GATE_AND_REGEN
+    num_verification_heads: int = 8
+    min_confidence: float = 0.80
+    max_regen_attempts: int = 3
+    score_repl_steps: bool = True
+
+    def __post_init__(self):
+        if not 0.0 < self.min_confidence <= 1.0:
+            raise ValueError(
+                f"min_confidence must be in (0, 1], got {self.min_confidence}"
+            )
+        if self.max_regen_attempts < 1:
+            raise ValueError(
+                f"max_regen_attempts must be >= 1, got {self.max_regen_attempts}"
+            )
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "strategy": self.strategy.value,
+            "num_verification_heads": self.num_verification_heads,
+            "min_confidence": self.min_confidence,
+            "max_regen_attempts": self.max_regen_attempts,
+            "score_repl_steps": self.score_repl_steps,
+        }
+
+    @classmethod
+    def from_dict(cls, d: Dict[str, Any]) -> "DenseVerificationConfig":
+        d = dict(d)
+        if "strategy" in d:
+            d["strategy"] = VerificationStrategy(d["strategy"])
+        return cls(**d)
+
+
+# ---------------------------------------------------------------------------
+# Phase 2 — Training Enhancements
+# ---------------------------------------------------------------------------
+
+class PrmAggregation(Enum):
+    """How to aggregate per-step PRM scores into a single reward.
+
+    Mirrors ``PrmAggregation`` in
+    ``crates/swiftllm-training/src/process_reward.rs``.
+    """
+    MIN = "min"
+    MEAN = "mean"
+    PRODUCT = "product"
+    LAST_STEP = "last_step"
+    WEIGHTED_MEAN = "weighted_mean"
+
+
+class DenseAggregation(Enum):
+    """How to aggregate token-level dense rewards into a scalar.
+
+    Mirrors ``DenseAggregation`` in
+    ``crates/swiftllm-training/src/long_reward.rs``.
+    """
+    MEAN = "mean"
+    SUM = "sum"
+    MAX = "max"
+    LAST = "last"
+
+
+@dataclass
+class GrpoConfig:
+    """Configuration for Group Relative Policy Optimization (GRPO).
+
+    GRPO fine-tunes a model using RL without a critic model by computing
+    group-relative advantages.  Corresponds to ``GrpoConfig`` in
+    ``crates/swiftllm-training/src/grpo.rs``.
+
+    Attributes:
+        group_size: Number of samples per prompt in each group (G, ≥ 2).
+        clip_eps: PPO-style probability ratio clipping threshold (ε).
+        kl_coeff: KL-divergence penalty coefficient (β).
+        correctness_weight: Weight for the correctness reward.
+        format_weight: Weight for the format / structure reward.
+        length_penalty_weight: Weight for the length-deviation penalty.
+        reference_model: Path to the frozen reference model for KL divergence.
+            Defaults to the same model as the policy when None.
+    """
+    group_size: int = 8
+    clip_eps: float = 0.2
+    kl_coeff: float = 0.04
+    correctness_weight: float = 1.0
+    format_weight: float = 0.2
+    length_penalty_weight: float = 0.1
+    reference_model: Optional[str] = None
+
+    def __post_init__(self):
+        if self.group_size < 2:
+            raise ValueError(f"group_size must be >= 2, got {self.group_size}")
+        if self.clip_eps <= 0:
+            raise ValueError(f"clip_eps must be > 0, got {self.clip_eps}")
+        if self.kl_coeff < 0:
+            raise ValueError(f"kl_coeff must be >= 0, got {self.kl_coeff}")
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "group_size": self.group_size,
+            "clip_eps": self.clip_eps,
+            "kl_coeff": self.kl_coeff,
+            "correctness_weight": self.correctness_weight,
+            "format_weight": self.format_weight,
+            "length_penalty_weight": self.length_penalty_weight,
+            "reference_model": self.reference_model,
+        }
+
+
+@dataclass
+class CgarConfig:
+    """Configuration for Curriculum-Guided Adaptive Recursion (CGAR).
+
+    Implements a phased depth curriculum: shallow → medium → full depth.
+    Corresponds to ``CgarConfig`` in
+    ``crates/swiftllm-training/src/curriculum.rs``.
+
+    Attributes:
+        shallow_end: Training fraction at which shallow phase ends (0–1).
+        medium_end: Training fraction at which medium phase ends (0–1).
+        min_layers: Minimum number of active layers during shallow phase.
+        max_layers: Maximum layers (= total model layers at full depth).
+        enable_phased_specialisation: Also apply phased attention/SSM
+            specialisation (for Jamba-style hybrid models).
+        attention_lead_end: Fraction at which attention-lead phase ends
+            (only used when ``enable_phased_specialisation`` is True).
+    """
+    shallow_end: float = 0.30
+    medium_end: float = 0.60
+    min_layers: Optional[int] = None   # None → num_layers // 3
+    max_layers: Optional[int] = None   # None → num_layers
+    enable_phased_specialisation: bool = False
+    attention_lead_end: float = 0.40
+
+    def __post_init__(self):
+        if not 0.0 < self.shallow_end < self.medium_end < 1.0:
+            raise ValueError(
+                f"Require 0 < shallow_end ({self.shallow_end}) < medium_end ({self.medium_end}) < 1"
+            )
+        if self.min_layers is not None and self.min_layers < 1:
+            raise ValueError(f"min_layers must be >= 1, got {self.min_layers}")
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "shallow_end": self.shallow_end,
+            "medium_end": self.medium_end,
+            "min_layers": self.min_layers,
+            "max_layers": self.max_layers,
+            "enable_phased_specialisation": self.enable_phased_specialisation,
+            "attention_lead_end": self.attention_lead_end,
+        }
+
+
+@dataclass
+class PrmConfig:
+    """Configuration for the Process Reward Model (PRM).
+
+    Provides step-level feedback on reasoning chains.  Corresponds to
+    ``PrmConfig`` in ``crates/swiftllm-training/src/process_reward.rs``.
+
+    Attributes:
+        aggregation: How to combine per-step scores into a single reward.
+        outcome_weight: Weight for the outcome (final-answer) reward (0–1).
+        prm_weight: Weight for the PRM (step-level) reward (0–1).
+        step_separator: String that delineates steps in the reasoning chain.
+        neural_model: Path to a neural PRM model; if None, uses the rule-based
+            heuristic (``RulePrm``) which requires no additional model.
+    """
+    aggregation: PrmAggregation = PrmAggregation.LAST_STEP
+    outcome_weight: float = 0.5
+    prm_weight: float = 0.5
+    step_separator: str = "\n\n"
+    neural_model: Optional[str] = None
+
+    def __post_init__(self):
+        if not 0.0 <= self.outcome_weight <= 1.0:
+            raise ValueError(f"outcome_weight must be in [0, 1], got {self.outcome_weight}")
+        if not 0.0 <= self.prm_weight <= 1.0:
+            raise ValueError(f"prm_weight must be in [0, 1], got {self.prm_weight}")
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "aggregation": self.aggregation.value,
+            "outcome_weight": self.outcome_weight,
+            "prm_weight": self.prm_weight,
+            "step_separator": self.step_separator,
+            "neural_model": self.neural_model,
+        }
+
+
+@dataclass
+class LongRewardConfig:
+    """Configuration for LongR dense token-level rewards.
+
+    Computes per-token relative information gain vs. a reference model:
+    ``r_t = NLL_ref − NLL_model``.  Yields a 9% gain on LongBench v2.
+    Corresponds to ``LongRewardConfig`` in
+    ``crates/swiftllm-training/src/long_reward.rs``.
+
+    Attributes:
+        weight: Scalar weight applied to the dense reward before adding to the
+            total reward (0.0 = disabled).
+        aggregation: How to reduce token-level rewards to a scalar.
+        normalise: Whether to z-score-normalise rewards within each batch.
+        reference_model: Path to the frozen reference model for NLL computation.
+            Defaults to the same model as the policy when None.
+    """
+    weight: float = 0.1
+    aggregation: DenseAggregation = DenseAggregation.MEAN
+    normalise: bool = True
+    reference_model: Optional[str] = None
+
+    def __post_init__(self):
+        if self.weight < 0:
+            raise ValueError(f"weight must be >= 0, got {self.weight}")
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "weight": self.weight,
+            "aggregation": self.aggregation.value,
+            "normalise": self.normalise,
+            "reference_model": self.reference_model,
+        }
 
 
 @dataclass
@@ -242,6 +861,8 @@ class EngineConfig:
         download_dir: Directory for downloading models.
         seed: Random seed for reproducibility.
         device: Device to use ('cuda', 'cpu', 'auto').
+        rlm: Recursive Language Model config (Phase 3). None = disabled.
+        dense_verification: Dense Verification Layer config (Phase 3). None = disabled.
     """
     model: str = ""
     tokenizer: Optional[str] = None
@@ -288,6 +909,22 @@ class EngineConfig:
     num_parallel_slots: int = field(default_factory=lambda: _env_int("NUM_PARALLEL", 1))
     max_loaded_models: int = field(default_factory=lambda: _env_int("MAX_LOADED_MODELS", 1))
 
+    # Phase 3 — Inference enhancements (all optional; None = feature disabled)
+    self_consistency: Optional[SelfConsistencyConfig] = None
+    """Self-consistency majority voting config. Set to enable generate_with_self_consistency()."""
+    refinement: Optional[RefinementConfig] = None
+    """Multi-round self-refinement config. Set to enable generate_with_refinement()."""
+    verification: Optional[VerificationConfig] = None
+    """Best-of-N dense verification config. Set to enable generate_best_of_n()."""
+    disaggregated_serving: Optional[DisaggregatedServingConfig] = None
+    """Disaggregated prefill/decode serving config. Set to enable disaggregated mode."""
+
+    # Phase 3 — Model-level reasoning (RLM + Dense Verification)
+    rlm: Optional[RlmConfig] = None
+    """Recursive Language Model config. Set to enable generate_with_rlm()."""
+    dense_verification: Optional[DenseVerificationConfig] = None
+    """Dense Verification Layer config. Set to enable generate_with_dense_verification()."""
+
     def __post_init__(self):
         """Validate configuration."""
         if self.gpu_memory_utilization <= 0 or self.gpu_memory_utilization > 1:
@@ -316,6 +953,33 @@ class EngineConfig:
             d["scheduler_policy"] = SchedulerPolicy(d["scheduler_policy"])
         if "preemption_mode" in d and isinstance(d["preemption_mode"], str):
             d["preemption_mode"] = PreemptionMode(d["preemption_mode"])
+        # Deserialise nested Phase-3 configs
+        if "self_consistency" in d and isinstance(d["self_consistency"], dict):
+            sc = dict(d["self_consistency"])
+            if "extractor" in sc:
+                sc["extractor"] = AnswerExtractor(sc["extractor"])
+            d["self_consistency"] = SelfConsistencyConfig(**sc)
+        if "refinement" in d and isinstance(d["refinement"], dict):
+            rc = dict(d["refinement"])
+            if "stopping_criterion" in rc:
+                rc["stopping_criterion"] = StoppingCriterion(rc["stopping_criterion"])
+            if "improvement_metric" in rc:
+                rc["improvement_metric"] = ImprovementMetric(rc["improvement_metric"])
+            d["refinement"] = RefinementConfig(**rc)
+        if "verification" in d and isinstance(d["verification"], dict):
+            vc = dict(d["verification"])
+            if "scoring_strategy" in vc:
+                vc["scoring_strategy"] = ScoringStrategy(vc["scoring_strategy"])
+            d["verification"] = VerificationConfig(**vc)
+        if "disaggregated_serving" in d and isinstance(d["disaggregated_serving"], dict):
+            ds = dict(d["disaggregated_serving"])
+            if "scheduling_policy" in ds:
+                ds["scheduling_policy"] = DisaggregatedPolicy(ds["scheduling_policy"])
+            d["disaggregated_serving"] = DisaggregatedServingConfig(**ds)
+        if "rlm" in d and isinstance(d["rlm"], dict):
+            d["rlm"] = RlmConfig.from_dict(d["rlm"])
+        if "dense_verification" in d and isinstance(d["dense_verification"], dict):
+            d["dense_verification"] = DenseVerificationConfig.from_dict(d["dense_verification"])
         return cls(**{k: v for k, v in d.items() if k in cls.__dataclass_fields__})
 
     def to_dict(self) -> Dict[str, Any]:
@@ -325,6 +989,8 @@ class EngineConfig:
             value = getattr(self, field_name)
             if isinstance(value, Enum):
                 value = value.value
+            elif hasattr(value, "to_dict"):
+                value = value.to_dict()
             result[field_name] = value
         return result
 
@@ -387,5 +1053,9 @@ class LoRARequest:
 # ------------------------------------------------------------------------------
 # END OF FILE: config.py
 # REPO PATH:   /swiftllm/python/swiftllm/config.py
+# INTEGRATES:  engine.py · training.py · sampling.py · cli.py · __init__.py
+#              Rust: self_consistency.rs · refinement.rs · verification.rs
+#              Rust: disaggregated.rs · grpo.rs · curriculum.rs
+#              Rust: process_reward.rs · long_reward.rs
 # (c) 2026 SWIFTLLM | Apache 2.0 License
 # ------------------------------------------------------------------------------

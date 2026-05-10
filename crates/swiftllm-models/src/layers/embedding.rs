@@ -142,6 +142,7 @@ impl Embedding {
 
 /// Vocabulary parallel embedding (sharded across GPUs)
 #[derive(Debug)]
+#[allow(dead_code)]
 pub struct VocabParallelEmbedding {
     /// Local embedding weights
     weight: Tensor,
@@ -183,7 +184,7 @@ impl VocabParallelEmbedding {
             ));
         }
 
-        let vocab_size_per_gpu = (vocab_size + tp_size - 1) / tp_size;
+        let vocab_size_per_gpu = vocab_size.div_ceil(tp_size);
         let vocab_start_idx = tp_rank * vocab_size_per_gpu;
         let vocab_end_idx = ((tp_rank + 1) * vocab_size_per_gpu).min(vocab_size);
 
@@ -235,6 +236,7 @@ impl VocabParallelEmbedding {
 ///
 /// Often tied to the input embeddings
 #[derive(Debug)]
+#[allow(dead_code)]
 pub struct LMHead {
     /// Weight matrix [vocab_size, hidden_size]
     /// May be tied to embedding weight

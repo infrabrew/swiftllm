@@ -29,6 +29,15 @@ use swiftllm_core::config::{EngineConfig, ServerConfig};
 use swiftllm_core::engine::Engine;
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
+/// Parse and validate GPU memory utilization (must be in 0.01..=1.0).
+fn parse_gpu_mem_util(s: &str) -> Result<f32, String> {
+    let val: f32 = s.parse().map_err(|e| format!("invalid float: {e}"))?;
+    if !(0.01..=1.0).contains(&val) {
+        return Err(format!("gpu_memory_utilization must be between 0.01 and 1.0, got {val}"));
+    }
+    Ok(val)
+}
+
 /// SwiftLLM - High-performance LLM inference engine
 #[derive(Parser)]
 #[command(name = "swiftllm")]
@@ -60,8 +69,8 @@ struct ServeArgs {
     #[arg(short, long)]
     model: PathBuf,
 
-    /// Host to bind to
-    #[arg(long, default_value = "0.0.0.0")]
+    /// Host to bind to (default: 127.0.0.1 for safety; use 0.0.0.0 for public)
+    #[arg(long, default_value = "127.0.0.1")]
     host: String,
 
     /// Port to bind to
@@ -76,8 +85,8 @@ struct ServeArgs {
     #[arg(long, default_value = "4096")]
     max_seq_len: usize,
 
-    /// GPU memory utilization (0.0 - 1.0)
-    #[arg(long, default_value = "0.90")]
+    /// GPU memory utilization (0.01 - 1.0)
+    #[arg(long, default_value = "0.90", value_parser = parse_gpu_mem_util)]
     gpu_memory_utilization: f32,
 
     /// Block size for PagedAttention
@@ -100,8 +109,8 @@ struct ServeArgs {
     #[arg(long, default_value = "5")]
     speculative_tokens: usize,
 
-    /// API key (optional)
-    #[arg(long)]
+    /// API key for authentication (prefer SWIFTLLM_API_KEY env var over CLI args)
+    #[arg(long, env = "SWIFTLLM_API_KEY")]
     api_key: Option<String>,
 
     /// Log level

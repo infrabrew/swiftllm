@@ -32,19 +32,39 @@
 #![warn(missing_docs)]
 
 pub mod config;
+pub mod curriculum;
 pub mod data;
 pub mod fine_tuning;
+pub mod grpo;
+pub mod long_reward;
 pub mod metrics;
 pub mod muon;
 pub mod optimizer;
+pub mod process_reward;
 pub mod trainer;
 
 pub use config::{DataConfig, FineTuningConfig, TrainingConfig};
+pub use curriculum::{
+    CgarConfig, CgarPhase, CgarScheduler, CurriculumTick, PhasedSpecialisationConfig,
+    PhasedSpecialisationScheduler, SpecialisationPhase,
+};
 pub use data::{DataLoader, Dataset, InstructionDataset, TextDataset};
 pub use fine_tuning::{FineTuningMethod, FullFineTuning, LoRAConfig, LoRAFineTuning, QLoRAFineTuning};
+pub use grpo::{
+    compute_grpo_loss, GrpoConfig, GrpoGroup, GrpoLossResult, GrpoSample, GrpoStepStats,
+    GrpoTrainer, RewardFunction,
+};
+pub use long_reward::{
+    aggregate_dense_rewards, compute_dense_rewards, normalise_batch_rewards, DenseAggregation,
+    DenseRewardResult, LongRewardConfig, TokenReward,
+};
 pub use metrics::TrainingMetrics;
 pub use muon::{Muon, MuonConfig};
 pub use optimizer::{clip_grad_norm, AdamW, LearningRateScheduler, Optimizer, SGD};
+pub use process_reward::{
+    aggregate_step_scores, blend_prm_with_outcome, parse_steps, NeuralPrm, PrmAggregation,
+    PrmConfig, PrmResult, ReasoningStep, RulePrm, StepBoundary, StepScore,
+};
 pub use trainer::Trainer;
 
 // ------------------------------------------------------------------------------

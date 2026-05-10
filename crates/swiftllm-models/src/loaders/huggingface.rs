@@ -254,7 +254,7 @@ fn convert_hf_config(hf: HfConfig) -> Result<ModelConfig> {
     let intermediate_size = hf.intermediate_size.unwrap_or_else(|| {
         // Common formula: 8/3 * hidden_size, rounded to multiple of 256
         let size = (8 * hf.hidden_size) / 3;
-        ((size + 255) / 256) * 256
+        size.div_ceil(256) * 256
     });
 
     Ok(ModelConfig {
@@ -276,6 +276,7 @@ fn convert_hf_config(hf: HfConfig) -> Result<ModelConfig> {
         bos_token_id: hf.bos_token_id.unwrap_or(1),
         eos_token_id: hf.eos_token_id.unwrap_or(2),
         pad_token_id: hf.pad_token_id,
+        ..ModelConfig::default()
     })
 }
 
@@ -328,7 +329,7 @@ impl HuggingFaceLoader {
                 for entry in fs::read_dir(&path)? {
                     let entry = entry?;
                     let entry_path = entry.path();
-                    if entry_path.extension().map_or(false, |e| e == "bin") {
+                    if entry_path.extension().is_some_and(|e| e == "bin") {
                         weight_files.push(entry_path);
                     }
                 }

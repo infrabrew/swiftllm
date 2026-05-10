@@ -99,13 +99,20 @@ pub enum Error {
     /// Shape mismatch
     #[error("Shape mismatch: expected {expected:?}, got {actual:?}")]
     ShapeMismatch {
+        /// Expected shape dimensions
         expected: Vec<usize>,
+        /// Actual shape dimensions
         actual: Vec<usize>,
     },
 
     /// Data type mismatch
     #[error("Data type mismatch: expected {expected}, got {actual}")]
-    DTypeMismatch { expected: String, actual: String },
+    DTypeMismatch {
+        /// Expected data type
+        expected: String,
+        /// Actual data type
+        actual: String,
+    },
 
     /// Execution error
     #[error("Execution error: {0}")]
@@ -150,7 +157,9 @@ pub enum Error {
     /// Other error with context
     #[error("{context}: {source}")]
     WithContext {
+        /// Error context description
         context: String,
+        /// Underlying error source
         source: Box<Error>,
     },
 }
@@ -216,6 +225,7 @@ impl<T> ResultExt<T> for Result<T> {
 
 /// Extension trait for converting other error types
 pub trait IntoError<T> {
+    /// Convert this result into a SwiftLLM error with a message
     fn into_error(self, msg: impl Into<String>) -> Result<T>;
 }
 

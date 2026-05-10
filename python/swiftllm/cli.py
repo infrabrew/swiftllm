@@ -24,11 +24,22 @@
 This module provides the CLI for SwiftLLM, supporting:
 - serve: Start the inference server
 - generate: Run offline batch generation
+    --self-consistency N        Majority vote over N reasoning chains
+    --refinement-rounds R       Iterative self-refinement (R rounds)
+    --best-of-n N               Best-of-N candidate selection
+    --rlm DEPTH                 Recursive Language Model (up to DEPTH)
+    --dense-verification        Cross-attention token/step confidence scoring
 - benchmark: Run performance benchmarks
 - convert: Convert model formats
 - info: Display model information
+- chat: Interactive chat session
+- download: Download a model from HuggingFace
 - train: Train or fine-tune a model
 - finetune: Fine-tune with LoRA (convenience command)
+- grpo: GRPO RL fine-tuning with optional CGAR curriculum
+- dataset: Ingest files/directories into JSONL training data
+    Supports: .txt .md .py .rs .go .java .pdf .docx .csv .json .html and more
+    Formats:  pretraining | sft_messages | sft_completion | code
 """
 
 import argparse
@@ -100,6 +111,37 @@ def main():
     finetune_parser = subparsers.add_parser("finetune", help="Fine-tune a model with LoRA")
     _add_finetune_args(finetune_parser)
 
+    # GRPO command
+    grpo_parser = subparsers.add_parser(
+        "grpo",
+        help="GRPO RL fine-tuning with optional CGAR curriculum and PRM",
+    )
+    _add_grpo_args(grpo_parser)
+
+    # Dataset ingestion command
+    dataset_parser = subparsers.add_parser(
+        "dataset",
+        help="Ingest files/directories into JSONL training data",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        description=(
+            "Convert a directory or collection of files into a JSONL dataset\n"
+            "ready for fine_tune(), grpo_train(), or Trainer.\n\n"
+            "Supported input formats:\n"
+            "  Text     : .txt  .md  .rst  .log\n"
+            "  Code     : .py  .js  .ts  .rs  .go  .java  .c  .cpp  .cs  .sql\n"
+            "             .rb  .php  .swift  .kt  .sh  .yaml  .toml  and more\n"
+            "  Documents: .pdf (needs pdfplumber)  .docx (needs python-docx)\n"
+            "  Web      : .html  .htm  .xml  (needs beautifulsoup4 for best results)\n"
+            "  Data     : .csv  .json  .jsonl\n\n"
+            "Output formats (--format):\n"
+            "  pretraining    {\"text\": \"...\"}\n"
+            "  sft_messages   {\"messages\": [{\"role\": ...}, ...]}\n"
+            "  sft_completion {\"prompt\": \"...\", \"completion\": \"...\"}\n"
+            "  code           {\"prompt\": \"# lang\\n# File: ...\", \"completion\": code}\n"
+        ),
+    )
+    _add_dataset_args(dataset_parser)
+
     args = parser.parse_args()
 
     if args.command is None:
@@ -117,6 +159,8 @@ def main():
         "download": cmd_download,
         "train": cmd_train,
         "finetune": cmd_finetune,
+        "grpo": cmd_grpo,
+        "dataset": cmd_dataset,
     }
 
     try:
@@ -294,6 +338,72 @@ def _add_generate_args(parser: argparse.ArgumentParser):
         help="Directory for downloading models (default: ~/.cache/swiftllm/models, "
              "or set SWIFTLLM_MODEL_DIR env var)",
     )
+    # Phase 3 inference enhancement flags
+    parser.add_argument(
+        "--self-consistency",
+        type=int,
+        default=0,
+        metavar="N",
+        help="Enable self-consistency with N independent samples (0 = disabled). "
+             "Returns the plurality-majority answer across all samples.",
+    )
+    parser.add_argument(
+        "--refinement-rounds",
+        type=int,
+        default=0,
+        metavar="R",
+        help="Enable iterative self-refinement with up to R critique→revision rounds "
+             "(0 = disabled).",
+    )
+    parser.add_argument(
+        "--best-of-n",
+        type=int,
+        default=0,
+        metavar="N",
+        help="Enable Best-of-N: generate N candidates and return the highest-scoring "
+             "one via rule-based verification (0 = disabled).",
+    )
+    # Phase 3 — model-level reasoning flags
+    parser.add_argument(
+        "--rlm",
+        type=int,
+        default=0,
+        metavar="DEPTH",
+        help="Enable Recursive Language Model with up to DEPTH levels of recursive "
+             "self-calling and an optional REPL sandbox (0 = disabled, default: 0).",
+    )
+    parser.add_argument(
+        "--rlm-no-repl",
+        action="store_true",
+        help="When --rlm is set, disable the symbolic REPL sandbox (plain recursive "
+             "generation only).",
+    )
+    parser.add_argument(
+        "--dense-verification",
+        action="store_true",
+        help="Enable Dense Verification: cross-attention token/step confidence scoring "
+             "after generation.  Uses GATE_AND_REGEN strategy by default.",
+    )
+    parser.add_argument(
+        "--dv-min-confidence",
+        type=float,
+        default=0.80,
+        metavar="CONF",
+        help="Minimum confidence threshold for Dense Verification gate (default: 0.80).",
+    )
+    parser.add_argument(
+        "--dv-max-regen",
+        type=int,
+        default=3,
+        metavar="N",
+        help="Max regeneration attempts when Dense Verification rejects a draft "
+             "(default: 3).",
+    )
+    parser.add_argument(
+        "--dv-score-only",
+        action="store_true",
+        help="With --dense-verification: score but always accept (no gating).",
+    )
 
 
 def _add_benchmark_args(parser: argparse.ArgumentParser):
@@ -443,6 +553,223 @@ def _add_chat_args(parser: argparse.ArgumentParser):
         default=None,
         help="Directory for downloading models (default: ~/.cache/swiftllm/models, "
              "or set SWIFTLLM_MODEL_DIR env var)",
+    )
+
+
+def _add_dataset_args(parser: argparse.ArgumentParser):
+    """Add arguments for the dataset ingestion command."""
+
+    # ── Source arguments ──────────────────────────────────────────────────
+    src_group = parser.add_argument_group(
+        "Sources",
+        "Provide --input, --hf-dataset, or both.  At least one is required.",
+    )
+    src_group.add_argument(
+        "-i", "--input",
+        nargs="*",          # 0-or-more; validated manually so --hf-dataset alone works
+        default=[],
+        metavar="PATH",
+        help=(
+            "One or more local files or directories to ingest.  "
+            "Directories are walked recursively by default.  "
+            "May be omitted when --hf-dataset is used."
+        ),
+    )
+    src_group.add_argument(
+        "--hf-dataset",
+        nargs="+",
+        default=[],
+        metavar="DATASET",
+        help=(
+            "HuggingFace dataset name(s) to pull in, e.g. 'tatsu-lab/alpaca'.  "
+            "Specify multiple times (or space-separated) for multiple datasets.  "
+            "May be combined with --input."
+        ),
+    )
+
+    # ── HuggingFace options ───────────────────────────────────────────────
+    hf_group = parser.add_argument_group(
+        "HuggingFace options",
+        "Applied to every --hf-dataset.  Use the Python API for per-dataset overrides.",
+    )
+    hf_group.add_argument(
+        "--hf-split",
+        default="train",
+        metavar="SPLIT",
+        help=(
+            "Dataset split to load (default: 'train').  "
+            "Slice syntax supported: 'train[:5000]', 'train[:10%%]'."
+        ),
+    )
+    hf_group.add_argument(
+        "--hf-subset",
+        default=None,
+        metavar="NAME",
+        help="Dataset config / subset name, e.g. 'sample-10BT' for FineWeb.",
+    )
+    hf_group.add_argument(
+        "--hf-max-samples",
+        type=int,
+        default=None,
+        metavar="N",
+        help="Maximum number of rows to consume per HF dataset.",
+    )
+    hf_group.add_argument(
+        "--hf-streaming",
+        action="store_true",
+        help="Use HuggingFace streaming mode (avoids downloading the full dataset).",
+    )
+    hf_group.add_argument(
+        "--hf-shuffle",
+        action="store_true",
+        help="Shuffle the HF dataset before slicing (uses --hf-seed).",
+    )
+    hf_group.add_argument(
+        "--hf-seed",
+        type=int,
+        default=42,
+        metavar="N",
+        help="Random seed for --hf-shuffle (default: 42).",
+    )
+    hf_group.add_argument(
+        "--hf-trust-remote-code",
+        action="store_true",
+        help="Pass trust_remote_code=True to load_dataset (required by some datasets).",
+    )
+    hf_group.add_argument(
+        "--hf-text-field",
+        default=None,
+        metavar="COL",
+        help="Override: HF column name containing plain text.",
+    )
+    hf_group.add_argument(
+        "--hf-prompt-field",
+        default=None,
+        metavar="COL",
+        help="Override: HF column name containing the prompt / question.",
+    )
+    hf_group.add_argument(
+        "--hf-completion-field",
+        default=None,
+        metavar="COL",
+        help="Override: HF column name containing the completion / answer.",
+    )
+    hf_group.add_argument(
+        "--hf-messages-field",
+        default=None,
+        metavar="COL",
+        help="Override: HF column name containing a messages list.",
+    )
+    hf_group.add_argument(
+        "--hf-instruction-field",
+        default=None,
+        metavar="COL",
+        help="Override: HF column name for Alpaca-style instruction.",
+    )
+    hf_group.add_argument(
+        "--hf-output-field",
+        default=None,
+        metavar="COL",
+        help="Override: HF column name for Alpaca-style output.",
+    )
+
+    # ── Output ────────────────────────────────────────────────────────────
+    parser.add_argument(
+        "-o", "--output",
+        required=True,
+        metavar="FILE",
+        help="Output .jsonl file path.",
+    )
+    parser.add_argument(
+        "--format",
+        choices=["pretraining", "sft_messages", "sft_completion", "code"],
+        default="pretraining",
+        help=(
+            "Output JSONL schema (default: pretraining).\n"
+            "  pretraining    {\"text\": \"...\"}\n"
+            "  sft_messages   {\"messages\": [...]}\n"
+            "  sft_completion {\"prompt\": \"...\", \"completion\": \"...\"}\n"
+            "  code           {\"prompt\": \"# lang\\n# File: …\", \"completion\": code}"
+        ),
+    )
+
+    # ── Chunking ──────────────────────────────────────────────────────────
+    parser.add_argument(
+        "--chunk-size",
+        type=int,
+        default=2048,
+        metavar="N",
+        help="Maximum characters per output record (default: 2048).",
+    )
+    parser.add_argument(
+        "--chunk-overlap",
+        type=int,
+        default=128,
+        metavar="N",
+        help="Character overlap between consecutive chunks (default: 128).",
+    )
+    parser.add_argument(
+        "--min-length",
+        type=int,
+        default=50,
+        metavar="N",
+        help="Minimum chunk length; shorter chunks are discarded (default: 50).",
+    )
+    parser.add_argument(
+        "--max-file-size-mb",
+        type=float,
+        default=50.0,
+        metavar="MB",
+        help="Skip local files larger than this size in megabytes (default: 50).",
+    )
+    parser.add_argument(
+        "--extensions",
+        default=None,
+        metavar="EXT[,EXT...]",
+        help=(
+            "Comma-separated extension whitelist, e.g. '.py,.md,.txt'.  "
+            "Default: all supported extensions."
+        ),
+    )
+    parser.add_argument(
+        "--no-recursive",
+        action="store_true",
+        help="Do not walk directories recursively.",
+    )
+    parser.add_argument(
+        "--no-dedup",
+        action="store_true",
+        help="Disable chunk-level deduplication.",
+    )
+    parser.add_argument(
+        "--system-prompt",
+        default="You are a helpful assistant.",
+        metavar="TEXT",
+        help="System turn for sft_messages records.",
+    )
+    parser.add_argument(
+        "--sft-user-template",
+        default="Continue the following passage:\n\n{text}",
+        metavar="TEMPLATE",
+        help=(
+            "User-turn template for sft_messages / sft_completion.  "
+            "Use {text} as placeholder (default: 'Continue the following passage:\\n\\n{text}')."
+        ),
+    )
+    parser.add_argument(
+        "--include-metadata",
+        action="store_true",
+        help="Attach _source and _ext fields to every output record.",
+    )
+    parser.add_argument(
+        "--stats-only",
+        action="store_true",
+        help="Print statistics without writing the output file.",
+    )
+    parser.add_argument(
+        "--verbose", "-v",
+        action="store_true",
+        help="Print per-file / per-dataset progress.",
     )
 
 
@@ -623,7 +950,7 @@ def cmd_serve(args: argparse.Namespace):
 
 
 def cmd_generate(args: argparse.Namespace):
-    """Run offline generation."""
+    """Run offline generation (with optional self-consistency / refinement / best-of-n)."""
     LLM, _ = get_engine()
     SamplingParams, _, _ = get_config()
 
@@ -643,7 +970,36 @@ def cmd_generate(args: argparse.Namespace):
         print("No prompts provided", file=sys.stderr)
         sys.exit(1)
 
-    print(f"Generating {len(prompts)} prompt(s)...")
+    # Determine generation mode
+    use_sc = getattr(args, "self_consistency", 0) > 0
+    use_rf = getattr(args, "refinement_rounds", 0) > 0
+    use_bn = getattr(args, "best_of_n", 0) > 0
+    use_rlm = getattr(args, "rlm", 0) > 0
+    use_dv = getattr(args, "dense_verification", False)
+
+    mode_count = sum([use_sc, use_rf, use_bn, use_rlm, use_dv])
+    if mode_count > 1:
+        print(
+            "Error: --self-consistency, --refinement-rounds, --best-of-n, "
+            "--rlm, and --dense-verification are mutually exclusive.",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
+    if use_sc:
+        mode = "self-consistency"
+    elif use_rf:
+        mode = "refinement"
+    elif use_bn:
+        mode = "best-of-n"
+    elif use_rlm:
+        mode = f"rlm-depth-{args.rlm}"
+    elif use_dv:
+        mode = "dense-verification"
+    else:
+        mode = "standard"
+
+    print(f"Generating {len(prompts)} prompt(s) [mode: {mode}]...")
 
     # Initialize engine
     llm = LLM(
@@ -661,21 +1017,102 @@ def cmd_generate(args: argparse.Namespace):
         n=args.num_sequences,
     )
 
-    # Generate
     start_time = time.time()
-    outputs = llm.generate(prompts, params)
-    elapsed = time.time() - start_time
-
-    # Output results
     results = []
-    for output in outputs:
-        for completion in output.outputs:
-            result = {
-                "prompt": output.prompt,
-                "generated_text": completion.text,
-                "finish_reason": completion.finish_reason.value if completion.finish_reason else None,
-            }
-            results.append(result)
+
+    if use_sc:
+        from .config import SelfConsistencyConfig
+        sc_cfg = SelfConsistencyConfig(
+            num_samples=args.self_consistency,
+            temperature=max(args.temperature, 0.1),
+        )
+        sc_results = llm.generate_with_self_consistency(prompts, config=sc_cfg, base_params=params)
+        elapsed = time.time() - start_time
+        for prompt, r in zip(prompts, sc_results):
+            results.append({
+                "prompt": prompt,
+                "generated_text": r.answer or "(no answer extracted)",
+                "vote_fraction": r.vote_fraction,
+                "num_samples": len(r.raw_outputs),
+            })
+
+    elif use_rf:
+        from .config import RefinementConfig
+        rf_cfg = RefinementConfig(max_rounds=args.refinement_rounds)
+        rf_results = llm.generate_with_refinement(prompts, config=rf_cfg, base_params=params)
+        elapsed = time.time() - start_time
+        for r in rf_results:
+            results.append({
+                "prompt": r.prompt,
+                "generated_text": r.final_output,
+                "num_rounds": r.num_rounds_used,
+                "initial_output": r.initial_output,
+            })
+
+    elif use_bn:
+        from .config import VerificationConfig
+        bn_cfg = VerificationConfig(num_candidates=args.best_of_n)
+        bn_results = llm.generate_best_of_n(prompts, config=bn_cfg, base_params=params)
+        elapsed = time.time() - start_time
+        for r in bn_results:
+            results.append({
+                "prompt": r.prompt,
+                "generated_text": r.best_text,
+                "best_score": r.best_score,
+                "num_candidates": len(r.candidates),
+            })
+
+    elif use_rlm:
+        from .config import RlmConfig, RlmMode
+        rlm_cfg = RlmConfig(
+            mode=RlmMode.DISABLED if args.rlm == 0 else RlmMode.REASONING,
+            max_depth=args.rlm,
+            enable_repl=not getattr(args, "rlm_no_repl", False),
+        )
+        rlm_results = llm.generate_with_rlm(prompts, config=rlm_cfg, base_params=params)
+        elapsed = time.time() - start_time
+        for r in rlm_results:
+            results.append({
+                "prompt": r.prompt,
+                "generated_text": r.text,
+                "recursion_depth_used": r.recursion_depth_used,
+                "repl_trace_steps": len(r.repl_trace),
+                "early_exits": r.early_exits,
+                "repl_variables": r.repl_variables,
+            })
+
+    elif use_dv:
+        from .config import DenseVerificationConfig, VerificationStrategy
+        if getattr(args, "dv_score_only", False):
+            dv_strategy = VerificationStrategy.SCORE_ONLY
+        else:
+            dv_strategy = VerificationStrategy.GATE_AND_REGEN
+        dv_cfg = DenseVerificationConfig(
+            strategy=dv_strategy,
+            min_confidence=getattr(args, "dv_min_confidence", 0.80),
+            max_regen_attempts=getattr(args, "dv_max_regen", 3),
+        )
+        dv_results = llm.generate_with_dense_verification(prompts, config=dv_cfg, base_params=params)
+        elapsed = time.time() - start_time
+        for r in dv_results:
+            results.append({
+                "prompt": r.prompt,
+                "generated_text": r.text,
+                "global_score": r.global_score,
+                "accepted_on_attempt": r.accepted_on_attempt,
+                "low_confidence_positions": len(r.low_confidence_positions),
+            })
+
+    else:
+        outputs = llm.generate(prompts, params)
+        elapsed = time.time() - start_time
+        for output in outputs:
+            for completion in output.outputs:
+                results.append({
+                    "prompt": output.prompt,
+                    "generated_text": completion.text,
+                    "finish_reason": completion.finish_reason.value if completion.finish_reason else None,
+                })
 
     if args.json:
         output_text = json.dumps(results, indent=2)
@@ -686,6 +1123,26 @@ def cmd_generate(args: argparse.Namespace):
             output_text += f"Prompt {i+1}: {result['prompt']}\n"
             output_text += f"{'='*60}\n"
             output_text += f"{result['generated_text']}\n"
+            if "vote_fraction" in result:
+                output_text += f"(Self-consistency: {result['vote_fraction']:.0%} agreement, "
+                output_text += f"{result['num_samples']} samples)\n"
+            elif "num_rounds" in result:
+                output_text += f"(Refined over {result['num_rounds']} rounds)\n"
+            elif "best_score" in result:
+                output_text += (f"(Best-of-{result['num_candidates']}, "
+                                f"score={result['best_score']:.3f})\n")
+            elif "recursion_depth_used" in result:
+                output_text += (
+                    f"(RLM: depth={result['recursion_depth_used']}, "
+                    f"REPL steps={result['repl_trace_steps']}, "
+                    f"early-exits={result['early_exits']})\n"
+                )
+            elif "global_score" in result:
+                output_text += (
+                    f"(Dense Verification: score={result['global_score']:.2%}, "
+                    f"accepted on attempt {result['accepted_on_attempt']}, "
+                    f"low-conf tokens={result['low_confidence_positions']})\n"
+                )
 
     if args.output:
         with open(args.output, "w") as f:
@@ -695,11 +1152,9 @@ def cmd_generate(args: argparse.Namespace):
         print(output_text)
 
     # Print stats
-    total_tokens = sum(len(o.outputs[0].token_ids) for o in outputs)
     print(f"\n--- Statistics ---")
     print(f"Time: {elapsed:.2f}s")
-    print(f"Tokens: {total_tokens}")
-    print(f"Throughput: {total_tokens/elapsed:.2f} tokens/s")
+    print(f"Mode: {mode}")
 
 
 def cmd_benchmark(args: argparse.Namespace):
@@ -1197,6 +1652,279 @@ def cmd_finetune(args: argparse.Namespace):
     )
 
 
+def _add_grpo_args(parser: argparse.ArgumentParser):
+    """Add arguments for the grpo command."""
+    parser.add_argument(
+        "-m", "--model",
+        required=True,
+        help="Path to the model or HuggingFace model ID",
+    )
+    parser.add_argument(
+        "--train-data",
+        required=True,
+        help="Path to training prompts (JSONL format)",
+    )
+    parser.add_argument(
+        "-o", "--output-dir",
+        default="./grpo_output",
+        help="Output directory for checkpoints (default: ./grpo_output)",
+    )
+    parser.add_argument(
+        "--group-size",
+        type=int,
+        default=8,
+        help="Number of rollout samples per prompt (G, default: 8)",
+    )
+    parser.add_argument(
+        "--clip-eps",
+        type=float,
+        default=0.2,
+        help="PPO clipping threshold ε (default: 0.2)",
+    )
+    parser.add_argument(
+        "--kl-coeff",
+        type=float,
+        default=0.04,
+        help="KL divergence penalty coefficient β (default: 0.04)",
+    )
+    parser.add_argument(
+        "--learning-rate", "--lr",
+        type=float,
+        default=1e-5,
+        help="Learning rate (default: 1e-5)",
+    )
+    parser.add_argument(
+        "--num-epochs",
+        type=int,
+        default=1,
+        help="Number of training epochs (default: 1)",
+    )
+    parser.add_argument(
+        "--num-layers",
+        type=int,
+        default=32,
+        help="Total model layers (required for CGAR, default: 32)",
+    )
+    parser.add_argument(
+        "--enable-cgar",
+        action="store_true",
+        default=True,
+        help="Enable CGAR depth curriculum (default: enabled)",
+    )
+    parser.add_argument(
+        "--disable-cgar",
+        dest="enable_cgar",
+        action="store_false",
+        help="Disable CGAR depth curriculum",
+    )
+    parser.add_argument(
+        "--enable-prm",
+        action="store_true",
+        default=False,
+        help="Enable rule-based Process Reward Model (default: disabled)",
+    )
+    parser.add_argument(
+        "--long-reward-weight",
+        type=float,
+        default=0.0,
+        help="Weight for LongR dense token-level rewards (0.0 = disabled)",
+    )
+    parser.add_argument(
+        "--batch-size",
+        type=int,
+        default=2,
+        help="Per-device batch size (default: 2; effective = batch_size × group_size)",
+    )
+    parser.add_argument(
+        "--max-seq-len",
+        type=int,
+        default=2048,
+        help="Maximum sequence length (default: 2048)",
+    )
+    parser.add_argument(
+        "--logging-steps",
+        type=int,
+        default=10,
+        help="Log every N steps (default: 10)",
+    )
+    parser.add_argument(
+        "--seed",
+        type=int,
+        default=42,
+        help="Random seed (default: 42)",
+    )
+    parser.add_argument(
+        "--config",
+        default=None,
+        help="Path to training config JSON (overrides other args)",
+    )
+
+
+def cmd_grpo(args: argparse.Namespace):
+    """Run GRPO RL fine-tuning with optional CGAR curriculum and PRM."""
+    from .training import GrpoTrainer, TrainingConfig, FineTuningMethod
+    from .config import GrpoConfig, CgarConfig, PrmConfig
+
+    if args.config:
+        config = TrainingConfig.load(args.config)
+        print(f"Loaded config from {args.config}")
+        if config.train_data:
+            _validate_train_data(config.train_data)
+    else:
+        _validate_train_data(args.train_data)
+
+        config = TrainingConfig(
+            model=args.model,
+            train_data=args.train_data,
+            output_dir=args.output_dir,
+            fine_tuning_method=FineTuningMethod.FULL,
+            learning_rate=args.learning_rate,
+            num_epochs=args.num_epochs,
+            per_device_batch_size=args.batch_size,
+            max_seq_len=args.max_seq_len,
+            logging_steps=args.logging_steps,
+            seed=args.seed,
+            num_layers=args.num_layers,
+            grpo=GrpoConfig(
+                group_size=args.group_size,
+                clip_eps=args.clip_eps,
+                kl_coeff=args.kl_coeff,
+            ),
+            cgar=CgarConfig() if args.enable_cgar else None,
+            prm=PrmConfig() if args.enable_prm else None,
+            long_reward_weight=args.long_reward_weight,
+        )
+
+    trainer = GrpoTrainer(config)
+    trainer.train()
+
+
+def cmd_dataset(args: argparse.Namespace):
+    """Handler for `swiftllm dataset` — ingest files/HF datasets into JSONL."""
+    from .dataset import DatasetIngester, DatasetFormat, IngestionConfig, HuggingFaceSource
+
+    input_paths: List[str] = list(args.input) if args.input else []
+    hf_datasets: List[str] = list(args.hf_dataset) if args.hf_dataset else []
+
+    # Validate: at least one source required
+    if not input_paths and not hf_datasets:
+        print(
+            "Error: provide at least one source:\n"
+            "  --input PATH [PATH ...]        local files / directories\n"
+            "  --hf-dataset DATASET [...]     HuggingFace dataset name(s)\n"
+            "  (or both together)",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
+    # Parse extension whitelist
+    ext_list = None
+    if args.extensions:
+        ext_list = [
+            e.strip() if e.strip().startswith(".") else f".{e.strip()}"
+            for e in args.extensions.split(",")
+            if e.strip()
+        ]
+
+    try:
+        fmt = DatasetFormat(args.format)
+    except ValueError:
+        print(f"Error: unknown format {args.format!r}", file=sys.stderr)
+        sys.exit(1)
+
+    # Build HuggingFaceSource objects (shared settings applied to all)
+    hf_sources = [
+        HuggingFaceSource(
+            dataset_name=ds_name,
+            split=args.hf_split,
+            subset=args.hf_subset,
+            text_field=args.hf_text_field,
+            prompt_field=args.hf_prompt_field,
+            completion_field=args.hf_completion_field,
+            messages_field=args.hf_messages_field,
+            instruction_field=args.hf_instruction_field,
+            output_field=args.hf_output_field,
+            max_samples=args.hf_max_samples,
+            shuffle=args.hf_shuffle,
+            seed=args.hf_seed,
+            streaming=args.hf_streaming,
+            trust_remote_code=args.hf_trust_remote_code,
+        )
+        for ds_name in hf_datasets
+    ]
+
+    cfg = IngestionConfig(
+        output_path=args.output,
+        input_paths=input_paths,
+        hf_sources=hf_sources,
+        format=fmt,
+        file_extensions=ext_list,
+        recursive=not args.no_recursive,
+        chunk_size=args.chunk_size,
+        chunk_overlap=args.chunk_overlap,
+        min_length=args.min_length,
+        max_file_size_mb=args.max_file_size_mb,
+        system_prompt=args.system_prompt,
+        sft_user_template=args.sft_user_template,
+        deduplicate=not args.no_dedup,
+        include_metadata=args.include_metadata,
+        verbose=args.verbose,
+    )
+
+    # Print header
+    print("SwiftLLM Dataset Ingester")
+    if input_paths:
+        print(f"  Local paths : {', '.join(input_paths)}")
+    if hf_sources:
+        print(f"  HF datasets : {', '.join(s.dataset_name for s in hf_sources)}")
+        print(f"  HF split    : {args.hf_split}"
+              + (f"  subset={args.hf_subset!r}" if args.hf_subset else ""))
+        if args.hf_max_samples:
+            print(f"  HF max rows : {args.hf_max_samples:,}")
+        if args.hf_streaming:
+            print(f"  HF mode     : streaming")
+    print(f"  Output      : {args.output}")
+    print(f"  Format      : {fmt.value}")
+    print(f"  Chunks      : max {cfg.chunk_size} chars, overlap {cfg.chunk_overlap}")
+    if ext_list:
+        print(f"  Exts        : {', '.join(ext_list)}")
+    print()
+
+    if args.stats_only:
+        import tempfile, os as _os
+        tmp = tempfile.mktemp(suffix=".jsonl")
+        d = cfg.to_dict()
+        d["output_path"] = tmp
+        cfg_tmp = IngestionConfig.from_dict(d)
+        ingester = DatasetIngester(cfg_tmp)
+        result = ingester.ingest()
+        if _os.path.exists(tmp):
+            _os.unlink(tmp)
+        result.output_path = "(stats only — no file written)"
+    else:
+        ingester = DatasetIngester(cfg)
+        result = ingester.ingest()
+
+    print()
+    print(result.summary())
+
+    if result.skipped_files:
+        skipped_str = str(result.skipped_files)
+        print("\n  Tip: install optional dependencies to read more formats:")
+        if ".pdf" in skipped_str:
+            print("    pip install pdfplumber   # PDF support")
+        if ".docx" in skipped_str:
+            print("    pip install python-docx  # DOCX support")
+        if ".html" in skipped_str:
+            print("    pip install beautifulsoup4  # improved HTML extraction")
+
+    if hf_datasets and not result.hf_dataset_counts:
+        print(
+            "\n  Tip: HuggingFace dataset ingestion requires the 'datasets' library:\n"
+            "    pip install datasets"
+        )
+
+
 def _estimate_params(info: dict) -> int:
     """Estimate model parameters from config."""
     hidden = info.get("hidden_size", 0)
@@ -1239,5 +1967,7 @@ if __name__ == "__main__":
 # ------------------------------------------------------------------------------
 # END OF FILE: cli.py
 # REPO PATH:   /swiftllm/python/swiftllm/cli.py
+# INTEGRATES:  engine.py · training.py · config.py · sampling.py · model_resolver.py
+#              Rust: swiftllm-server/src/api/openai.rs · swiftllm-core · swiftllm-training
 # (c) 2026 SWIFTLLM | Apache 2.0 License
 # ------------------------------------------------------------------------------

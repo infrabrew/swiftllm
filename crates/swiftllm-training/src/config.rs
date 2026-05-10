@@ -20,6 +20,9 @@
 
 //! Training configuration types
 
+use crate::curriculum::{CgarConfig, PhasedSpecialisationConfig};
+use crate::grpo::GrpoConfig;
+use crate::process_reward::PrmConfig;
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
@@ -82,6 +85,26 @@ pub struct TrainingConfig {
 
     /// Number of data loading workers
     pub dataloader_num_workers: usize,
+
+    /// Number of model layers (used by CGAR curriculum scheduler).
+    pub num_layers: usize,
+
+    // ── Research extensions ────────────────────────────────────────────────
+
+    /// GRPO reinforcement fine-tuning configuration (None = disabled).
+    pub grpo: Option<GrpoConfig>,
+
+    /// CGAR progressive-depth curriculum (None = disabled).
+    pub cgar: Option<CgarConfig>,
+
+    /// Phased specialisation for Mamba+Attention hybrid models (None = disabled).
+    pub phased_spec: Option<PhasedSpecialisationConfig>,
+
+    /// Process Reward Model configuration (None = disabled).
+    pub prm: Option<PrmConfig>,
+
+    /// LongR dense reward weight (0.0 = off, 1.0 = replace terminal reward).
+    pub long_reward_weight: f32,
 }
 
 impl Default for TrainingConfig {
@@ -106,6 +129,12 @@ impl Default for TrainingConfig {
             data: DataConfig::default(),
             resume_from_checkpoint: None,
             dataloader_num_workers: 4,
+            num_layers: 32,
+            grpo: None,
+            cgar: None,
+            phased_spec: None,
+            prm: None,
+            long_reward_weight: 0.0,
         }
     }
 }
