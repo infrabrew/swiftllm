@@ -24,7 +24,7 @@
 [![Logo](https://github.com/infrabrew/infrabrew.github.io/blob/master/swiftllm/assets/logo-mark-128.png?raw=true)](https://infrabrew.github.io/swiftllm/)
 
 <p align="center">
-  <img src="https://img.shields.io/badge/version-2.0.6--beta-yellow.svg" alt="v2.0.6-beta">
+  <img src="https://img.shields.io/badge/version-2.0-green.svg" alt="v2.0">
   <img src="https://img.shields.io/badge/rust-%23000000.svg?style=flat&logo=rust&logoColor=white" alt="Rust">
   <img src="https://img.shields.io/badge/python-3.8+-blue.svg" alt="Python 3.8+">
   <img src="https://img.shields.io/badge/CUDA-11.8+-green.svg" alt="CUDA 11.8+">
@@ -3272,6 +3272,21 @@ SwiftLLM includes built-in security features across the server, installer, and r
 ---
 
 ## Changelog
+
+### v2.0
+
+**Stable Release** — all beta features promoted to production.
+
+Includes all changes from v2.0.0-alpha through v2.0.6-beta:
+- Hybrid Mamba-3 SSM + Transformer + MoE architecture (Phase 1)
+- GRPO / CGAR / PRM / LongReward training pipelines (Phase 2)
+- Self-consistency, refinement, best-of-N, disaggregated serving, RLM, dense verification (Phase 3)
+- TurboQuant KV cache compression (ICLR 2026) — 3–5× memory reduction
+- Lifecycle scripts (install, update, uninstall)
+- Comprehensive static analysis sweep — zero Clippy warnings, logic bug fixes
+- 329 backend tests, 66 frontend tests — all passing
+
+---
 
 ### v2.0.6-beta
 
