@@ -135,6 +135,7 @@ class QuantizationMethod(Enum):
     GPTQ = "gptq"
     SQUEEZELLM = "squeezellm"
     GGUF = "gguf"
+    TURBOQUANT = "turboquant"
 
 
 class SchedulerPolicy(Enum):
@@ -375,6 +376,90 @@ class DisaggregatedServingConfig:
             "scheduling_policy": self.scheduling_policy.value,
             "kv_transfer_timeout_ms": self.kv_transfer_timeout_ms,
             "enable_auto_ratio": self.enable_auto_ratio,
+        }
+
+
+# ---------------------------------------------------------------------------
+# TurboQuant — KV Cache Compression (ICLR 2026)
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class TurboQuantConfig:
+    """Configuration for TurboQuant KV cache compression.
+
+    TurboQuant (Zandieh et al., ICLR 2026) is an online vector quantization
+    algorithm that compresses KV cache vectors via random rotation followed
+    by per-coordinate scalar quantization against a precomputed
+    Beta-distribution codebook. It achieves near-optimal distortion with no
+    training required.
+
+    Mirrors ``TurboQuantConfig`` in ``crates/swiftllm-core/src/config.rs``.
+
+    Attributes:
+        key_bits: Bit-width per channel for key cache (1-16, default 4).
+        value_bits: Bit-width per channel for value cache (1-16, default 4).
+        residual_length: Rotation matrix residual length. None = head_dim.
+        use_inner_product_variant: Use TurboQuantProd (unbiased dot products).
+        group_size: Per-group quantization size (0 = per-head, recommended).
+        quantize_prefill: Whether to quantize KV during prefill phase.
+        seed: Random seed for the rotation matrix.
+    """
+    key_bits: int = 4
+    value_bits: int = 4
+    residual_length: Optional[int] = None
+    use_inner_product_variant: bool = False
+    group_size: int = 0
+    quantize_prefill: bool = True
+    seed: int = 42
+
+    def __post_init__(self):
+        """Validate configuration."""
+        if not (1 <= self.key_bits <= 16):
+            raise ValueError(f"key_bits must be in [1, 16], got {self.key_bits}")
+        if not (1 <= self.value_bits <= 16):
+            raise ValueError(f"value_bits must be in [1, 16], got {self.value_bits}")
+        if self.use_inner_product_variant and (self.key_bits < 2 or self.value_bits < 2):
+            raise ValueError(
+                "TurboQuantProd requires at least 2 bits (1 for MSE + 1 for JL sign)"
+            )
+
+    @classmethod
+    def quality_neutral(cls) -> "TurboQuantConfig":
+        """Preset: 4-bit keys + 3-bit values (3.5-bit avg, ~4x compression).
+
+        Matches full-precision quality on most benchmarks.
+        """
+        return cls(key_bits=4, value_bits=3)
+
+    @classmethod
+    def aggressive(cls) -> "TurboQuantConfig":
+        """Preset: 3-bit keys + 2-bit values (2.5-bit avg, ~5x compression).
+
+        Marginal quality degradation (approx 0.1 ppl on LLaMA-2-7B).
+        """
+        return cls(key_bits=3, value_bits=2)
+
+    @property
+    def compression_ratio(self) -> float:
+        """Compression ratio relative to FP16 storage."""
+        return (self.key_bits + self.value_bits) / 2.0 / 16.0
+
+    @property
+    def memory_reduction(self) -> float:
+        """Memory reduction factor (e.g. 4.0 means 4x less memory)."""
+        return 1.0 / self.compression_ratio if self.compression_ratio > 0 else float('inf')
+
+    def to_dict(self) -> dict:
+        """Serialize to dictionary."""
+        return {
+            "key_bits": self.key_bits,
+            "value_bits": self.value_bits,
+            "residual_length": self.residual_length,
+            "use_inner_product_variant": self.use_inner_product_variant,
+            "group_size": self.group_size,
+            "quantize_prefill": self.quantize_prefill,
+            "seed": self.seed,
         }
 
 
@@ -925,6 +1010,10 @@ class EngineConfig:
     dense_verification: Optional[DenseVerificationConfig] = None
     """Dense Verification Layer config. Set to enable generate_with_dense_verification()."""
 
+    # TurboQuant KV cache compression
+    turbo_quant: Optional[TurboQuantConfig] = None
+    """TurboQuant KV cache compression (ICLR 2026). Set to enable compressed KV cache."""
+
     def __post_init__(self):
         """Validate configuration."""
         if self.gpu_memory_utilization <= 0 or self.gpu_memory_utilization > 1:
@@ -980,6 +1069,8 @@ class EngineConfig:
             d["rlm"] = RlmConfig.from_dict(d["rlm"])
         if "dense_verification" in d and isinstance(d["dense_verification"], dict):
             d["dense_verification"] = DenseVerificationConfig.from_dict(d["dense_verification"])
+        if "turbo_quant" in d and isinstance(d["turbo_quant"], dict):
+            d["turbo_quant"] = TurboQuantConfig(**d["turbo_quant"])
         return cls(**{k: v for k, v in d.items() if k in cls.__dataclass_fields__})
 
     def to_dict(self) -> Dict[str, Any]:

@@ -257,6 +257,10 @@ pub enum QuantizationMethod {
     Marlin,
     /// FP8 quantization
     Fp8,
+    /// TurboQuant — online vector quantization with near-optimal distortion
+    /// (Zandieh et al., ICLR 2026). Random-rotation + Beta-distribution
+    /// scalar quantizer for KV cache compression.
+    TurboQuant,
 }
 
 /// RoPE scaling configuration
@@ -656,6 +660,149 @@ impl Default for ServerConfig {
     }
 }
 
+/// TurboQuant KV cache compression configuration
+///
+/// TurboQuant (Zandieh et al., ICLR 2026) is an online vector quantization
+/// algorithm that compresses KV cache vectors via random rotation followed by
+/// per-coordinate scalar quantization against a precomputed Beta-distribution
+/// codebook. It achieves near-optimal distortion rate with no training
+/// required.
+///
+/// Two algorithm variants are supported:
+///   - **MSE** (`TurboQuantMse`): minimises mean-squared reconstruction error.
+///   - **InnerProduct** (`TurboQuantProd`): unbiased inner-product estimation
+///     (uses b−1 bits for MSE quantization + 1 bit for JL residual sign).
+///
+/// Reference: "TurboQuant: Online Vector Quantization with Near-optimal
+/// Distortion Rate" (arXiv 2504.19874)
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TurboQuantConfig {
+    /// Bit-width per channel for key cache (default: 4).
+    ///
+    /// 3–4 bits achieves near-lossless quality; 2 bits incurs marginal
+    /// degradation (≈0.1 ppl on LLaMA-2-7B).
+    pub key_bits: u8,
+
+    /// Bit-width per channel for value cache (default: 4).
+    pub value_bits: u8,
+
+    /// Residual length for the rotation matrix (number of random sign flips
+    /// in the fast Walsh-Hadamard transform). `None` = use dimension of head
+    /// (recommended).
+    pub residual_length: Option<usize>,
+
+    /// Whether to use the inner-product–optimised variant (`TurboQuantProd`).
+    ///
+    /// When `true`, the quantizer allocates `bits - 1` to MSE quantization
+    /// and 1 bit to a Johnson–Lindenstrauss sign sketch of the residual,
+    /// producing unbiased dot-product estimates. When `false`, the plain
+    /// `TurboQuantMse` variant is used.
+    pub use_inner_product_variant: bool,
+
+    /// Group size for per-group quantization (default: 0 = per-head).
+    ///
+    /// Larger groups amortise rotation overhead but may reduce quality.
+    /// 0 means treat each attention head independently (recommended).
+    pub group_size: usize,
+
+    /// Whether to quantize during prefill (default: true).
+    ///
+    /// Disabling this keeps full-precision KV during the prefill phase and
+    /// only quantizes tokens generated during decode, which can improve
+    /// long-context quality at the cost of higher prefill memory.
+    pub quantize_prefill: bool,
+
+    /// Random seed for the rotation matrix (deterministic reproducibility).
+    pub seed: u64,
+}
+
+impl Default for TurboQuantConfig {
+    fn default() -> Self {
+        Self {
+            key_bits: 4,
+            value_bits: 4,
+            residual_length: None,
+            use_inner_product_variant: false,
+            group_size: 0,
+            quantize_prefill: true,
+            seed: 42,
+        }
+    }
+}
+
+impl TurboQuantConfig {
+    /// Create a config with the given bit-widths for keys and values.
+    pub fn new(key_bits: u8, value_bits: u8) -> Self {
+        Self {
+            key_bits,
+            value_bits,
+            ..Default::default()
+        }
+    }
+
+    /// Create the recommended "quality-neutral" preset (3.5-bit effective).
+    ///
+    /// Uses 4-bit keys and 3-bit values — matches full-precision quality
+    /// on most benchmarks while cutting KV cache memory by ≈4×.
+    pub fn quality_neutral() -> Self {
+        Self {
+            key_bits: 4,
+            value_bits: 3,
+            ..Default::default()
+        }
+    }
+
+    /// Create the "aggressive" preset (2.5-bit effective).
+    ///
+    /// Uses 3-bit keys and 2-bit values — ≈5× memory reduction with
+    /// marginal quality degradation.
+    pub fn aggressive() -> Self {
+        Self {
+            key_bits: 3,
+            value_bits: 2,
+            ..Default::default()
+        }
+    }
+
+    /// Enable the inner-product–optimised variant.
+    pub fn with_inner_product(mut self) -> Self {
+        self.use_inner_product_variant = true;
+        self
+    }
+
+    /// Compute the compression ratio relative to FP16 storage.
+    ///
+    /// Returns the ratio of compressed size to original size (e.g., 0.25
+    /// means 4× compression).
+    pub fn compression_ratio(&self) -> f32 {
+        let original_bits = 16.0_f32; // FP16 baseline
+        let avg_bits = (self.key_bits as f32 + self.value_bits as f32) / 2.0;
+        avg_bits / original_bits
+    }
+
+    /// Validate the configuration, returning an error on invalid settings.
+    pub fn validate(&self) -> crate::error::Result<()> {
+        if self.key_bits == 0 || self.key_bits > 16 {
+            return Err(crate::error::Error::InvalidConfig(format!(
+                "TurboQuant key_bits must be in [1, 16], got {}",
+                self.key_bits
+            )));
+        }
+        if self.value_bits == 0 || self.value_bits > 16 {
+            return Err(crate::error::Error::InvalidConfig(format!(
+                "TurboQuant value_bits must be in [1, 16], got {}",
+                self.value_bits
+            )));
+        }
+        if self.use_inner_product_variant && (self.key_bits < 2 || self.value_bits < 2) {
+            return Err(crate::error::Error::InvalidConfig(
+                "TurboQuantProd requires at least 2 bits (1 for MSE + 1 for JL sign)".to_string(),
+            ));
+        }
+        Ok(())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -685,6 +832,80 @@ mod tests {
         assert_eq!(DataType::Float32.size_bytes(), 4);
         assert_eq!(DataType::Float16.size_bytes(), 2);
         assert_eq!(DataType::Int8.size_bytes(), 1);
+    }
+
+    #[test]
+    fn test_turbo_quant_config_default() {
+        let cfg = TurboQuantConfig::default();
+        assert_eq!(cfg.key_bits, 4);
+        assert_eq!(cfg.value_bits, 4);
+        assert!(!cfg.use_inner_product_variant);
+        assert_eq!(cfg.group_size, 0);
+        assert!(cfg.quantize_prefill);
+        assert!(cfg.validate().is_ok());
+    }
+
+    #[test]
+    fn test_turbo_quant_config_presets() {
+        let qn = TurboQuantConfig::quality_neutral();
+        assert_eq!(qn.key_bits, 4);
+        assert_eq!(qn.value_bits, 3);
+        assert!((qn.compression_ratio() - 3.5 / 16.0).abs() < 1e-6);
+        assert!(qn.validate().is_ok());
+
+        let ag = TurboQuantConfig::aggressive();
+        assert_eq!(ag.key_bits, 3);
+        assert_eq!(ag.value_bits, 2);
+        assert!((ag.compression_ratio() - 2.5 / 16.0).abs() < 1e-6);
+        assert!(ag.validate().is_ok());
+    }
+
+    #[test]
+    fn test_turbo_quant_config_validation() {
+        // Zero bits is invalid
+        let cfg_zero = TurboQuantConfig { key_bits: 0, ..TurboQuantConfig::default() };
+        assert!(cfg_zero.validate().is_err());
+
+        // Over 16 bits is invalid
+        let cfg_over = TurboQuantConfig { key_bits: 17, ..TurboQuantConfig::default() };
+        assert!(cfg_over.validate().is_err());
+
+        // Inner product with 1 bit is invalid (needs ≥2)
+        let mut cfg2 = TurboQuantConfig::new(1, 2).with_inner_product();
+        assert!(cfg2.validate().is_err());
+        cfg2.key_bits = 2;
+        assert!(cfg2.validate().is_ok());
+    }
+
+    #[test]
+    fn test_turbo_quant_compression_ratio() {
+        let cfg = TurboQuantConfig::new(4, 4);
+        assert!((cfg.compression_ratio() - 0.25).abs() < 1e-6);
+
+        let cfg2 = TurboQuantConfig::new(8, 8);
+        assert!((cfg2.compression_ratio() - 0.5).abs() < 1e-6);
+    }
+
+    #[test]
+    fn test_turbo_quant_serialization() {
+        let cfg = TurboQuantConfig::quality_neutral();
+        let json = serde_json::to_string(&cfg).unwrap();
+        let deserialized: TurboQuantConfig = serde_json::from_str(&json).unwrap();
+        assert_eq!(deserialized.key_bits, cfg.key_bits);
+        assert_eq!(deserialized.value_bits, cfg.value_bits);
+        assert_eq!(
+            deserialized.use_inner_product_variant,
+            cfg.use_inner_product_variant
+        );
+    }
+
+    #[test]
+    fn test_quantization_method_turboquant() {
+        let method = QuantizationMethod::TurboQuant;
+        let json = serde_json::to_string(&method).unwrap();
+        assert_eq!(json, "\"turboquant\"");
+        let deserialized: QuantizationMethod = serde_json::from_str(&json).unwrap();
+        assert_eq!(deserialized, QuantizationMethod::TurboQuant);
     }
 }
 
