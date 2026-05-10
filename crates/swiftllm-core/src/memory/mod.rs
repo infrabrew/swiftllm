@@ -27,10 +27,12 @@
 pub mod block_manager;
 pub mod kv_cache;
 pub mod paged_attention;
+pub mod turbo_quant;
 
 pub use block_manager::{BlockAllocator, BlockManager, BlockManagerStats, BlockTable};
 pub use kv_cache::{BatchedCacheMetadata, KvCache, KvCacheConfig};
 pub use paged_attention::{PagedAttention, PagedAttentionConfig};
+pub use turbo_quant::{TurboQuantKvCache, TurboQuantMemoryStats, TurboQuantizer};
 
 use crate::config::MemoryConfig;
 use crate::error::Result;

@@ -24,7 +24,7 @@
 [![Logo](https://github.com/infrabrew/infrabrew.github.io/blob/master/swiftllm/assets/logo-mark-128.png?raw=true)](https://infrabrew.github.io/swiftllm/)
 
 <p align="center">
-  <img src="https://img.shields.io/badge/version-2.0.5--beta-yellow.svg" alt="v2.0.5-beta">
+  <img src="https://img.shields.io/badge/version-2.0.6--beta-yellow.svg" alt="v2.0.6-beta">
   <img src="https://img.shields.io/badge/rust-%23000000.svg?style=flat&logo=rust&logoColor=white" alt="Rust">
   <img src="https://img.shields.io/badge/python-3.8+-blue.svg" alt="Python 3.8+">
   <img src="https://img.shields.io/badge/CUDA-11.8+-green.svg" alt="CUDA 11.8+">
@@ -3276,6 +3276,29 @@ SwiftLLM includes built-in security features across the server, installer, and r
 ---
 
 ## Changelog
+
+### v2.0.6-beta
+
+**TurboQuant KV Cache Compression (ICLR 2026)**
+
+- **New**: Full implementation of TurboQuant (Zandieh et al., arXiv 2504.19874) for KV cache compression
+  - Random rotation via fast Walsh-Hadamard transform with deterministic sign flips
+  - Precomputed Max-Lloyd codebooks for 1–4 bit scalar quantization (Beta-distribution optimal)
+  - `TurboQuantMse` variant (minimises MSE) and `TurboQuantProd` variant (unbiased inner products)
+  - Configurable per-channel bit-widths for keys and values independently
+  - Presets: `quality_neutral()` (4-bit K / 3-bit V, ~4× compression) and `aggressive()` (3-bit K / 2-bit V, ~5×)
+- **New**: `TurboQuantConfig` — Rust config struct with validation, serialization, compression ratio calculation
+- **New**: `TurboQuantizer` — core quantizer with `quantize_key/value` and `dequantize_key/value` APIs
+- **New**: `TurboQuantKvCache` — compressed KV cache layer with slot-based store/load/clear operations
+- **New**: `QuantizationMethod::TurboQuant` variant added to supported quantization methods
+- **New**: Python `TurboQuantConfig` dataclass with `quality_neutral()`, `aggressive()` presets, `compression_ratio` / `memory_reduction` properties, and `to_dict()` serialization
+- **New**: `EngineConfig.turbo_quant` field — set to enable TurboQuant-compressed KV cache
+- **New**: `QuantizationMethod.TURBOQUANT` enum value in Python frontend
+- **Tested**: 25 new Rust unit tests covering codebook construction, rotation invertibility, quantize/dequantize roundtrip quality, zero-vector handling, inner-product variant, multi-slot cache operations, bounds checking, memory stats, and quality comparison across bit-widths
+- **Tested**: 16 new Python tests covering config construction, presets, validation, serialization, EngineConfig integration, and from_dict deserialization
+- **Regression**: All 329 existing backend tests pass; all 50 existing frontend tests pass
+
+---
 
 ### v2.0.5-beta
 

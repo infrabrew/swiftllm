@@ -23,7 +23,7 @@
 //! This module provides the KV cache storage and management that works
 //! with PagedAttention for efficient memory usage.
 
-use crate::config::DataType;
+use crate::config::{DataType, TurboQuantConfig};
 use crate::error::{Error, Result};
 use crate::memory::block_manager::{BlockManager, PhysicalBlockId};
 use crate::tensor::{Device, Shape, Tensor};
@@ -50,6 +50,13 @@ pub struct KvCacheConfig {
 
     /// Device for cache storage
     pub device: Device,
+
+    /// TurboQuant KV cache compression (optional).
+    ///
+    /// When set, key-value vectors are stored in compressed form using
+    /// the TurboQuant algorithm, reducing memory usage by 3–5× with
+    /// minimal quality impact.
+    pub turbo_quant: Option<TurboQuantConfig>,
 }
 
 impl KvCacheConfig {
@@ -329,6 +336,7 @@ mod tests {
             block_size: 16,
             dtype: DataType::Float16,
             device: Device::Cpu,
+            turbo_quant: None,
         };
 
         // Token size = 2 * 8 * 128 * 2 = 4096 bytes
@@ -336,6 +344,24 @@ mod tests {
 
         // Block size = 2 * 16 * 8 * 128 * 2 = 65536 bytes
         assert_eq!(config.block_size_bytes(), 65536);
+    }
+
+    #[test]
+    fn test_kv_cache_config_with_turbo_quant() {
+        let config = KvCacheConfig {
+            num_layers: 32,
+            num_kv_heads: 8,
+            head_dim: 128,
+            block_size: 16,
+            dtype: DataType::Float16,
+            device: Device::Cpu,
+            turbo_quant: Some(TurboQuantConfig::quality_neutral()),
+        };
+
+        assert!(config.turbo_quant.is_some());
+        let tq = config.turbo_quant.as_ref().unwrap();
+        assert_eq!(tq.key_bits, 4);
+        assert_eq!(tq.value_bits, 3);
     }
 
     #[test]

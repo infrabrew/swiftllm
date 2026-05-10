@@ -119,6 +119,9 @@ from .config import (
     ImprovementMetric,
     ScoringStrategy,
     DisaggregatedPolicy,
+    # TurboQuant — KV cache compression
+    TurboQuantConfig,
+    QuantizationMethod,
     # Phase 3 — Model-level reasoning (RLM + Dense Verification)
     RlmConfig,
     RlmMode,
@@ -194,7 +197,7 @@ from .dataset import (
     DOCUMENT_EXTENSIONS,
 )
 
-__version__ = "2.0.5b1"
+__version__ = "2.0.6b1"
 __all__ = [
     # Main classes
     "LLM",
@@ -231,6 +234,9 @@ __all__ = [
     "ImprovementMetric",
     "ScoringStrategy",
     "DisaggregatedPolicy",
+    # Configuration — TurboQuant KV cache compression
+    "TurboQuantConfig",
+    "QuantizationMethod",
     # Configuration — Phase 3 Model-level reasoning
     "RlmConfig",
     "RlmMode",

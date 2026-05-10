@@ -42,7 +42,7 @@ pub mod error;
 pub mod tensor;
 pub mod types;
 
-pub use config::{EngineConfig, ModelConfig, SchedulerConfig, SamplingConfig};
+pub use config::{EngineConfig, ModelConfig, SchedulerConfig, SamplingConfig, TurboQuantConfig};
 pub use engine::Engine;
 pub use error::{Error, Result};
 pub use types::{
