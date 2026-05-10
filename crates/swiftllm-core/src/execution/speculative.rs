@@ -339,7 +339,7 @@ impl NgramSpeculator {
             let start = context.len() - n;
             let ngram: Vec<TokenId> = context[start..].to_vec();
 
-            let entry = self.ngram_table.entry(ngram).or_insert_with(Vec::new);
+            let entry = self.ngram_table.entry(ngram).or_default();
 
             // Update count for this token
             if let Some(pos) = entry.iter().position(|(t, _)| *t == next_token) {

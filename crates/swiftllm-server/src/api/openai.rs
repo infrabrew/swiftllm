@@ -344,7 +344,7 @@ pub struct OpenAIApi;
 impl OpenAIApi {
     /// Generate a response ID
     fn generate_id(prefix: &str) -> String {
-        format!("{}-{}", prefix, Uuid::new_v4().to_string().replace("-", "")[..24].to_string())
+        format!("{}-{}", prefix, &Uuid::new_v4().to_string().replace("-", "")[..24])
     }
 
     /// Get system fingerprint

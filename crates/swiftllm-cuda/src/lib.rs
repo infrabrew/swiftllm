@@ -29,6 +29,7 @@
 //! - F16 linear (GEMM) fallback
 
 #![warn(clippy::all)]
+#![allow(clippy::too_many_arguments)] // CUDA kernel signatures require many parameters
 
 pub mod bindings;
 pub mod memory;

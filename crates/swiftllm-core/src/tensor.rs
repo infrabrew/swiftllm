@@ -66,7 +66,7 @@ impl Shape {
 
     /// Check if the shape is empty (has zero elements)
     pub fn is_empty(&self) -> bool {
-        self.0.iter().any(|&d| d == 0)
+        self.0.contains(&0)
     }
 
     /// Reshape to a new shape (must have same number of elements)
@@ -139,9 +139,10 @@ impl std::fmt::Display for Shape {
 }
 
 /// Device type for tensor storage
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
 pub enum Device {
     /// CPU memory
+    #[default]
     Cpu,
     /// CUDA GPU memory
     Cuda(usize),
@@ -177,12 +178,6 @@ impl Device {
                 "Expected CUDA device, got CPU".to_string(),
             )),
         }
-    }
-}
-
-impl Default for Device {
-    fn default() -> Self {
-        Device::Cpu
     }
 }
 

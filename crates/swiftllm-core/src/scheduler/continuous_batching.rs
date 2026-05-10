@@ -37,20 +37,15 @@ use std::sync::Arc;
 use std::time::Instant;
 
 /// Scheduling policy
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum SchedulerPolicy {
     /// First Come First Served
+    #[default]
     Fcfs,
     /// Shortest Job First (based on max_tokens)
     Sjf,
     /// Priority-based scheduling
     Priority,
-}
-
-impl Default for SchedulerPolicy {
-    fn default() -> Self {
-        Self::Fcfs
-    }
 }
 
 /// Continuous batching scheduler

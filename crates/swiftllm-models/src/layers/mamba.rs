@@ -100,7 +100,7 @@ pub struct MambaConfig {
 impl MambaConfig {
     /// Create a standard Mamba-2 configuration
     pub fn mamba2(d_model: usize) -> Self {
-        let dt_rank = (d_model + 15) / 16; // ceil(d_model / 16)
+        let dt_rank = d_model.div_ceil(16); // ceil(d_model / 16)
         Self {
             d_model,
             expand: 2,
@@ -121,7 +121,7 @@ impl MambaConfig {
 
     /// Create a Mamba-3 configuration with all improvements enabled
     pub fn mamba3(d_model: usize) -> Self {
-        let dt_rank = (d_model + 15) / 16;
+        let dt_rank = d_model.div_ceil(16);
         let num_heads = (d_model / 64).max(1); // 1 head per 64 dims
         Self {
             d_model,
@@ -321,6 +321,7 @@ pub enum DiscretizationMethod {
 ///
 /// With exponential-trapezoidal:
 ///     B̄_t = Δ_t ⊗ B_t ⊙ (1 + Δ_t ⊗ A_log / 2)  (first-order correction)
+#[allow(clippy::too_many_arguments)]
 pub fn selective_scan_cpu(
     u: &[f32],           // [seq_len * d_inner] flattened
     delta: &[f32],       // [seq_len * d_inner]
@@ -378,6 +379,7 @@ pub fn selective_scan_cpu(
 }
 
 /// Single-step recurrent SSM update (inference mode)
+#[allow(clippy::too_many_arguments)]
 pub fn selective_scan_step_cpu(
     u_t: &[f32],        // [d_inner]
     delta_t: &[f32],    // [d_inner]
@@ -450,6 +452,7 @@ pub fn selective_scan_step_cpu(
 /// * `h`           — `[d_inner × d_state]`    recurrent state (updated in-place)
 /// * `num_heads`   — number of MIMO head groups (d_inner must be divisible)
 /// * `disc_method` — ZOH or exponential-trapezoidal discretisation
+#[allow(clippy::too_many_arguments)]
 pub fn mimo_scan_step_cpu(
     u_t: &[f32],
     delta_t: &[f32],
@@ -537,6 +540,7 @@ impl ComplexMambaState {
 
     /// Single-step complex SSM update
     /// A is parameterized as (log_r, theta) → r*exp(iθ), r ∈ (0,1), θ ∈ [-π,π]
+    #[allow(clippy::too_many_arguments, clippy::needless_range_loop)]
     pub fn step(
         &mut self,
         u_t: &[f32],    // [d_inner]

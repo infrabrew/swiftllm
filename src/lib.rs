@@ -22,6 +22,8 @@
 //!
 //! This module provides Python bindings via PyO3 for the SwiftLLM inference engine.
 
+#![allow(clippy::too_many_arguments)] // PyO3 constructors mirror Python kwargs
+
 use pyo3::prelude::*;
 use pyo3::types::PyDict;
 use std::sync::Arc;
@@ -166,12 +168,12 @@ impl PySamplingParams {
                 "temperature must be >= 0.0",
             ));
         }
-        if top_p < 0.0 || top_p > 1.0 {
+        if !(0.0..=1.0).contains(&top_p) {
             return Err(pyo3::exceptions::PyValueError::new_err(
                 "top_p must be between 0.0 and 1.0",
             ));
         }
-        if min_p < 0.0 || min_p > 1.0 {
+        if !(0.0..=1.0).contains(&min_p) {
             return Err(pyo3::exceptions::PyValueError::new_err(
                 "min_p must be between 0.0 and 1.0",
             ));
@@ -338,7 +340,7 @@ impl PyEngine {
 
     /// Abort a request by ID
     fn abort_request(&self, request_id: &str) -> PyResult<()> {
-        let rid = swiftllm_core::types::RequestId::from_str(request_id)
+        let rid = swiftllm_core::types::RequestId::parse(request_id)
             .map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))?;
         self.engine
             .abort_request(rid)
@@ -583,14 +585,14 @@ impl PyHybridEngine {
     fn new(config: PyHybridModelConfig, device: String) -> PyResult<Self> {
         let cuda_backend = device.starts_with("cuda");
 
-        #[cfg(has_cuda)]
+        #[cfg(feature = "cuda")]
         if cuda_backend {
             // In a production build this would call swiftllm_cuda::set_device(idx)
             // and allocate parameter tensors on-device.  For now we log intent.
             tracing::info!("PyHybridEngine: CUDA backend enabled on {}", device);
         }
 
-        #[cfg(not(has_cuda))]
+        #[cfg(not(feature = "cuda"))]
         if cuda_backend {
             return Err(pyo3::exceptions::PyRuntimeError::new_err(
                 "CUDA backend requested but swiftllm was built without CUDA support. \

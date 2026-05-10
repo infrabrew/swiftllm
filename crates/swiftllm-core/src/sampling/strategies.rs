@@ -388,8 +388,8 @@ impl SamplerChain {
         }
     }
 
-    /// Add a sampler to the chain
-    pub fn add<S: Sampler + 'static>(mut self, sampler: S) -> Self {
+    /// Add a sampler to the chain (builder pattern)
+    pub fn with_sampler<S: Sampler + 'static>(mut self, sampler: S) -> Self {
         self.samplers.push(Box::new(sampler));
         self
     }
@@ -426,32 +426,32 @@ pub fn create_sampler_chain(
 
     // Add repetition penalty first
     if repetition_penalty != 1.0 {
-        chain = chain.add(RepetitionPenalty::new(repetition_penalty));
+        chain = chain.with_sampler(RepetitionPenalty::new(repetition_penalty));
     }
 
     // Temperature scaling
     if temperature > 0.0 && temperature != 1.0 {
-        chain = chain.add(TemperatureSampler::new(temperature));
+        chain = chain.with_sampler(TemperatureSampler::new(temperature));
     }
 
     // Min-p filtering (before top-k/top-p)
     if min_p > 0.0 {
-        chain = chain.add(MinPSampler::new(min_p));
+        chain = chain.with_sampler(MinPSampler::new(min_p));
     }
 
     // Top-k filtering
     if top_k > 0 {
-        chain = chain.add(TopKSampler::new(top_k as usize));
+        chain = chain.with_sampler(TopKSampler::new(top_k as usize));
     }
 
     // Top-p filtering
     if top_p < 1.0 && top_p > 0.0 {
-        chain = chain.add(TopPSampler::new(top_p));
+        chain = chain.with_sampler(TopPSampler::new(top_p));
     }
 
     // Greedy if temperature is 0
     if temperature == 0.0 {
-        chain = chain.add(GreedySampler::new());
+        chain = chain.with_sampler(GreedySampler::new());
     }
 
     chain
@@ -516,9 +516,9 @@ mod tests {
     #[test]
     fn test_sampler_chain() {
         let chain = SamplerChain::new()
-            .add(RepetitionPenalty::new(1.5))
-            .add(TemperatureSampler::new(0.8))
-            .add(TopKSampler::new(3));
+            .with_sampler(RepetitionPenalty::new(1.5))
+            .with_sampler(TemperatureSampler::new(0.8))
+            .with_sampler(TopKSampler::new(3));
 
         let names = chain.names();
         assert_eq!(names, vec!["repetition_penalty", "temperature", "top_k"]);

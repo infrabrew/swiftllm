@@ -27,7 +27,7 @@ use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
 /// Main engine configuration
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct EngineConfig {
     /// Model configuration
     pub model: ModelConfig,
@@ -43,18 +43,6 @@ pub struct EngineConfig {
 
     /// Speculative decoding configuration (optional)
     pub speculative: Option<SpeculativeConfig>,
-}
-
-impl Default for EngineConfig {
-    fn default() -> Self {
-        Self {
-            model: ModelConfig::default(),
-            scheduler: SchedulerConfig::default(),
-            memory: MemoryConfig::default(),
-            device: DeviceConfig::default(),
-            speculative: None,
-        }
-    }
 }
 
 impl EngineConfig {
@@ -233,8 +221,7 @@ impl DataType {
     /// per byte, rounding up for odd counts).
     pub fn size_bytes_for_elements(&self, num_elements: usize) -> usize {
         let bits = num_elements * self.element_bit_width();
-        // Round up to the next full byte
-        (bits + 7) / 8
+        bits.div_ceil(8)
     }
 }
 

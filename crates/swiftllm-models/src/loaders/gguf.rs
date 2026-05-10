@@ -96,7 +96,7 @@ impl GgufType {
         }
     }
 
-    fn to_dtype(&self) -> DataType {
+    fn as_dtype(&self) -> DataType {
         match self {
             Self::F32 => DataType::Float32,
             Self::F16 => DataType::Float16,
@@ -312,7 +312,7 @@ impl WeightLoader for GgufLoader {
             let numel: usize = shape.iter().product();
 
             // Calculate byte size based on dtype
-            let dtype = info.dtype.to_dtype();
+            let dtype = info.dtype.as_dtype();
             let bytes_per_elem = dtype.size_bytes();
             let byte_len = numel * bytes_per_elem;
 
@@ -340,7 +340,7 @@ impl WeightLoader for GgufLoader {
         let offset = (self.data_offset + info.offset) as usize;
         let shape: Vec<usize> = info.dims.iter().map(|&d| d as usize).collect();
         let numel: usize = shape.iter().product();
-        let dtype = info.dtype.to_dtype();
+        let dtype = info.dtype.as_dtype();
         let byte_len = numel * dtype.size_bytes();
 
         let end = offset.checked_add(byte_len).ok_or_else(|| {

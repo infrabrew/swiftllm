@@ -227,6 +227,7 @@ impl VerificationResult {
 ///
 /// With stub weights the embeddings are zero — verification scores will be
 /// uniform (0.5) until the layer is trained.
+#[allow(clippy::needless_range_loop)]
 pub fn embed_repl_trace(
     trace: &[ReplStep],
     step_type_embeddings: &[[f32; 4]], // 4 step-type embeddings (Assign/Compute/Verify/Recurse)
@@ -593,6 +594,7 @@ impl DenseVerificationLayer {
 /// On GPU this is a standard flash-attention cross-attention kernel.
 ///
 /// Returns `[seq, num_heads * d_head]` context vectors (batch=1 assumed for verification).
+#[allow(clippy::needless_range_loop)]
 fn cross_attention_cpu(
     queries: &Tensor,   // [batch, seq, num_heads * d_head]
     keys:    &Tensor,   // [batch, kv_len, num_heads * d_head]

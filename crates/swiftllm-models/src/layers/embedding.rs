@@ -184,7 +184,7 @@ impl VocabParallelEmbedding {
             ));
         }
 
-        let vocab_size_per_gpu = (vocab_size + tp_size - 1) / tp_size;
+        let vocab_size_per_gpu = vocab_size.div_ceil(tp_size);
         let vocab_start_idx = tp_rank * vocab_size_per_gpu;
         let vocab_end_idx = ((tp_rank + 1) * vocab_size_per_gpu).min(vocab_size);
 

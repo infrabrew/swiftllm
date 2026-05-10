@@ -137,7 +137,7 @@ pub struct DenseRewardResult {
 /// # Arguments
 /// * `log_probs_model` — `log p_θ(t_i | t_{<i}, ctx)` for each generated token.
 /// * `log_probs_ref`   — `log p_ref(t_i | t_{<i})` for the same tokens under a
-///                       context-free baseline (e.g. a frozen model without RAG).
+///   context-free baseline (e.g. a frozen model without RAG).
 /// * `token_ids`       — Raw token ID for each position.
 /// * `config`          — LongR configuration.
 ///
@@ -212,7 +212,7 @@ pub fn compute_dense_rewards(
 }
 
 /// Normalise token rewards in-place: zero mean, unit variance.
-fn normalise_rewards_inplace(rewards: &mut Vec<TokenReward>) {
+fn normalise_rewards_inplace(rewards: &mut [TokenReward]) {
     let n = rewards.len() as f32;
     let mean = rewards.iter().map(|r| r.reward).sum::<f32>() / n;
     let var = rewards.iter().map(|r| (r.reward - mean).powi(2)).sum::<f32>() / n;

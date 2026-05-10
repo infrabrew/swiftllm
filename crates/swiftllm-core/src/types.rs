@@ -37,8 +37,15 @@ impl RequestId {
     }
 
     /// Create from a UUID string
-    pub fn from_str(s: &str) -> Result<Self, uuid::Error> {
+    pub fn parse(s: &str) -> Result<Self, uuid::Error> {
         Ok(Self(Uuid::parse_str(s)?))
+    }
+}
+
+impl std::str::FromStr for RequestId {
+    type Err = uuid::Error;
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        Self::parse(s)
     }
 }
 

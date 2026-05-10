@@ -318,7 +318,7 @@ impl DisaggregatedScheduler {
         let decode_id = self.pick_worker(WorkerRole::Decode)?;
 
         // Estimate transfer: how many blocks does this prompt use?
-        let num_blocks = (prompt_len + self.config.block_size - 1) / self.config.block_size;
+        let num_blocks = prompt_len.div_ceil(self.config.block_size);
         let byte_size = num_blocks * self.config.kv_block_byte_size();
         let bandwidth_bytes_per_ms =
             self.config.kv_transfer_bandwidth_gibs * 1024.0 * 1024.0 * 1024.0 / 1000.0;
@@ -367,7 +367,7 @@ impl DisaggregatedScheduler {
         num_layers: Option<usize>,
     ) -> KvTransferMetadata {
         let layers = num_layers.unwrap_or(self.config.num_layers);
-        let num_blocks = (prompt_len + self.config.block_size - 1) / self.config.block_size;
+        let num_blocks = prompt_len.div_ceil(self.config.block_size);
         let byte_size = num_blocks * self.config.kv_block_byte_size();
         let bandwidth_bytes_per_ms =
             self.config.kv_transfer_bandwidth_gibs * 1024.0 * 1024.0 * 1024.0 / 1000.0;

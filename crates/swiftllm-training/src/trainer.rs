@@ -130,8 +130,7 @@ impl Trainer {
 
     /// Calculate total training steps
     pub fn total_steps(&self, dataset_len: usize) -> usize {
-        let steps_per_epoch = (dataset_len + self.config.effective_batch_size() - 1)
-            / self.config.effective_batch_size();
+        let steps_per_epoch = dataset_len.div_ceil(self.config.effective_batch_size());
         steps_per_epoch * self.config.num_epochs
     }
 
@@ -210,14 +209,14 @@ impl Trainer {
 
                 // Logging
                 if self.config.logging_steps > 0
-                    && self.state.global_step % self.config.logging_steps == 0
+                    && self.state.global_step.is_multiple_of(self.config.logging_steps)
                 {
                     tracing::info!("{}", self.metrics.log_line());
                 }
 
                 // Evaluation
                 if self.config.eval_steps > 0
-                    && self.state.global_step % self.config.eval_steps == 0
+                    && self.state.global_step.is_multiple_of(self.config.eval_steps)
                 {
                     if let Some(ref mut eval) = eval_data {
                         let eval_loss = self.evaluate(eval);
@@ -233,7 +232,7 @@ impl Trainer {
 
                 // Checkpoint
                 if self.config.save_steps > 0
-                    && self.state.global_step % self.config.save_steps == 0
+                    && self.state.global_step.is_multiple_of(self.config.save_steps)
                 {
                     self.save_checkpoint()?;
                 }

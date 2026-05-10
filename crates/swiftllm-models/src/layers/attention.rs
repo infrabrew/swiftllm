@@ -306,12 +306,8 @@ fn rotate_half(x: &[f32]) -> Vec<f32> {
     let mut rotated = Vec::with_capacity(x.len());
 
     // [-x2, x1] pattern
-    for i in 0..half {
-        rotated.push(-x[half + i]);
-    }
-    for i in 0..half {
-        rotated.push(x[i]);
-    }
+    rotated.extend(x[half..].iter().map(|v| -v));
+    rotated.extend_from_slice(&x[..half]);
 
     rotated
 }

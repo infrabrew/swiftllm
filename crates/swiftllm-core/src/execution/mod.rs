@@ -109,7 +109,7 @@ impl BatchBuilder {
 
         self.input_tokens.extend_from_slice(tokens);
         self.positions
-            .extend((start_pos..start_pos + seq_len).map(|p| p));
+            .extend(start_pos..start_pos + seq_len);
         self.seq_lens.push(seq_len);
         self.block_tables.push(block_table);
         self.context_lens.push(context_len);

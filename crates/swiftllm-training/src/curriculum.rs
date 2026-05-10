@@ -226,7 +226,7 @@ pub struct CgarScheduler {
 impl CgarScheduler {
     /// Create a new CGAR scheduler with the given configuration
     pub fn new(config: CgarConfig, total_steps: usize, num_layers: usize) -> Self {
-        let _ = config.validate().expect("Invalid CGAR config");
+        config.validate().expect("Invalid CGAR config");
         Self { config, total_steps, num_layers, current_step: 0 }
     }
 
@@ -417,16 +417,16 @@ impl PhasedSpecialisationScheduler {
         }
     }
 
-    /// LR multiplier for Mamba SSM layers at the current step (inverse of attention)
+    /// LR multiplier for Mamba SSM layers at the current step (inverse of attention).
+    ///
+    /// Linear remap: when `attn_scale = 1.0`, SSM scale = `low_priority_lr_scale`;
+    /// when `attn_scale = low_priority_lr_scale`, SSM scale = `1.0`.
     pub fn ssm_lr_scale(&self) -> f32 {
         let attn_scale = self.attention_lr_scale();
         let low = self.config.low_priority_lr_scale;
-        // When attention is high (1.0), SSM is low (low_scale), and vice versa
-        if attn_scale > 0.5 {
-            low + (1.0 - low) * (1.0 - attn_scale) / (1.0 - low).max(1e-8)
-        } else {
-            low + (1.0 - low) * (1.0 - attn_scale) / (1.0 - low).max(1e-8)
-        }
+        // Inverse linear mapping: ssm = 1.0 + low - attn
+        // Clamped to [low, 1.0] to guard against floating-point drift.
+        (1.0 + low - attn_scale).clamp(low, 1.0)
     }
 
     /// LR multipliers for attention and SSM respectively

@@ -112,7 +112,7 @@ impl SafeTensorsLoader {
                         let dtype = tensor_info
                             .get("dtype")
                             .and_then(|v| v.as_str())
-                            .map(|s| parse_dtype(s))
+                            .map(parse_dtype)
                             .unwrap_or(DataType::Float16);
 
                         let shape: Vec<usize> = tensor_info

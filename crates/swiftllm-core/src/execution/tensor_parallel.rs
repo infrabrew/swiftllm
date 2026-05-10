@@ -195,7 +195,7 @@ impl TensorParallelExecutor {
         }
 
         let shard_size = dims[dim] / self.world_size();
-        if dims[dim] % self.world_size() != 0 {
+        if !dims[dim].is_multiple_of(self.world_size()) {
             return Err(Error::Tensor(format!(
                 "Dimension {} size {} is not divisible by world size {}",
                 dim,

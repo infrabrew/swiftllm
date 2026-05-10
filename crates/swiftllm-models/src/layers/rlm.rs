@@ -366,6 +366,7 @@ impl VariableBindingTable {
 
     /// Soft-attention lookup.
     /// `query`: [d_model]  →  returns [d_model] (weighted sum of values)
+    #[allow(clippy::needless_range_loop)]
     pub fn lookup(&self, query: &[f32]) -> Vec<f32> {
         let scale = (self.d_model as f32).sqrt();
         let mut scores = vec![0.0f32; self.num_slots];
@@ -441,11 +442,11 @@ impl VariableBindingTable {
         let gate = if self.used[slot] { sigmoid(best_score) } else { 1.0 };
 
         self.used[slot] = true;
-        for d in 0..self.d_model.min(key.len()) {
-            self.keys[slot][d] = key[d];
-        }
-        for d in 0..self.d_model.min(value.len()) {
-            self.values[slot][d] = gate * value[d] + (1.0 - gate) * self.values[slot][d];
+        let key_len = self.d_model.min(key.len());
+        self.keys[slot][..key_len].copy_from_slice(&key[..key_len]);
+        let val_len = self.d_model.min(value.len());
+        for (slot_v, &new_v) in self.values[slot][..val_len].iter_mut().zip(&value[..val_len]) {
+            *slot_v = gate * new_v + (1.0 - gate) * *slot_v;
         }
     }
 

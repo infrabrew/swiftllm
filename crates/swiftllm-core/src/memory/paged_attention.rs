@@ -222,6 +222,7 @@ impl PagedAttention {
     ///
     /// # Returns
     /// * Output tensor [batch_size, 1, num_heads, head_dim]
+    #[allow(clippy::too_many_arguments)]
     pub fn decode(
         &self,
         query: &Tensor,

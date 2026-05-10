@@ -296,7 +296,7 @@ fn gelu(x: f32) -> f32 {
 
 /// GELU approximation using tanh
 fn gelu_tanh(x: f32) -> f32 {
-    const SQRT_2_OVER_PI: f32 = 0.7978845608028654;
+    const SQRT_2_OVER_PI: f32 = 0.797_884_6;
     0.5 * x * (1.0 + (SQRT_2_OVER_PI * (x + 0.044715 * x.powi(3))).tanh())
 }
 
@@ -313,11 +313,11 @@ trait Erf {
 impl Erf for f32 {
     fn erf(self) -> f32 {
         // Horner form approximation
-        let a1 = 0.254829592;
-        let a2 = -0.284496736;
-        let a3 = 1.421413741;
-        let a4 = -1.453152027;
-        let a5 = 1.061405429;
+        let a1 = 0.254_829_6;
+        let a2 = -0.284_496_72;
+        let a3 = 1.421_413_8;
+        let a4 = -1.453_152_1;
+        let a5 = 1.061_405_4;
         let p = 0.3275911;
 
         let sign = if self < 0.0 { -1.0 } else { 1.0 };

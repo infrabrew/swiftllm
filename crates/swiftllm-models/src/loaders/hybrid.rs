@@ -118,7 +118,7 @@ impl HybridWeightLoader {
 
         // Sharded: look for model-00001-of-NNNNN.safetensors
         let mut shards: Vec<PathBuf> = std::fs::read_dir(&self.model_dir)
-            .map_err(|e| Error::Io(e))?
+            .map_err(Error::Io)?
             .filter_map(|entry| {
                 let path = entry.ok()?.path();
                 let name = path.file_name()?.to_str()?;
@@ -144,11 +144,11 @@ impl HybridWeightLoader {
     /// Load a single safetensors shard and convert tensors to `Tensor`.
     fn load_shard(&self, path: &Path) -> Result<HashMap<String, Tensor>> {
         let file = std::fs::File::open(path)
-            .map_err(|e| Error::Io(e))?;
+            .map_err(Error::Io)?;
 
         // SAFETY: file is opened read-only and not modified during parsing.
         let mmap = unsafe {
-            Mmap::map(&file).map_err(|e| Error::Io(e))?
+            Mmap::map(&file).map_err(Error::Io)?
         };
 
         let st = SafeTensors::deserialize(&mmap[..])

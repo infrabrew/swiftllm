@@ -167,11 +167,13 @@ impl JambaConfig {
     pub fn jamba_32b() -> Self {
         let num_layers = 32;
         let d_model = 4096;
-        let mut base = ModelConfig::default();
-        base.hidden_size = d_model;
-        base.num_hidden_layers = num_layers;
-        base.num_attention_heads = 32;
-        base.num_key_value_heads = 8; // GQA
+        let base = ModelConfig {
+            hidden_size: d_model,
+            num_hidden_layers: num_layers,
+            num_attention_heads: 32,
+            num_key_value_heads: 8, // GQA
+            ..Default::default()
+        };
 
         Self {
             base,
@@ -189,9 +191,11 @@ impl JambaConfig {
 
     /// Create a smaller hybrid for testing (8 layers)
     pub fn small_hybrid(d_model: usize, num_layers: usize) -> Self {
-        let mut base = ModelConfig::default();
-        base.hidden_size = d_model;
-        base.num_hidden_layers = num_layers;
+        let base = ModelConfig {
+            hidden_size: d_model,
+            num_hidden_layers: num_layers,
+            ..Default::default()
+        };
 
         Self {
             base,
@@ -207,9 +211,11 @@ impl JambaConfig {
     pub fn hunyuan_style() -> Self {
         let num_layers = 64;
         let d_model = 8192;
-        let mut base = ModelConfig::default();
-        base.hidden_size = d_model;
-        base.num_hidden_layers = num_layers;
+        let base = ModelConfig {
+            hidden_size: d_model,
+            num_hidden_layers: num_layers,
+            ..Default::default()
+        };
 
         // Hunyuan schedule: ~7/64 = ~1:8 attention ratio, MoE on all layers
         let layer_schedule = jamba_schedule(num_layers, 9, 1);
@@ -411,6 +417,7 @@ impl MambaBlock {
 }
 
 /// FFN variant: dense or sparse MoE
+#[allow(clippy::large_enum_variant)]
 enum HybridFfn {
     Dense(GatedMlp),
     Sparse(MoeLayer),
@@ -538,6 +545,7 @@ impl HybridAttention {
 // ---------------------------------------------------------------------------
 
 /// A single layer in the hybrid model — either an attention block or a Mamba block.
+#[allow(clippy::large_enum_variant)]
 enum HybridDecoderLayer {
     Attn(AttentionBlock),
     Ssm(MambaBlock),
