@@ -114,10 +114,6 @@
 
 ---
 
-#### Next Version Release : 2.0 May 16th 2026
-#### Status : Quality Testing
-#### Development Branch : <a href="https://github.com/infrabrew/swiftllm/tree/main-hybrid-rd">main-hybrid-rd</a>
-
 ## Key Features
 
 **Core Engine**
