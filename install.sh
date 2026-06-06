@@ -438,6 +438,22 @@ else
 fi
 
 # ----------------------------
+# Step 8b: Install bitsandbytes (memory-efficient quantized model loading)
+# ----------------------------
+step "Installing bitsandbytes (4-bit quantization support)..."
+
+if $USE_GPU; then
+    $PIP install bitsandbytes --quiet "${PIP_EXTRA[@]}" 2>/dev/null
+    if $PYTHON -c "import bitsandbytes; print('ok')" 2>/dev/null | grep -q ok; then
+        success "bitsandbytes installed (enables 4-bit model loading on GPU)"
+    else
+        warn "bitsandbytes install failed — compressed-tensors models may OOM on small GPUs"
+    fi
+else
+    info "Skipping bitsandbytes (GPU not detected)"
+fi
+
+# ----------------------------
 # Step 9: Set model directory
 # ----------------------------
 step "Configuring model directory..."
