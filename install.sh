@@ -208,6 +208,11 @@ if $HAS_CUDA; then
     CUDA_VERSION=$("$NVCC_PATH" --version 2>/dev/null | sed -n 's/.*release \([0-9]*\.[0-9]*\).*/\1/p' || echo "unknown")
     [[ -z "$CUDA_VERSION" ]] && CUDA_VERSION="unknown"
     success "Found CUDA toolkit: $CUDA_VERSION ($NVCC_PATH)"
+    # Add CUDA bin to PATH so cargo/cc-rs can find nvcc during build
+    CUDA_BIN_DIR="$(dirname "$NVCC_PATH")"
+    export PATH="$CUDA_BIN_DIR:$PATH"
+    export LD_LIBRARY_PATH="$(dirname "$CUDA_BIN_DIR")/lib64:${LD_LIBRARY_PATH:-}"
+    export CUDA_HOME="$(dirname "$CUDA_BIN_DIR")"
 else
     info "CUDA toolkit (nvcc) not found"
 fi
