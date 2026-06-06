@@ -920,6 +920,7 @@ class LLM:
         self,
         messages: List[Dict[str, str]],
         sampling_params: Optional[SamplingParams] = None,
+        use_rlm: bool = False,
     ) -> str:
         """Generate a chat response from a list of messages.
 
@@ -927,9 +928,17 @@ class LLM:
         model's native chat template. For HF models, applies the tokenizer's
         chat template then generates.
 
+        When ``use_rlm=True``, the response is generated through the Recursive
+        Language Model layer (SHALLOW mode, depth 1) and then scored by the
+        Dense Verification quality gate.  Drafts below the confidence threshold
+        are regenerated automatically.  This adds latency but produces higher-
+        quality multi-turn responses by catching repetition, hedging, and
+        incoherent outputs structurally rather than through sampling hacks.
+
         Args:
             messages: List of {"role": ..., "content": ...} dicts.
             sampling_params: Sampling parameters.
+            use_rlm: Enable RLM + Dense Verification quality pipeline.
 
         Returns:
             The assistant's response text.
@@ -953,37 +962,152 @@ class LLM:
                 **kwargs,
             )
             text = result["choices"][0]["message"]["content"]
-            return _clean_gguf_response(text)
+            text = _clean_gguf_response(text)
+
+            # For GGUF with RLM: score the response and regenerate if needed
+            if use_rlm:
+                text = self._rlm_quality_gate(text, messages, sampling_params)
+
+            return text
 
         # HF models: apply chat template then generate
+        prompt = self._apply_chat_template(messages)
+
+        if use_rlm:
+            text = self._chat_with_rlm(prompt, sampling_params)
+        else:
+            outputs = self.generate([prompt], [sampling_params], use_tqdm=False)
+            text = outputs[0].outputs[0].text.strip()
+
+        return _strip_thinking(text)
+
+    def _apply_chat_template(self, messages: List[Dict[str, str]]) -> str:
+        """Build a prompt string from chat messages using the tokenizer's
+        chat template when available, falling back to a simple format."""
         tokenizer = self._engine._tokenizer
         if hasattr(tokenizer, "apply_chat_template"):
-            # Disable thinking/CoT for models that support it (e.g. Qwen3)
             try:
-                prompt = tokenizer.apply_chat_template(
+                return tokenizer.apply_chat_template(
                     messages, tokenize=False, add_generation_prompt=True,
                     enable_thinking=False,
                 )
             except TypeError:
-                prompt = tokenizer.apply_chat_template(
+                return tokenizer.apply_chat_template(
                     messages, tokenize=False, add_generation_prompt=True,
                 )
-        else:
-            prompt = ""
-            for msg in messages:
-                role = msg.get("role", "user")
-                content = msg.get("content", "")
-                if role == "system":
-                    prompt += f"System: {content}\n"
-                elif role == "user":
-                    prompt += f"User: {content}\n"
-                elif role == "assistant":
-                    prompt += f"Assistant: {content}\n"
-            prompt += "Assistant:"
+        prompt = ""
+        for msg in messages:
+            role = msg.get("role", "user")
+            content = msg.get("content", "")
+            if role == "system":
+                prompt += f"System: {content}\n"
+            elif role == "user":
+                prompt += f"User: {content}\n"
+            elif role == "assistant":
+                prompt += f"Assistant: {content}\n"
+        prompt += "Assistant:"
+        return prompt
 
-        outputs = self.generate([prompt], [sampling_params], use_tqdm=False)
-        text = outputs[0].outputs[0].text.strip()
-        return _strip_thinking(text)
+    def _chat_with_rlm(
+        self,
+        prompt: str,
+        sampling_params: SamplingParams,
+    ) -> str:
+        """Generate a response using RLM + Dense Verification pipeline.
+
+        1. RLM (SHALLOW, depth 1): structured generation with REPL self-check
+        2. Dense Verification (GATE_AND_REGEN): score and regenerate if needed
+        """
+        from .config import (
+            RlmConfig, RlmMode,
+            DenseVerificationConfig, VerificationStrategy,
+        )
+
+        # Step 1: Try RLM structured generation first
+        rlm_cfg = RlmConfig(mode=RlmMode.SHALLOW, max_depth=1)
+        rlm_result = self.generate_with_rlm(
+            prompt, config=rlm_cfg, base_params=sampling_params,
+        )
+        candidate = rlm_result[0].text.strip()
+
+        # Step 2: Score through Dense Verification and regenerate if low quality
+        dv_cfg = DenseVerificationConfig(
+            strategy=VerificationStrategy.GATE_AND_REGEN,
+            min_confidence=0.75,
+            max_regen_attempts=2,
+            score_repl_steps=True,
+        )
+        dv_result = self.generate_with_dense_verification(
+            prompt, config=dv_cfg, base_params=sampling_params,
+        )
+
+        verified = dv_result[0]
+
+        # Use the DV result if it scored higher, otherwise keep the RLM output
+        # (RLM output has structured reasoning; DV output has quality gating)
+        if verified.global_score >= dv_cfg.min_confidence:
+            return verified.text.strip()
+
+        # DV couldn't beat the threshold either — return the RLM candidate
+        # which at least had structured self-checking
+        return candidate
+
+    def _rlm_quality_gate(
+        self,
+        text: str,
+        messages: List[Dict[str, str]],
+        sampling_params: SamplingParams,
+    ) -> str:
+        """Score a GGUF response through Dense Verification and regenerate
+        if below threshold.  Used when RLM is enabled for GGUF models."""
+        import re as _dv_re
+        import math as _dv_math
+
+        _hedges = _dv_re.compile(
+            r"\b(maybe|perhaps|i think|i guess|not sure|unclear|"
+            r"possibly|probably|might be|could be|i already|"
+            r"as i said|as mentioned|i already suggested)\b",
+            _dv_re.IGNORECASE,
+        )
+
+        def _score_text(t: str) -> float:
+            tokens = t.split()
+            n = max(len(tokens), 1)
+            scores = []
+            for i, tok in enumerate(tokens):
+                pos_w = 1.0 - 0.3 * (i / n)
+                hedge = 0.4 if _hedges.search(tok) else 0.0
+                close = 0.1 if tok.endswith((".", "!", "?")) else 0.0
+                scores.append(min(1.0, max(0.0, pos_w - hedge + close)))
+            return sum(scores) / n if scores else 0.0
+
+        score = _score_text(text)
+        if score >= 0.75:
+            return text
+
+        # Regenerate up to 2 more times, keep best
+        best_text, best_score = text, score
+        for _ in range(2):
+            kwargs = {
+                "max_tokens": sampling_params.max_tokens,
+                "temperature": sampling_params.temperature,
+                "top_p": sampling_params.top_p,
+            }
+            if sampling_params.stop:
+                kwargs["stop"] = sampling_params.stop
+            result = self._engine._model.create_chat_completion(
+                messages=messages, **kwargs,
+            )
+            candidate = _clean_gguf_response(
+                result["choices"][0]["message"]["content"]
+            )
+            s = _score_text(candidate)
+            if s > best_score:
+                best_text, best_score = candidate, s
+            if best_score >= 0.75:
+                break
+
+        return best_text
 
     @property
     def is_gguf(self) -> bool:

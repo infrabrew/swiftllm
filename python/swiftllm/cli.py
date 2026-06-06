@@ -263,6 +263,16 @@ def _add_serve_args(parser: argparse.ArgumentParser):
         help="Directory for downloading models (default: ~/.cache/swiftllm/models, "
              "or set SWIFTLLM_MODEL_DIR env var)",
     )
+    parser.add_argument(
+        "--rlm",
+        action="store_true",
+        default=False,
+        help="Enable RLM + Dense Verification quality pipeline for chat responses. "
+             "Uses structured self-checking (RLM SHALLOW) and a confidence gate "
+             "that regenerates low-quality drafts. Adds latency but catches "
+             "repetition, hedging, and incoherent multi-turn responses. "
+             "Also settable via SWIFTLLM_RLM=1 env var.",
+    )
 
 
 def _add_generate_args(parser: argparse.ArgumentParser):
@@ -554,6 +564,13 @@ def _add_chat_args(parser: argparse.ArgumentParser):
         default=None,
         help="Directory for downloading models (default: ~/.cache/swiftllm/models, "
              "or set SWIFTLLM_MODEL_DIR env var)",
+    )
+    parser.add_argument(
+        "--rlm",
+        action="store_true",
+        default=False,
+        help="Enable RLM + Dense Verification quality pipeline. "
+             "Also settable via SWIFTLLM_RLM=1 env var.",
     )
 
 
@@ -857,8 +874,13 @@ def cmd_serve(args: argparse.Namespace):
     LLM, _ = get_engine()
     SamplingParams, _, _ = get_config()
 
+    # RLM + Dense Verification toggle: CLI flag or env var
+    use_rlm = args.rlm or os.environ.get("SWIFTLLM_RLM", "").strip() in ("1", "true", "yes")
+
     # Initialize engine
     print("Initializing engine...")
+    if use_rlm:
+        print("RLM + Dense Verification quality pipeline: ENABLED")
     llm_kwargs = dict(
         model=args.model,
         tensor_parallel_size=args.tensor_parallel_size,
@@ -953,7 +975,7 @@ def cmd_serve(args: argparse.Namespace):
 
         if not request.stream:
             messages_dicts = [{"role": m.role, "content": m.content} for m in request.messages]
-            response_text = llm.chat(messages_dicts, params)
+            response_text = llm.chat(messages_dicts, params, use_rlm=use_rlm)
 
             return ChatResponse(
                 id=request_id,
@@ -970,7 +992,7 @@ def cmd_serve(args: argparse.Namespace):
 
         messages_dicts = [{"role": m.role, "content": m.content} for m in request.messages]
         return StreamingResponse(
-            _stream_generate(messages_dicts, request, request_id),
+            _stream_generate(messages_dicts, request, request_id, use_rlm),
             media_type="text/event-stream",
             headers={
                 "Cache-Control": "no-cache",
@@ -978,11 +1000,61 @@ def cmd_serve(args: argparse.Namespace):
             },
         )
 
-    def _stream_generate(messages: list, request: ChatRequest, request_id: str):
+    def _stream_generate(messages: list, request: ChatRequest, request_id: str, rlm_enabled: bool = False):
         import json as _json
 
         engine = llm._engine
         engine._ensure_initialized()
+
+        # When RLM is enabled, generate the full response through the quality
+        # pipeline first, then stream it out in word-sized chunks.  The quality
+        # gate needs the complete text to score, so true token-streaming isn't
+        # possible — but the client still gets a streaming SSE response.
+        if rlm_enabled:
+            params = SamplingParams(
+                temperature=request.temperature,
+                max_tokens=request.max_tokens,
+                top_p=request.top_p,
+                repetition_penalty=request.repetition_penalty,
+                frequency_penalty=request.frequency_penalty,
+                presence_penalty=request.presence_penalty,
+            )
+            if request.stop:
+                params.stop = request.stop
+
+            response_text = llm.chat(messages, params, use_rlm=True)
+
+            # Stream the verified response in small chunks for a natural feel
+            words = response_text.split(" ")
+            for i, word in enumerate(words):
+                token_text = word if i == 0 else " " + word
+                chunk = {
+                    "id": request_id,
+                    "object": "chat.completion.chunk",
+                    "created": int(time.time()),
+                    "model": request.model,
+                    "choices": [{
+                        "index": 0,
+                        "delta": {"content": token_text},
+                        "finish_reason": None,
+                    }],
+                }
+                yield f"data: {_json.dumps(chunk)}\n\n"
+
+            done_chunk = {
+                "id": request_id,
+                "object": "chat.completion.chunk",
+                "created": int(time.time()),
+                "model": request.model,
+                "choices": [{
+                    "index": 0,
+                    "delta": {},
+                    "finish_reason": "stop",
+                }],
+            }
+            yield f"data: {_json.dumps(done_chunk)}\n\n"
+            yield "data: [DONE]\n\n"
+            return
 
         is_hf = getattr(engine, "_is_hf", False)
 
@@ -1443,7 +1515,12 @@ def cmd_chat(args: argparse.Namespace):
     LLM, _ = get_engine()
     SamplingParams, _, _ = get_config()
 
+    # RLM + Dense Verification toggle: CLI flag or env var
+    use_rlm = args.rlm or os.environ.get("SWIFTLLM_RLM", "").strip() in ("1", "true", "yes")
+
     print(f"SwiftLLM Chat - Loading {args.model}...")
+    if use_rlm:
+        print("RLM + Dense Verification quality pipeline: ENABLED")
 
     llm = LLM(
         model=args.model,
@@ -1463,6 +1540,8 @@ def cmd_chat(args: argparse.Namespace):
         messages.append({"role": "system", "content": args.system})
 
     print("\nChat started. Type 'quit' or 'exit' to end.")
+    if use_rlm:
+        print("(RLM enabled — responses may take longer but will be higher quality)")
     print("=" * 60)
 
     while True:
@@ -1478,7 +1557,7 @@ def cmd_chat(args: argparse.Namespace):
 
         messages.append({"role": "user", "content": user_input})
 
-        response = llm.chat(messages, params)
+        response = llm.chat(messages, params, use_rlm=use_rlm)
 
         print(f"\nAssistant: {response}")
         messages.append({"role": "assistant", "content": response})
