@@ -208,6 +208,11 @@ if $HAS_CUDA; then
     CUDA_VERSION=$("$NVCC_PATH" --version 2>/dev/null | sed -n 's/.*release \([0-9]*\.[0-9]*\).*/\1/p' || echo "unknown")
     [[ -z "$CUDA_VERSION" ]] && CUDA_VERSION="unknown"
     success "Found CUDA toolkit: $CUDA_VERSION ($NVCC_PATH)"
+    # Add CUDA bin to PATH so cargo/cc-rs can find nvcc during build
+    CUDA_BIN_DIR="$(dirname "$NVCC_PATH")"
+    export PATH="$CUDA_BIN_DIR:$PATH"
+    export LD_LIBRARY_PATH="$(dirname "$CUDA_BIN_DIR")/lib64:${LD_LIBRARY_PATH:-}"
+    export CUDA_HOME="$(dirname "$CUDA_BIN_DIR")"
 else
     info "CUDA toolkit (nvcc) not found"
 fi
@@ -460,7 +465,38 @@ if $AIRGAP && [[ -d "$BUNDLE_MODELS" ]]; then
 fi
 
 # ----------------------------
-# Step 10: Verify installation
+# Step 10: Install CLI wrapper
+# ----------------------------
+step "Installing swiftllm CLI to system PATH..."
+
+if ! $NO_VENV && [[ -n "$VENV_DIR" ]] && [[ -f "$VENV_DIR/bin/swiftllm" ]]; then
+    WRAPPER_PATH="/usr/local/bin/swiftllm"
+    WRAPPER_CONTENT="#!/usr/bin/env bash
+SWIFTLLM_HOME=\"\${SWIFTLLM_HOME:-$SCRIPT_DIR}\"
+exec \"\$SWIFTLLM_HOME/venv/bin/swiftllm\" \"\$@\""
+
+    if [[ -w "$(dirname "$WRAPPER_PATH")" ]] || command_exists sudo; then
+        SUDO_CMD=""
+        if [[ ! -w "$(dirname "$WRAPPER_PATH")" ]]; then
+            SUDO_CMD="sudo"
+        fi
+        echo "$WRAPPER_CONTENT" | $SUDO_CMD tee "$WRAPPER_PATH" > /dev/null && $SUDO_CMD chmod +x "$WRAPPER_PATH"
+        if [[ -x "$WRAPPER_PATH" ]]; then
+            success "swiftllm CLI installed to $WRAPPER_PATH"
+            info "Override install location with: SWIFTLLM_HOME=/your/path swiftllm ..."
+        else
+            warn "Failed to install CLI wrapper to $WRAPPER_PATH"
+        fi
+    else
+        warn "Cannot write to $(dirname "$WRAPPER_PATH") — skipping system-wide CLI install"
+        info "Run manually: sudo ln -sf $VENV_DIR/bin/swiftllm $WRAPPER_PATH"
+    fi
+else
+    info "Skipping system wrapper (no venv or CLI not found)"
+fi
+
+# ----------------------------
+# Step 11: Verify installation
 # ----------------------------
 step "Verifying installation..."
 

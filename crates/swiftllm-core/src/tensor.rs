@@ -525,7 +525,7 @@ impl Tensor {
         }
 
         match (self.device(), device) {
-            (Device::Cpu, Device::Cuda(_dev_idx)) => {
+            (Device::Cpu, Device::Cuda(dev_idx)) => {
                 #[cfg(feature = "cuda")]
                 {
                     let src_bytes = self.as_bytes()
