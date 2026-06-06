@@ -458,7 +458,7 @@ fi
 # ----------------------------
 step "Installing kernels..."
 
-$PIP install kernels --quiet "${AIRGAP_PIP_FLAGS[@]}" 2>/dev/null
+$PIP install "kernels>=0.14.0,<0.15" --quiet "${AIRGAP_PIP_FLAGS[@]}" 2>/dev/null
 if $PYTHON -c "import kernels; print('ok')" 2>/dev/null | grep -q ok; then
     success "kernels installed"
 else

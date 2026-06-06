@@ -201,7 +201,7 @@ $PYTHON -m pip download \
     "tokenizers>=0.13" "tqdm>=4.60" "requests>=2.25" "aiohttp>=3.8" \
     "pydantic>=2.0" "huggingface-hub>=0.14" \
     "accelerate>=0.20" "sentencepiece>=0.1.97" \
-    "compressed-tensors>=0.15.0" "bitsandbytes>=0.41.0" "kernels>=0.15.0" \
+    "compressed-tensors>=0.15.0" "bitsandbytes>=0.41.0" "kernels>=0.14.0,<0.15" \
     "pillow" "torchvision" \
     "fastapi>=0.100" "uvicorn>=0.23" \
     -d "$DEST/wheels" "${PLATFORM_FLAG[@]}" 2>&1 | tail -5
