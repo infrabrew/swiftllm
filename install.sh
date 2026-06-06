@@ -421,19 +421,19 @@ if $USE_GPU; then
     export CUDACXX="$NVCC_PATH"
     export CMAKE_ARGS="-DGGML_CUDA=on"
 
-    $PIP install llama-cpp-python --force-reinstall --no-cache-dir "${AIRGAP_PIP_FLAGS[@]}" 2>&1 | tail -3
+    $PIP install "llama-cpp-python>=0.3.40" --force-reinstall --no-cache-dir "${AIRGAP_PIP_FLAGS[@]}" 2>&1 | tail -3
 
     if $PYTHON -c "from llama_cpp import Llama; print('ok')" 2>/dev/null | grep -q ok; then
         success "llama-cpp-python installed with CUDA support"
     else
         warn "CUDA build may have failed. Falling back to CPU build..."
         unset CUDACXX CMAKE_ARGS
-        $PIP install llama-cpp-python --force-reinstall --no-cache-dir --quiet "${AIRGAP_PIP_FLAGS[@]}" 2>/dev/null
+        $PIP install "llama-cpp-python>=0.3.40" --force-reinstall --no-cache-dir --quiet "${AIRGAP_PIP_FLAGS[@]}" 2>/dev/null
         success "llama-cpp-python installed (CPU fallback)"
     fi
 else
     info "Building llama-cpp-python (CPU only)..."
-    $PIP install llama-cpp-python --quiet "${AIRGAP_PIP_FLAGS[@]}" 2>/dev/null
+    $PIP install "llama-cpp-python>=0.3.40" --quiet "${AIRGAP_PIP_FLAGS[@]}" 2>/dev/null
     success "llama-cpp-python installed (CPU)"
 fi
 
