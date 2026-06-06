@@ -318,7 +318,9 @@ class LLMEngine:
         # Lazy import to avoid startup overhead
         self._tokenizer = None
         self._model = None
+        self._hf_model = None
         self._is_gguf = False
+        self._is_hf = False
 
     def _ensure_initialized(self):
         """Ensure the engine is initialized."""
@@ -388,25 +390,54 @@ class LLMEngine:
         print("GGUF model loaded successfully!")
 
     def _init_transformers(self, model_path: str):
-        """Initialize with transformers tokenizer for non-GGUF models."""
+        """Initialize with transformers model + tokenizer for safetensors models."""
         try:
-            from transformers import AutoTokenizer
+            from transformers import AutoTokenizer, AutoModelForCausalLM
+            import torch
         except ImportError:
             raise ImportError(
-                "transformers is required for tokenization. "
-                "Install with: pip install transformers"
+                "transformers and torch are required for safetensors models. "
+                "Install with: pip install transformers torch"
             )
 
         self._is_gguf = False
+        self._is_hf = True
+
         if self.config.trust_remote_code:
             import logging
             logging.getLogger(__name__).warning(
                 "trust_remote_code is enabled — remote code from HuggingFace will be executed"
             )
+
+        print(f"Loading model: {model_path}")
+
+        # Resolve dtype
+        dtype_map = {"float16": torch.float16, "bfloat16": torch.bfloat16, "float32": torch.float32}
+        torch_dtype = dtype_map.get(str(self.config.dtype.value), "auto")
+
+        # Determine device
+        if hasattr(self.config, "device") and self.config.device == "cpu":
+            device_map = "cpu"
+        else:
+            device_map = "auto"
+
         self._tokenizer = AutoTokenizer.from_pretrained(
             self.config.tokenizer,
             trust_remote_code=self.config.trust_remote_code,
         )
+        if self._tokenizer.pad_token is None:
+            self._tokenizer.pad_token = self._tokenizer.eos_token
+
+        self._hf_model = AutoModelForCausalLM.from_pretrained(
+            model_path,
+            torch_dtype=torch_dtype,
+            device_map=device_map,
+            trust_remote_code=self.config.trust_remote_code,
+        )
+        self._hf_model.eval()
+
+        device_info = next(self._hf_model.parameters()).device
+        print(f"Model loaded on {device_info} ({next(self._hf_model.parameters()).dtype})")
 
     def add_request(
         self,
@@ -468,6 +499,8 @@ class LLMEngine:
 
         if self._is_gguf:
             return self._step_gguf()
+        elif getattr(self, "_is_hf", False):
+            return self._step_hf()
         else:
             return self._step_placeholder()
 
@@ -559,8 +592,10 @@ class LLMEngine:
 
         return outputs
 
-    def _step_placeholder(self) -> List[RequestOutput]:
-        """Placeholder step for non-GGUF models (until Rust backend is ready)."""
+    def _step_hf(self) -> List[RequestOutput]:
+        """Run inference step using HuggingFace transformers."""
+        import torch
+
         outputs = []
         completed_ids = []
 
@@ -569,23 +604,75 @@ class LLMEngine:
             prompt_token_ids = request_data["prompt_token_ids"]
             params = request_data["sampling_params"]
 
-            response_text = " I'm SwiftLLM, ready to help!"
-            response_tokens = self._tokenizer.encode(response_text)
+            try:
+                if prompt_token_ids is not None:
+                    input_ids = torch.tensor([prompt_token_ids], device=self._hf_model.device)
+                else:
+                    encoded = self._tokenizer(prompt, return_tensors="pt").to(self._hf_model.device)
+                    input_ids = encoded["input_ids"]
 
-            output = RequestOutput(
-                request_id=request_id,
-                prompt=prompt,
-                prompt_token_ids=prompt_token_ids,
-                outputs=[
-                    CompletionOutput(
-                        index=0,
-                        text=response_text,
-                        token_ids=response_tokens,
-                        finish_reason=FinishReason.STOP,
-                    )
-                ],
-                finished=True,
-            )
+                prompt_len = input_ids.shape[1]
+                max_new = params.max_tokens or 256
+
+                gen_kwargs = {
+                    "max_new_tokens": max_new,
+                    "do_sample": params.temperature > 0,
+                    "pad_token_id": self._tokenizer.pad_token_id,
+                }
+
+                if params.temperature > 0:
+                    gen_kwargs["temperature"] = params.temperature
+                    gen_kwargs["top_p"] = params.top_p
+                    if params.top_k > 0:
+                        gen_kwargs["top_k"] = params.top_k
+
+                if params.repetition_penalty != 1.0:
+                    gen_kwargs["repetition_penalty"] = params.repetition_penalty
+
+                with torch.no_grad():
+                    generated = self._hf_model.generate(input_ids, **gen_kwargs)
+
+                new_tokens = generated[0][prompt_len:]
+                response_text = self._tokenizer.decode(new_tokens, skip_special_tokens=True)
+
+                hit_max = len(new_tokens) >= max_new
+                finish_reason = FinishReason.LENGTH if hit_max else FinishReason.STOP
+
+                output = RequestOutput(
+                    request_id=request_id,
+                    prompt=prompt,
+                    prompt_token_ids=prompt_token_ids,
+                    outputs=[
+                        CompletionOutput(
+                            index=0,
+                            text=response_text,
+                            token_ids=new_tokens.tolist(),
+                            finish_reason=finish_reason,
+                        )
+                    ],
+                    finished=True,
+                    metrics={
+                        "prompt_tokens": prompt_len,
+                        "completion_tokens": len(new_tokens),
+                    },
+                )
+            except Exception:
+                import traceback
+                traceback.print_exc()
+                output = RequestOutput(
+                    request_id=request_id,
+                    prompt=prompt,
+                    prompt_token_ids=prompt_token_ids,
+                    outputs=[
+                        CompletionOutput(
+                            index=0,
+                            text="",
+                            token_ids=[],
+                            finish_reason=FinishReason.ABORT,
+                        )
+                    ],
+                    finished=True,
+                )
             outputs.append(output)
             completed_ids.append(request_id)
 

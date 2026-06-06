@@ -48,6 +48,7 @@ import json
 import os
 import sys
 import time
+import uuid
 from pathlib import Path
 from typing import List, Optional
 
@@ -846,6 +847,7 @@ def cmd_serve(args: argparse.Namespace):
         import uvicorn
         from fastapi import FastAPI, HTTPException, Request, Depends
         from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
+        from fastapi.responses import StreamingResponse
         from pydantic import BaseModel
     except ImportError:
         print("Error: FastAPI and uvicorn are required for serving.")
@@ -911,11 +913,9 @@ def cmd_serve(args: argparse.Namespace):
             "data": [{"id": args.model, "object": "model"}]
         }
 
-    @app.post("/v1/chat/completions", dependencies=[Depends(verify_api_key)])
-    def chat_completions(request: ChatRequest):
-        # Build prompt from messages
+    def _build_prompt(messages: List[ChatMessage]) -> str:
         prompt = ""
-        for msg in request.messages:
+        for msg in messages:
             if msg.role == "system":
                 prompt += f"System: {msg.content}\n"
             elif msg.role == "user":
@@ -923,6 +923,22 @@ def cmd_serve(args: argparse.Namespace):
             elif msg.role == "assistant":
                 prompt += f"Assistant: {msg.content}\n"
         prompt += "Assistant:"
+        return prompt
+
+    @app.post("/v1/chat/completions", dependencies=[Depends(verify_api_key)])
+    def chat_completions(request: ChatRequest):
+        prompt = _build_prompt(request.messages)
+        request_id = f"chatcmpl-{uuid.uuid4().hex[:8]}"
+
+        if request.stream:
+            return StreamingResponse(
+                _stream_generate(prompt, request, request_id),
+                media_type="text/event-stream",
+                headers={
+                    "Cache-Control": "no-cache",
+                    "X-Accel-Buffering": "no",
+                },
+            )
 
         params = SamplingParams(
             temperature=request.temperature,
@@ -933,7 +949,7 @@ def cmd_serve(args: argparse.Namespace):
         response_text = outputs[0].outputs[0].text
 
         return ChatResponse(
-            id=f"chatcmpl-{outputs[0].request_id}",
+            id=request_id,
             created=int(time.time()),
             model=request.model,
             choices=[
@@ -944,6 +960,95 @@ def cmd_serve(args: argparse.Namespace):
                 )
             ],
         )
+
+    def _stream_generate(prompt: str, request: ChatRequest, request_id: str):
+        import json as _json
+
+        engine = llm._engine
+        engine._ensure_initialized()
+
+        is_hf = getattr(engine, "_is_hf", False)
+
+        if is_hf:
+            try:
+                import torch
+                from transformers import TextIteratorStreamer
+                from threading import Thread
+
+                tokenizer = engine._tokenizer
+                model = engine._hf_model
+
+                encoded = tokenizer(prompt, return_tensors="pt").to(model.device)
+                input_ids = encoded["input_ids"]
+
+                gen_kwargs = {
+                    "max_new_tokens": request.max_tokens,
+                    "do_sample": request.temperature > 0,
+                    "pad_token_id": tokenizer.pad_token_id,
+                }
+                if request.temperature > 0:
+                    gen_kwargs["temperature"] = request.temperature
+
+                streamer = TextIteratorStreamer(tokenizer, skip_prompt=True, skip_special_tokens=True)
+                gen_kwargs["streamer"] = streamer
+
+                thread = Thread(target=lambda: model.generate(input_ids, **gen_kwargs))
+                thread.start()
+
+                for token_text in streamer:
+                    if not token_text:
+                        continue
+                    chunk = {
+                        "id": request_id,
+                        "object": "chat.completion.chunk",
+                        "created": int(time.time()),
+                        "model": request.model,
+                        "choices": [{
+                            "index": 0,
+                            "delta": {"content": token_text},
+                            "finish_reason": None,
+                        }],
+                    }
+                    yield f"data: {_json.dumps(chunk)}\n\n"
+
+                thread.join()
+
+            except Exception:
+                import traceback
+                traceback.print_exc()
+        else:
+            params = SamplingParams(
+                temperature=request.temperature,
+                max_tokens=request.max_tokens,
+            )
+            outputs = llm.generate([prompt], params, use_tqdm=False)
+            response_text = outputs[0].outputs[0].text
+            chunk = {
+                "id": request_id,
+                "object": "chat.completion.chunk",
+                "created": int(time.time()),
+                "model": request.model,
+                "choices": [{
+                    "index": 0,
+                    "delta": {"content": response_text},
+                    "finish_reason": None,
+                }],
+            }
+            yield f"data: {_json.dumps(chunk)}\n\n"
+
+        done_chunk = {
+            "id": request_id,
+            "object": "chat.completion.chunk",
+            "created": int(time.time()),
+            "model": request.model,
+            "choices": [{
+                "index": 0,
+                "delta": {},
+                "finish_reason": "stop",
+            }],
+        }
+        yield f"data: {_json.dumps(done_chunk)}\n\n"
+        yield "data: [DONE]\n\n"
 
     print(f"Starting server on {args.host}:{args.port}")
     uvicorn.run(app, host=args.host, port=args.port)
