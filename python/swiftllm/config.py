@@ -136,6 +136,8 @@ class QuantizationMethod(Enum):
     SQUEEZELLM = "squeezellm"
     GGUF = "gguf"
     TURBOQUANT = "turboquant"
+    BNB_4BIT = "4bit"
+    BNB_8BIT = "8bit"
 
 
 class SchedulerPolicy(Enum):

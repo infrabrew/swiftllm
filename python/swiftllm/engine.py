@@ -415,11 +415,60 @@ class LLMEngine:
         dtype_map = {"float16": torch.float16, "bfloat16": torch.bfloat16, "float32": torch.float32}
         torch_dtype = dtype_map.get(str(self.config.dtype.value), "auto")
 
-        # Determine device
-        if hasattr(self.config, "device") and self.config.device == "cpu":
-            device_map = "cpu"
+        # Determine device and memory limits
+        load_kwargs = {}
+
+        # Check if model uses compressed-tensors quantization
+        is_compressed = False
+        config_path = Path(model_path) / "config.json"
+        if config_path.exists():
+            import json as _json
+            with open(config_path) as f:
+                model_cfg = _json.load(f)
+            qc = model_cfg.get("quantization_config", {})
+            if qc.get("quant_method") in ("compressed-tensors", "compressed_tensors"):
+                is_compressed = True
+
+        # Check for bitsandbytes quantization request
+        quant = getattr(self.config, "quantization", None)
+        use_bnb = quant is not None and hasattr(quant, "value") and quant.value in ("4bit", "8bit")
+
+        if use_bnb and not is_compressed and torch.cuda.is_available():
+            from transformers import BitsAndBytesConfig
+            if quant.value == "4bit":
+                load_kwargs["quantization_config"] = BitsAndBytesConfig(
+                    load_in_4bit=True,
+                    bnb_4bit_compute_dtype=torch.bfloat16,
+                    bnb_4bit_quant_type="nf4",
+                )
+                print(f"  Using bitsandbytes 4-bit quantization (NF4)")
+            else:
+                load_kwargs["quantization_config"] = BitsAndBytesConfig(load_in_8bit=True)
+                print(f"  Using bitsandbytes 8-bit quantization")
+            load_kwargs["device_map"] = "auto"
+        elif hasattr(self.config, "device") and self.config.device == "cpu":
+            load_kwargs["device_map"] = "cpu"
+        elif torch.cuda.is_available() and is_compressed:
+            print(f"\n  WARNING: Compressed-tensors (CT) quantized model detected.")
+            print(f"  CT models require vLLM for correct inference — the standard")
+            print(f"  transformers decompression path produces corrupted output.")
+            print(f"")
+            print(f"  Alternatives that work with SwiftLLM:")
+            print(f"    1. GGUF format:  swiftllm download -m <model>-GGUF")
+            print(f"    2. Non-CT model with 4-bit: swiftllm serve -m <base-model> -q 4bit")
+            print(f"    3. Use vLLM directly for CT models")
+            print(f"")
+            load_kwargs["device_map"] = "auto"
+        elif torch.cuda.is_available():
+            load_kwargs["device_map"] = "auto"
+            gpu_util = getattr(self.config, "gpu_memory_utilization", 0.90)
+            total_mem = torch.cuda.get_device_properties(0).total_memory
+            max_gpu = int(total_mem * gpu_util)
+            load_kwargs["max_memory"] = {0: max_gpu, "cpu": "16GiB"}
+            load_kwargs["offload_buffers"] = True
+            print(f"  GPU memory limit: {max_gpu / 1e9:.1f} GB ({gpu_util:.0%} of {total_mem / 1e9:.1f} GB)")
         else:
-            device_map = "auto"
+            load_kwargs["device_map"] = "cpu"
 
         self._tokenizer = AutoTokenizer.from_pretrained(
             self.config.tokenizer,
@@ -431,8 +480,8 @@ class LLMEngine:
         self._hf_model = AutoModelForCausalLM.from_pretrained(
             model_path,
             torch_dtype=torch_dtype,
-            device_map=device_map,
             trust_remote_code=self.config.trust_remote_code,
+            **load_kwargs,
         )
         self._hf_model.eval()
 

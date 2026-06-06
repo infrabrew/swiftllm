@@ -438,6 +438,34 @@ else
 fi
 
 # ----------------------------
+# Step 8b: Install bitsandbytes (memory-efficient quantized model loading)
+# ----------------------------
+step "Installing bitsandbytes (4-bit quantization support)..."
+
+if $USE_GPU; then
+    $PIP install bitsandbytes --quiet "${AIRGAP_PIP_FLAGS[@]}" 2>/dev/null
+    if $PYTHON -c "import bitsandbytes; print('ok')" 2>/dev/null | grep -q ok; then
+        success "bitsandbytes installed (enables 4-bit model loading on GPU)"
+    else
+        warn "bitsandbytes install failed — 4-bit quantization will not be available"
+    fi
+else
+    info "Skipping bitsandbytes (GPU not detected)"
+fi
+
+# ----------------------------
+# Step 8c: Install kernels (optimized compute kernels)
+# ----------------------------
+step "Installing kernels..."
+
+$PIP install kernels --quiet "${AIRGAP_PIP_FLAGS[@]}" 2>/dev/null
+if $PYTHON -c "import kernels; print('ok')" 2>/dev/null | grep -q ok; then
+    success "kernels installed"
+else
+    warn "kernels install failed (non-critical — inference will still work)"
+fi
+
+# ----------------------------
 # Step 9: Set model directory
 # ----------------------------
 step "Configuring model directory..."
