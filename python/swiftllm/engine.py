@@ -415,11 +415,38 @@ class LLMEngine:
         dtype_map = {"float16": torch.float16, "bfloat16": torch.bfloat16, "float32": torch.float32}
         torch_dtype = dtype_map.get(str(self.config.dtype.value), "auto")
 
-        # Determine device
+        # Determine device and memory limits
+        load_kwargs = {}
+
+        # Check if model uses compressed-tensors quantization
+        is_compressed = False
+        config_path = Path(model_path) / "config.json"
+        if config_path.exists():
+            import json as _json
+            with open(config_path) as f:
+                model_cfg = _json.load(f)
+            qc = model_cfg.get("quantization_config", {})
+            if qc.get("quant_method") in ("compressed-tensors", "compressed_tensors"):
+                is_compressed = True
+
         if hasattr(self.config, "device") and self.config.device == "cpu":
-            device_map = "cpu"
+            load_kwargs["device_map"] = "cpu"
+        elif torch.cuda.is_available() and is_compressed:
+            load_kwargs["device_map"] = "auto"
+            total_mem = torch.cuda.get_device_properties(0).total_memory
+            print(f"  Compressed-tensors quantized model detected")
+            print(f"  Note: model will be decompressed to full precision on first inference")
+            print(f"  GPU VRAM: {total_mem / 1e9:.1f} GB")
+        elif torch.cuda.is_available():
+            load_kwargs["device_map"] = "auto"
+            gpu_util = getattr(self.config, "gpu_memory_utilization", 0.90)
+            total_mem = torch.cuda.get_device_properties(0).total_memory
+            max_gpu = int(total_mem * gpu_util)
+            load_kwargs["max_memory"] = {0: max_gpu, "cpu": "16GiB"}
+            load_kwargs["offload_buffers"] = True
+            print(f"  GPU memory limit: {max_gpu / 1e9:.1f} GB ({gpu_util:.0%} of {total_mem / 1e9:.1f} GB)")
         else:
-            device_map = "auto"
+            load_kwargs["device_map"] = "cpu"
 
         self._tokenizer = AutoTokenizer.from_pretrained(
             self.config.tokenizer,
@@ -431,8 +458,8 @@ class LLMEngine:
         self._hf_model = AutoModelForCausalLM.from_pretrained(
             model_path,
             torch_dtype=torch_dtype,
-            device_map=device_map,
             trust_remote_code=self.config.trust_remote_code,
+            **load_kwargs,
         )
         self._hf_model.eval()
 
