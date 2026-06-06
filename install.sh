@@ -465,7 +465,38 @@ if $AIRGAP && [[ -d "$BUNDLE_MODELS" ]]; then
 fi
 
 # ----------------------------
-# Step 10: Verify installation
+# Step 10: Install CLI wrapper
+# ----------------------------
+step "Installing swiftllm CLI to system PATH..."
+
+if ! $NO_VENV && [[ -n "$VENV_DIR" ]] && [[ -f "$VENV_DIR/bin/swiftllm" ]]; then
+    WRAPPER_PATH="/usr/local/bin/swiftllm"
+    WRAPPER_CONTENT="#!/usr/bin/env bash
+SWIFTLLM_HOME=\"\${SWIFTLLM_HOME:-$SCRIPT_DIR}\"
+exec \"\$SWIFTLLM_HOME/venv/bin/swiftllm\" \"\$@\""
+
+    if [[ -w "$(dirname "$WRAPPER_PATH")" ]] || command_exists sudo; then
+        SUDO_CMD=""
+        if [[ ! -w "$(dirname "$WRAPPER_PATH")" ]]; then
+            SUDO_CMD="sudo"
+        fi
+        echo "$WRAPPER_CONTENT" | $SUDO_CMD tee "$WRAPPER_PATH" > /dev/null && $SUDO_CMD chmod +x "$WRAPPER_PATH"
+        if [[ -x "$WRAPPER_PATH" ]]; then
+            success "swiftllm CLI installed to $WRAPPER_PATH"
+            info "Override install location with: SWIFTLLM_HOME=/your/path swiftllm ..."
+        else
+            warn "Failed to install CLI wrapper to $WRAPPER_PATH"
+        fi
+    else
+        warn "Cannot write to $(dirname "$WRAPPER_PATH") — skipping system-wide CLI install"
+        info "Run manually: sudo ln -sf $VENV_DIR/bin/swiftllm $WRAPPER_PATH"
+    fi
+else
+    info "Skipping system wrapper (no venv or CLI not found)"
+fi
+
+# ----------------------------
+# Step 11: Verify installation
 # ----------------------------
 step "Verifying installation..."
 
