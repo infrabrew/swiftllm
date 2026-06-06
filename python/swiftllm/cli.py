@@ -890,8 +890,16 @@ def cmd_serve(args: argparse.Namespace):
         model: str
         messages: List[ChatMessage]
         temperature: float = 0.7
-        max_tokens: int = 256
+        max_tokens: int = 2048
         stream: bool = False
+        top_p: float = 0.9
+        top_k: int = -1
+        frequency_penalty: float = 0.0
+        presence_penalty: float = 0.0
+        repetition_penalty: float = 1.1
+        stop: Optional[List[str]] = None
+
+        model_config = {"extra": "ignore"}
 
     class ChatChoice(BaseModel):
         index: int
@@ -930,41 +938,47 @@ def cmd_serve(args: argparse.Namespace):
 
     @app.post("/v1/chat/completions", dependencies=[Depends(verify_api_key)])
     def chat_completions(request: ChatRequest):
-        prompt = _build_prompt(request.messages)
         request_id = f"chatcmpl-{uuid.uuid4().hex[:8]}"
-
-        if request.stream:
-            return StreamingResponse(
-                _stream_generate(prompt, request, request_id),
-                media_type="text/event-stream",
-                headers={
-                    "Cache-Control": "no-cache",
-                    "X-Accel-Buffering": "no",
-                },
-            )
 
         params = SamplingParams(
             temperature=request.temperature,
             max_tokens=request.max_tokens,
+            top_p=request.top_p,
+            repetition_penalty=request.repetition_penalty,
+            frequency_penalty=request.frequency_penalty,
+            presence_penalty=request.presence_penalty,
+        )
+        if request.stop:
+            params.stop = request.stop
+
+        if not request.stream:
+            messages_dicts = [{"role": m.role, "content": m.content} for m in request.messages]
+            response_text = llm.chat(messages_dicts, params)
+
+            return ChatResponse(
+                id=request_id,
+                created=int(time.time()),
+                model=request.model,
+                choices=[
+                    ChatChoice(
+                        index=0,
+                        message=ChatMessage(role="assistant", content=response_text),
+                        finish_reason="stop",
+                    )
+                ],
+            )
+
+        messages_dicts = [{"role": m.role, "content": m.content} for m in request.messages]
+        return StreamingResponse(
+            _stream_generate(messages_dicts, request, request_id),
+            media_type="text/event-stream",
+            headers={
+                "Cache-Control": "no-cache",
+                "X-Accel-Buffering": "no",
+            },
         )
 
-        outputs = llm.generate([prompt], params, use_tqdm=False)
-        response_text = outputs[0].outputs[0].text
-
-        return ChatResponse(
-            id=request_id,
-            created=int(time.time()),
-            model=request.model,
-            choices=[
-                ChatChoice(
-                    index=0,
-                    message=ChatMessage(role="assistant", content=response_text),
-                    finish_reason="stop",
-                )
-            ],
-        )
-
-    def _stream_generate(prompt: str, request: ChatRequest, request_id: str):
+    def _stream_generate(messages: list, request: ChatRequest, request_id: str):
         import json as _json
 
         engine = llm._engine
@@ -981,16 +995,39 @@ def cmd_serve(args: argparse.Namespace):
                 tokenizer = engine._tokenizer
                 model = engine._hf_model
 
+                # Build prompt using chat template when available
+                if hasattr(tokenizer, "apply_chat_template"):
+                    try:
+                        prompt = tokenizer.apply_chat_template(
+                            messages, tokenize=False, add_generation_prompt=True,
+                            enable_thinking=False,
+                        )
+                    except TypeError:
+                        prompt = tokenizer.apply_chat_template(
+                            messages, tokenize=False, add_generation_prompt=True,
+                        )
+                else:
+                    prompt = _build_prompt([ChatMessage(**m) for m in messages])
+
                 encoded = tokenizer(prompt, return_tensors="pt").to(model.device)
                 input_ids = encoded["input_ids"]
+                attention_mask = encoded.get("attention_mask", None)
 
                 gen_kwargs = {
                     "max_new_tokens": request.max_tokens,
                     "do_sample": request.temperature > 0,
-                    "pad_token_id": tokenizer.pad_token_id,
+                    "pad_token_id": tokenizer.pad_token_id or tokenizer.eos_token_id,
+                    "eos_token_id": tokenizer.eos_token_id,
                 }
+                if attention_mask is not None:
+                    gen_kwargs["attention_mask"] = attention_mask
                 if request.temperature > 0:
                     gen_kwargs["temperature"] = request.temperature
+                    gen_kwargs["top_p"] = request.top_p
+                    if request.top_k > 0:
+                        gen_kwargs["top_k"] = request.top_k
+                if request.repetition_penalty != 1.0:
+                    gen_kwargs["repetition_penalty"] = request.repetition_penalty
 
                 streamer = TextIteratorStreamer(tokenizer, skip_prompt=True, skip_special_tokens=True)
                 gen_kwargs["streamer"] = streamer
@@ -1020,12 +1057,12 @@ def cmd_serve(args: argparse.Namespace):
                 import traceback
                 traceback.print_exc()
         else:
+            # GGUF or fallback: use chat() for proper template handling
             params = SamplingParams(
                 temperature=request.temperature,
                 max_tokens=request.max_tokens,
             )
-            outputs = llm.generate([prompt], params, use_tqdm=False)
-            response_text = outputs[0].outputs[0].text
+            response_text = llm.chat(messages, params)
             chunk = {
                 "id": request_id,
                 "object": "chat.completion.chunk",
@@ -1441,19 +1478,7 @@ def cmd_chat(args: argparse.Namespace):
 
         messages.append({"role": "user", "content": user_input})
 
-        # Build prompt
-        prompt = ""
-        for msg in messages:
-            if msg["role"] == "system":
-                prompt += f"System: {msg['content']}\n"
-            elif msg["role"] == "user":
-                prompt += f"User: {msg['content']}\n"
-            elif msg["role"] == "assistant":
-                prompt += f"Assistant: {msg['content']}\n"
-        prompt += "Assistant:"
-
-        outputs = llm.generate([prompt], params, use_tqdm=False)
-        response = outputs[0].outputs[0].text.strip()
+        response = llm.chat(messages, params)
 
         print(f"\nAssistant: {response}")
         messages.append({"role": "assistant", "content": response})
