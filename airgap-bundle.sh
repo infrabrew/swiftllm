@@ -209,9 +209,9 @@ success "Runtime dependency wheels downloaded"
 
 # llama-cpp-python
 if $CPU_ONLY; then
-    $PYTHON -m pip download "llama-cpp-python>=0.3.40" -d "$DEST/wheels" "${PLATFORM_FLAG[@]}" 2>&1 | tail -3
+    $PYTHON -m pip download "llama-cpp-python>=0.3.8" -d "$DEST/wheels" "${PLATFORM_FLAG[@]}" 2>&1 | tail -3
 else
-    $PYTHON -m pip download "llama-cpp-python>=0.3.40" -d "$DEST/wheels" "${PLATFORM_FLAG[@]}" 2>&1 | tail -3
+    $PYTHON -m pip download "llama-cpp-python>=0.3.8" -d "$DEST/wheels" "${PLATFORM_FLAG[@]}" 2>&1 | tail -3
 fi
 success "llama-cpp-python wheel downloaded"
 

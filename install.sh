@@ -421,7 +421,7 @@ if $USE_GPU; then
     export CUDACXX="$NVCC_PATH"
     export CMAKE_ARGS="-DGGML_CUDA=on"
 
-    $PIP install "llama-cpp-python>=0.3.40" --force-reinstall --no-cache-dir "${AIRGAP_PIP_FLAGS[@]}" 2>&1 | tail -3
+    $PIP install "llama-cpp-python>=0.3.8" --force-reinstall --no-cache-dir "${AIRGAP_PIP_FLAGS[@]}" 2>&1 | tail -3
 
     if $PYTHON -c "from llama_cpp import Llama; print('ok')" 2>/dev/null | grep -q ok; then
         success "llama-cpp-python installed with CUDA support"
