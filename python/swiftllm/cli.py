@@ -890,8 +890,16 @@ def cmd_serve(args: argparse.Namespace):
         model: str
         messages: List[ChatMessage]
         temperature: float = 0.7
-        max_tokens: int = 256
+        max_tokens: int = 2048
         stream: bool = False
+        top_p: float = 0.9
+        top_k: int = -1
+        frequency_penalty: float = 0.0
+        presence_penalty: float = 0.0
+        repetition_penalty: float = 1.1
+        stop: Optional[List[str]] = None
+
+        model_config = {"extra": "ignore"}
 
     class ChatChoice(BaseModel):
         index: int
@@ -935,7 +943,13 @@ def cmd_serve(args: argparse.Namespace):
         params = SamplingParams(
             temperature=request.temperature,
             max_tokens=request.max_tokens,
+            top_p=request.top_p,
+            repetition_penalty=request.repetition_penalty,
+            frequency_penalty=request.frequency_penalty,
+            presence_penalty=request.presence_penalty,
         )
+        if request.stop:
+            params.stop = request.stop
 
         if not request.stream:
             messages_dicts = [{"role": m.role, "content": m.content} for m in request.messages]
@@ -997,14 +1011,23 @@ def cmd_serve(args: argparse.Namespace):
 
                 encoded = tokenizer(prompt, return_tensors="pt").to(model.device)
                 input_ids = encoded["input_ids"]
+                attention_mask = encoded.get("attention_mask", None)
 
                 gen_kwargs = {
                     "max_new_tokens": request.max_tokens,
                     "do_sample": request.temperature > 0,
-                    "pad_token_id": tokenizer.pad_token_id,
+                    "pad_token_id": tokenizer.pad_token_id or tokenizer.eos_token_id,
+                    "eos_token_id": tokenizer.eos_token_id,
                 }
+                if attention_mask is not None:
+                    gen_kwargs["attention_mask"] = attention_mask
                 if request.temperature > 0:
                     gen_kwargs["temperature"] = request.temperature
+                    gen_kwargs["top_p"] = request.top_p
+                    if request.top_k > 0:
+                        gen_kwargs["top_k"] = request.top_k
+                if request.repetition_penalty != 1.0:
+                    gen_kwargs["repetition_penalty"] = request.repetition_penalty
 
                 streamer = TextIteratorStreamer(tokenizer, skip_prompt=True, skip_special_tokens=True)
                 gen_kwargs["streamer"] = streamer
