@@ -443,11 +443,11 @@ fi
 step "Installing bitsandbytes (4-bit quantization support)..."
 
 if $USE_GPU; then
-    $PIP install bitsandbytes --quiet "${PIP_EXTRA[@]}" 2>/dev/null
+    $PIP install bitsandbytes --quiet "${AIRGAP_PIP_FLAGS[@]}" 2>/dev/null
     if $PYTHON -c "import bitsandbytes; print('ok')" 2>/dev/null | grep -q ok; then
         success "bitsandbytes installed (enables 4-bit model loading on GPU)"
     else
-        warn "bitsandbytes install failed — compressed-tensors models may OOM on small GPUs"
+        warn "bitsandbytes install failed — 4-bit quantization will not be available"
     fi
 else
     info "Skipping bitsandbytes (GPU not detected)"
