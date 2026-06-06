@@ -574,7 +574,8 @@ class SelfConsistencySampler:
         return text.strip().lower().rstrip(".,;:!?")
 
     def _heuristic_extract(self, text: str) -> Optional[str]:
-        """Look for a number or boxed expression near the end of the text."""
+        """Look for a number or boxed expression near the end of the text,
+        falling back to last-line extraction for free-form responses."""
         import re
         # Try \\boxed{...}
         boxed = re.findall(r"\\boxed\{([^}]+)\}", text)
@@ -586,9 +587,12 @@ class SelfConsistencySampler:
         )
         if sentinel_match:
             return self._normalise(sentinel_match.group(1))
-        # Fall back to last number
+        # Try last number (for math/numeric prompts)
         numbers = re.findall(r"-?\d+(?:\.\d+)?", text)
-        return self._normalise(numbers[-1]) if numbers else None
+        if numbers:
+            return self._normalise(numbers[-1])
+        # Fall back to full normalized text for free-form responses
+        return self._last_line_extract(text)
 
     def _sentinel_extract(self, text: str, sentinel: str) -> Optional[str]:
         """Return the text that follows the sentinel string."""
