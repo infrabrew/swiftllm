@@ -429,25 +429,36 @@ class LLMEngine:
             if qc.get("quant_method") in ("compressed-tensors", "compressed_tensors"):
                 is_compressed = True
 
-        if hasattr(self.config, "device") and self.config.device == "cpu":
-            load_kwargs["device_map"] = "cpu"
-        elif torch.cuda.is_available() and is_compressed:
-            total_mem = torch.cuda.get_device_properties(0).total_memory
-            print(f"  Compressed-tensors quantized model detected")
-            print(f"  GPU VRAM: {total_mem / 1e9:.1f} GB")
-            try:
-                from transformers import BitsAndBytesConfig
+        # Check for bitsandbytes quantization request
+        quant = getattr(self.config, "quantization", None)
+        use_bnb = quant is not None and hasattr(quant, "value") and quant.value in ("4bit", "8bit")
+
+        if use_bnb and not is_compressed and torch.cuda.is_available():
+            from transformers import BitsAndBytesConfig
+            if quant.value == "4bit":
                 load_kwargs["quantization_config"] = BitsAndBytesConfig(
                     load_in_4bit=True,
                     bnb_4bit_compute_dtype=torch.bfloat16,
                     bnb_4bit_quant_type="nf4",
                 )
-                load_kwargs["device_map"] = "auto"
-                print(f"  Using bitsandbytes 4-bit loading (keeps weights compressed on GPU)")
-            except ImportError:
-                load_kwargs["device_map"] = "auto"
-                print(f"  Warning: bitsandbytes not installed — model will decompress to full precision")
-                print(f"  Install bitsandbytes for memory-efficient loading: pip install bitsandbytes")
+                print(f"  Using bitsandbytes 4-bit quantization (NF4)")
+            else:
+                load_kwargs["quantization_config"] = BitsAndBytesConfig(load_in_8bit=True)
+                print(f"  Using bitsandbytes 8-bit quantization")
+            load_kwargs["device_map"] = "auto"
+        elif hasattr(self.config, "device") and self.config.device == "cpu":
+            load_kwargs["device_map"] = "cpu"
+        elif torch.cuda.is_available() and is_compressed:
+            print(f"\n  WARNING: Compressed-tensors (CT) quantized model detected.")
+            print(f"  CT models require vLLM for correct inference — the standard")
+            print(f"  transformers decompression path produces corrupted output.")
+            print(f"")
+            print(f"  Alternatives that work with SwiftLLM:")
+            print(f"    1. GGUF format:  swiftllm download -m <model>-GGUF")
+            print(f"    2. Non-CT model with 4-bit: swiftllm serve -m <base-model> -q 4bit")
+            print(f"    3. Use vLLM directly for CT models")
+            print(f"")
+            load_kwargs["device_map"] = "auto"
         elif torch.cuda.is_available():
             load_kwargs["device_map"] = "auto"
             gpu_util = getattr(self.config, "gpu_memory_utilization", 0.90)

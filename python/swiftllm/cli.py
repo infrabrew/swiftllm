@@ -227,9 +227,9 @@ def _add_serve_args(parser: argparse.ArgumentParser):
     )
     parser.add_argument(
         "--quantization", "-q",
-        choices=["awq", "gptq", "squeezellm", None],
+        choices=["awq", "gptq", "squeezellm", "4bit", "8bit", None],
         default=None,
-        help="Quantization method",
+        help="Quantization method (4bit/8bit use bitsandbytes for memory-efficient loading)",
     )
     parser.add_argument(
         "--api-key",
@@ -859,13 +859,16 @@ def cmd_serve(args: argparse.Namespace):
 
     # Initialize engine
     print("Initializing engine...")
-    llm = LLM(
+    llm_kwargs = dict(
         model=args.model,
         tensor_parallel_size=args.tensor_parallel_size,
         gpu_memory_utilization=args.gpu_memory_utilization,
         trust_remote_code=args.trust_remote_code,
         download_dir=args.download_dir,
     )
+    if args.quantization:
+        llm_kwargs["quantization"] = args.quantization
+    llm = LLM(**llm_kwargs)
 
     app = FastAPI(title="SwiftLLM", version=_get_version())
 
