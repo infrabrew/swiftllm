@@ -179,6 +179,14 @@ def _clean_gguf_response(text: str) -> str:
     return text.strip()
 
 
+_THINK_RE = _re.compile(r"<think>.*?</think>\s*", _re.DOTALL)
+
+
+def _strip_thinking(text: str) -> str:
+    """Strip <think>...</think> blocks from model output (e.g. Qwen3)."""
+    return _THINK_RE.sub("", text).strip()
+
+
 def _normalised_edit_distance(s: str, t: str) -> float:
     """Compute normalised Levenshtein edit distance between s and t.
 
@@ -950,9 +958,16 @@ class LLM:
         # HF models: apply chat template then generate
         tokenizer = self._engine._tokenizer
         if hasattr(tokenizer, "apply_chat_template"):
-            prompt = tokenizer.apply_chat_template(
-                messages, tokenize=False, add_generation_prompt=True
-            )
+            # Disable thinking/CoT for models that support it (e.g. Qwen3)
+            try:
+                prompt = tokenizer.apply_chat_template(
+                    messages, tokenize=False, add_generation_prompt=True,
+                    enable_thinking=False,
+                )
+            except TypeError:
+                prompt = tokenizer.apply_chat_template(
+                    messages, tokenize=False, add_generation_prompt=True,
+                )
         else:
             prompt = ""
             for msg in messages:
@@ -967,7 +982,8 @@ class LLM:
             prompt += "Assistant:"
 
         outputs = self.generate([prompt], [sampling_params], use_tqdm=False)
-        return outputs[0].outputs[0].text.strip()
+        text = outputs[0].outputs[0].text.strip()
+        return _strip_thinking(text)
 
     @property
     def is_gguf(self) -> bool:

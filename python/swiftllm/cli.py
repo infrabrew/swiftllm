@@ -954,9 +954,9 @@ def cmd_serve(args: argparse.Namespace):
                 ],
             )
 
-        prompt = _build_prompt(request.messages)
+        messages_dicts = [{"role": m.role, "content": m.content} for m in request.messages]
         return StreamingResponse(
-            _stream_generate(prompt, request, request_id),
+            _stream_generate(messages_dicts, request, request_id),
             media_type="text/event-stream",
             headers={
                 "Cache-Control": "no-cache",
@@ -964,7 +964,7 @@ def cmd_serve(args: argparse.Namespace):
             },
         )
 
-    def _stream_generate(prompt: str, request: ChatRequest, request_id: str):
+    def _stream_generate(messages: list, request: ChatRequest, request_id: str):
         import json as _json
 
         engine = llm._engine
@@ -980,6 +980,20 @@ def cmd_serve(args: argparse.Namespace):
 
                 tokenizer = engine._tokenizer
                 model = engine._hf_model
+
+                # Build prompt using chat template when available
+                if hasattr(tokenizer, "apply_chat_template"):
+                    try:
+                        prompt = tokenizer.apply_chat_template(
+                            messages, tokenize=False, add_generation_prompt=True,
+                            enable_thinking=False,
+                        )
+                    except TypeError:
+                        prompt = tokenizer.apply_chat_template(
+                            messages, tokenize=False, add_generation_prompt=True,
+                        )
+                else:
+                    prompt = _build_prompt([ChatMessage(**m) for m in messages])
 
                 encoded = tokenizer(prompt, return_tensors="pt").to(model.device)
                 input_ids = encoded["input_ids"]
@@ -1020,12 +1034,12 @@ def cmd_serve(args: argparse.Namespace):
                 import traceback
                 traceback.print_exc()
         else:
+            # GGUF or fallback: use chat() for proper template handling
             params = SamplingParams(
                 temperature=request.temperature,
                 max_tokens=request.max_tokens,
             )
-            outputs = llm.generate([prompt], params, use_tqdm=False)
-            response_text = outputs[0].outputs[0].text
+            response_text = llm.chat(messages, params)
             chunk = {
                 "id": request_id,
                 "object": "chat.completion.chunk",
