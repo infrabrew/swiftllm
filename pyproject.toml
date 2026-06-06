@@ -54,6 +54,7 @@ dependencies = [
     "torch>=2.0",
     "accelerate>=0.20",
     "sentencepiece>=0.1.97",
+    "compressed-tensors>=0.15.0",
     "safetensors>=0.3",
     "tokenizers>=0.13",
     "tqdm>=4.60",
