@@ -454,6 +454,18 @@ else
 fi
 
 # ----------------------------
+# Step 8c: Install kernels (optimized compute kernels)
+# ----------------------------
+step "Installing kernels..."
+
+$PIP install kernels --quiet "${AIRGAP_PIP_FLAGS[@]}" 2>/dev/null
+if $PYTHON -c "import kernels; print('ok')" 2>/dev/null | grep -q ok; then
+    success "kernels installed"
+else
+    warn "kernels install failed (non-critical — inference will still work)"
+fi
+
+# ----------------------------
 # Step 9: Set model directory
 # ----------------------------
 step "Configuring model directory..."
