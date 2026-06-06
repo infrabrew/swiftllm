@@ -930,38 +930,38 @@ def cmd_serve(args: argparse.Namespace):
 
     @app.post("/v1/chat/completions", dependencies=[Depends(verify_api_key)])
     def chat_completions(request: ChatRequest):
-        prompt = _build_prompt(request.messages)
         request_id = f"chatcmpl-{uuid.uuid4().hex[:8]}"
-
-        if request.stream:
-            return StreamingResponse(
-                _stream_generate(prompt, request, request_id),
-                media_type="text/event-stream",
-                headers={
-                    "Cache-Control": "no-cache",
-                    "X-Accel-Buffering": "no",
-                },
-            )
 
         params = SamplingParams(
             temperature=request.temperature,
             max_tokens=request.max_tokens,
         )
 
-        outputs = llm.generate([prompt], params, use_tqdm=False)
-        response_text = outputs[0].outputs[0].text
+        if not request.stream:
+            messages_dicts = [{"role": m.role, "content": m.content} for m in request.messages]
+            response_text = llm.chat(messages_dicts, params)
 
-        return ChatResponse(
-            id=request_id,
-            created=int(time.time()),
-            model=request.model,
-            choices=[
-                ChatChoice(
-                    index=0,
-                    message=ChatMessage(role="assistant", content=response_text),
-                    finish_reason="stop",
-                )
-            ],
+            return ChatResponse(
+                id=request_id,
+                created=int(time.time()),
+                model=request.model,
+                choices=[
+                    ChatChoice(
+                        index=0,
+                        message=ChatMessage(role="assistant", content=response_text),
+                        finish_reason="stop",
+                    )
+                ],
+            )
+
+        prompt = _build_prompt(request.messages)
+        return StreamingResponse(
+            _stream_generate(prompt, request, request_id),
+            media_type="text/event-stream",
+            headers={
+                "Cache-Control": "no-cache",
+                "X-Accel-Buffering": "no",
+            },
         )
 
     def _stream_generate(prompt: str, request: ChatRequest, request_id: str):
@@ -1441,19 +1441,7 @@ def cmd_chat(args: argparse.Namespace):
 
         messages.append({"role": "user", "content": user_input})
 
-        # Build prompt
-        prompt = ""
-        for msg in messages:
-            if msg["role"] == "system":
-                prompt += f"System: {msg['content']}\n"
-            elif msg["role"] == "user":
-                prompt += f"User: {msg['content']}\n"
-            elif msg["role"] == "assistant":
-                prompt += f"Assistant: {msg['content']}\n"
-        prompt += "Assistant:"
-
-        outputs = llm.generate([prompt], params, use_tqdm=False)
-        response = outputs[0].outputs[0].text.strip()
+        response = llm.chat(messages, params)
 
         print(f"\nAssistant: {response}")
         messages.append({"role": "assistant", "content": response})

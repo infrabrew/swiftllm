@@ -154,6 +154,31 @@ def _is_gguf_model(model_path: str) -> bool:
     return model_path.lower().endswith(".gguf")
 
 
+import re as _re
+
+_CHANNEL_RE = _re.compile(
+    r"<\|channel\|>analysis<\|message\|>.*?(?:<\|end\|>|$)",
+    _re.DOTALL,
+)
+_FINAL_CHANNEL_RE = _re.compile(
+    r"<\|channel\|>final<\|message\|>(.*?)(?:<\|end\|>|<\|return\|>|$)",
+    _re.DOTALL,
+)
+_SPECIAL_TOKENS_RE = _re.compile(
+    r"<\|(?:start|end|return|channel|message|startoftext|endoftext|endofprompt)\|>"
+)
+
+
+def _clean_gguf_response(text: str) -> str:
+    """Strip internal channel markers from GGUF model output (e.g. gpt-oss)."""
+    m = _FINAL_CHANNEL_RE.search(text)
+    if m:
+        return m.group(1).strip()
+    text = _CHANNEL_RE.sub("", text)
+    text = _SPECIAL_TOKENS_RE.sub("", text)
+    return text.strip()
+
+
 def _normalised_edit_distance(s: str, t: str) -> float:
     """Compute normalised Levenshtein edit distance between s and t.
 
@@ -589,7 +614,7 @@ class LLMEngine:
                 # Run generation
                 result = self._model(prompt, **kwargs)
 
-                response_text = result["choices"][0]["text"]
+                response_text = _clean_gguf_response(result["choices"][0]["text"])
                 finish = result["choices"][0].get("finish_reason", "stop")
 
                 if finish == "length":
@@ -882,6 +907,71 @@ class LLM:
 
         # Return outputs in original order
         return [outputs[rid] for rid in request_ids]
+
+    def chat(
+        self,
+        messages: List[Dict[str, str]],
+        sampling_params: Optional[SamplingParams] = None,
+    ) -> str:
+        """Generate a chat response from a list of messages.
+
+        For GGUF models, uses llama-cpp-python's create_chat_completion with the
+        model's native chat template. For HF models, applies the tokenizer's
+        chat template then generates.
+
+        Args:
+            messages: List of {"role": ..., "content": ...} dicts.
+            sampling_params: Sampling parameters.
+
+        Returns:
+            The assistant's response text.
+        """
+        self._engine._ensure_initialized()
+
+        if sampling_params is None:
+            sampling_params = SamplingParams()
+
+        if self._engine._is_gguf:
+            kwargs = {
+                "max_tokens": sampling_params.max_tokens,
+                "temperature": sampling_params.temperature,
+                "top_p": sampling_params.top_p,
+            }
+            if sampling_params.stop:
+                kwargs["stop"] = sampling_params.stop
+
+            result = self._engine._model.create_chat_completion(
+                messages=messages,
+                **kwargs,
+            )
+            text = result["choices"][0]["message"]["content"]
+            return _clean_gguf_response(text)
+
+        # HF models: apply chat template then generate
+        tokenizer = self._engine._tokenizer
+        if hasattr(tokenizer, "apply_chat_template"):
+            prompt = tokenizer.apply_chat_template(
+                messages, tokenize=False, add_generation_prompt=True
+            )
+        else:
+            prompt = ""
+            for msg in messages:
+                role = msg.get("role", "user")
+                content = msg.get("content", "")
+                if role == "system":
+                    prompt += f"System: {content}\n"
+                elif role == "user":
+                    prompt += f"User: {content}\n"
+                elif role == "assistant":
+                    prompt += f"Assistant: {content}\n"
+            prompt += "Assistant:"
+
+        outputs = self.generate([prompt], [sampling_params], use_tqdm=False)
+        return outputs[0].outputs[0].text.strip()
+
+    @property
+    def is_gguf(self) -> bool:
+        return self._engine._is_gguf
 
     def generate_with_self_consistency(
         self,
