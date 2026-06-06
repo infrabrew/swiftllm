@@ -921,6 +921,10 @@ class LLM:
         messages: List[Dict[str, str]],
         sampling_params: Optional[SamplingParams] = None,
         use_rlm: bool = False,
+        use_dv: bool = False,
+        dv_min_confidence: float = 0.75,
+        dv_max_regen: int = 2,
+        dv_score_only: bool = False,
     ) -> str:
         """Generate a chat response from a list of messages.
 
@@ -928,17 +932,22 @@ class LLM:
         model's native chat template. For HF models, applies the tokenizer's
         chat template then generates.
 
-        When ``use_rlm=True``, the response is generated through the Recursive
-        Language Model layer (SHALLOW mode, depth 1) and then scored by the
-        Dense Verification quality gate.  Drafts below the confidence threshold
-        are regenerated automatically.  This adds latency but produces higher-
-        quality multi-turn responses by catching repetition, hedging, and
-        incoherent outputs structurally rather than through sampling hacks.
+        ``use_rlm`` and ``use_dv`` are independent switches that can be combined:
+
+        - Neither: standard single-pass generation (no overhead).
+        - ``use_rlm`` only: RLM SHALLOW (depth 1) with REPL self-checking.
+        - ``use_dv`` only: Dense Verification confidence gate that regenerates
+          low-quality drafts.
+        - Both: RLM structured generation followed by DV quality gate.
 
         Args:
             messages: List of {"role": ..., "content": ...} dicts.
             sampling_params: Sampling parameters.
-            use_rlm: Enable RLM + Dense Verification quality pipeline.
+            use_rlm: Enable Recursive Language Model (SHALLOW, depth 1).
+            use_dv: Enable Dense Verification confidence gate.
+            dv_min_confidence: Minimum global score to accept a draft (0–1).
+            dv_max_regen: Max regeneration attempts when DV rejects a draft.
+            dv_score_only: Score but always accept (no gating/regen).
 
         Returns:
             The assistant's response text.
@@ -964,17 +973,39 @@ class LLM:
             text = result["choices"][0]["message"]["content"]
             text = _clean_gguf_response(text)
 
-            # For GGUF with RLM: score the response and regenerate if needed
-            if use_rlm:
-                text = self._rlm_quality_gate(text, messages, sampling_params)
+            # GGUF quality pipeline: score and optionally regenerate
+            if use_dv:
+                text = self._dv_quality_gate(
+                    text, messages, sampling_params,
+                    min_confidence=dv_min_confidence,
+                    max_regen=dv_max_regen,
+                    score_only=dv_score_only,
+                )
 
             return text
 
         # HF models: apply chat template then generate
         prompt = self._apply_chat_template(messages)
 
-        if use_rlm:
+        if use_rlm and use_dv:
+            # Both: RLM structured generation → DV quality gate
+            text = self._chat_with_rlm_and_dv(
+                prompt, sampling_params,
+                dv_min_confidence=dv_min_confidence,
+                dv_max_regen=dv_max_regen,
+                dv_score_only=dv_score_only,
+            )
+        elif use_rlm:
+            # RLM only: structured self-checking, no quality gate
             text = self._chat_with_rlm(prompt, sampling_params)
+        elif use_dv:
+            # DV only: standard generation with quality gate
+            text = self._chat_with_dv(
+                prompt, sampling_params,
+                dv_min_confidence=dv_min_confidence,
+                dv_max_regen=dv_max_regen,
+                dv_score_only=dv_score_only,
+            )
         else:
             outputs = self.generate([prompt], [sampling_params], use_tqdm=False)
             text = outputs[0].outputs[0].text.strip()
@@ -1013,55 +1044,115 @@ class LLM:
         prompt: str,
         sampling_params: SamplingParams,
     ) -> str:
-        """Generate a response using RLM + Dense Verification pipeline.
+        """Generate a response using RLM only (no quality gate).
+
+        RLM SHALLOW (depth 1): structured generation with REPL self-check.
+        """
+        from .config import RlmConfig, RlmMode
+
+        rlm_cfg = RlmConfig(mode=RlmMode.SHALLOW, max_depth=1)
+        rlm_result = self.generate_with_rlm(
+            prompt, config=rlm_cfg, base_params=sampling_params,
+        )
+        return rlm_result[0].text.strip()
+
+    def _chat_with_dv(
+        self,
+        prompt: str,
+        sampling_params: SamplingParams,
+        dv_min_confidence: float = 0.75,
+        dv_max_regen: int = 2,
+        dv_score_only: bool = False,
+    ) -> str:
+        """Generate a response using Dense Verification only (no RLM).
+
+        Standard generation scored by the DV confidence gate; regenerates
+        if below threshold.
+        """
+        from .config import DenseVerificationConfig, VerificationStrategy
+
+        strategy = (
+            VerificationStrategy.SCORE_ONLY if dv_score_only
+            else VerificationStrategy.GATE_AND_REGEN
+        )
+        dv_cfg = DenseVerificationConfig(
+            strategy=strategy,
+            min_confidence=dv_min_confidence,
+            max_regen_attempts=dv_max_regen,
+            score_repl_steps=False,
+        )
+        dv_result = self.generate_with_dense_verification(
+            prompt, config=dv_cfg, base_params=sampling_params,
+        )
+        return dv_result[0].text.strip()
+
+    def _chat_with_rlm_and_dv(
+        self,
+        prompt: str,
+        sampling_params: SamplingParams,
+        dv_min_confidence: float = 0.75,
+        dv_max_regen: int = 2,
+        dv_score_only: bool = False,
+    ) -> str:
+        """Generate a response using RLM + Dense Verification together.
 
         1. RLM (SHALLOW, depth 1): structured generation with REPL self-check
-        2. Dense Verification (GATE_AND_REGEN): score and regenerate if needed
+        2. Dense Verification: score the result and regenerate if needed
+
+        Keeps the better of the two outputs.
         """
         from .config import (
             RlmConfig, RlmMode,
             DenseVerificationConfig, VerificationStrategy,
         )
 
-        # Step 1: Try RLM structured generation first
+        # Step 1: RLM structured generation
         rlm_cfg = RlmConfig(mode=RlmMode.SHALLOW, max_depth=1)
         rlm_result = self.generate_with_rlm(
             prompt, config=rlm_cfg, base_params=sampling_params,
         )
-        candidate = rlm_result[0].text.strip()
+        rlm_text = rlm_result[0].text.strip()
 
-        # Step 2: Score through Dense Verification and regenerate if low quality
+        # Step 2: Dense Verification quality gate
+        strategy = (
+            VerificationStrategy.SCORE_ONLY if dv_score_only
+            else VerificationStrategy.GATE_AND_REGEN
+        )
         dv_cfg = DenseVerificationConfig(
-            strategy=VerificationStrategy.GATE_AND_REGEN,
-            min_confidence=0.75,
-            max_regen_attempts=2,
+            strategy=strategy,
+            min_confidence=dv_min_confidence,
+            max_regen_attempts=dv_max_regen,
             score_repl_steps=True,
         )
         dv_result = self.generate_with_dense_verification(
             prompt, config=dv_cfg, base_params=sampling_params,
         )
+        dv_out = dv_result[0]
 
-        verified = dv_result[0]
+        # If DV produced a confident result, prefer it (it had the gate).
+        # Otherwise fall back to the RLM output which at least had
+        # structured self-checking.
+        if dv_out.global_score >= dv_min_confidence:
+            return dv_out.text.strip()
+        return rlm_text
 
-        # Use the DV result if it scored higher, otherwise keep the RLM output
-        # (RLM output has structured reasoning; DV output has quality gating)
-        if verified.global_score >= dv_cfg.min_confidence:
-            return verified.text.strip()
-
-        # DV couldn't beat the threshold either — return the RLM candidate
-        # which at least had structured self-checking
-        return candidate
-
-    def _rlm_quality_gate(
+    def _dv_quality_gate(
         self,
         text: str,
         messages: List[Dict[str, str]],
         sampling_params: SamplingParams,
+        min_confidence: float = 0.75,
+        max_regen: int = 2,
+        score_only: bool = False,
     ) -> str:
-        """Score a GGUF response through Dense Verification and regenerate
-        if below threshold.  Used when RLM is enabled for GGUF models."""
+        """Score a GGUF response through Dense Verification heuristics and
+        regenerate if below threshold.
+
+        Works inline for GGUF models where we can't route through the
+        ``generate_with_dense_verification`` pipeline (which uses
+        ``self.generate()`` internally).
+        """
         import re as _dv_re
-        import math as _dv_math
 
         _hedges = _dv_re.compile(
             r"\b(maybe|perhaps|i think|i guess|not sure|unclear|"
@@ -1082,12 +1173,14 @@ class LLM:
             return sum(scores) / n if scores else 0.0
 
         score = _score_text(text)
-        if score >= 0.75:
+
+        # SCORE_ONLY: just return, no gating
+        if score_only or score >= min_confidence:
             return text
 
-        # Regenerate up to 2 more times, keep best
+        # GATE_AND_REGEN: regenerate up to max_regen times, keep best
         best_text, best_score = text, score
-        for _ in range(2):
+        for _ in range(max_regen):
             kwargs = {
                 "max_tokens": sampling_params.max_tokens,
                 "temperature": sampling_params.temperature,
@@ -1104,7 +1197,7 @@ class LLM:
             s = _score_text(candidate)
             if s > best_score:
                 best_text, best_score = candidate, s
-            if best_score >= 0.75:
+            if best_score >= min_confidence:
                 break
 
         return best_text

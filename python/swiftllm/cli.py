@@ -263,15 +263,42 @@ def _add_serve_args(parser: argparse.ArgumentParser):
         help="Directory for downloading models (default: ~/.cache/swiftllm/models, "
              "or set SWIFTLLM_MODEL_DIR env var)",
     )
+    # --- Quality pipeline flags (can be combined) ---
     parser.add_argument(
         "--rlm",
         action="store_true",
         default=False,
-        help="Enable RLM + Dense Verification quality pipeline for chat responses. "
-             "Uses structured self-checking (RLM SHALLOW) and a confidence gate "
-             "that regenerates low-quality drafts. Adds latency but catches "
-             "repetition, hedging, and incoherent multi-turn responses. "
-             "Also settable via SWIFTLLM_RLM=1 env var.",
+        help="Enable Recursive Language Model (SHALLOW, depth 1) for chat. "
+             "Adds structured self-checking via REPL variable binding and "
+             "VERIFY steps. Also settable via SWIFTLLM_RLM=1 env var.",
+    )
+    parser.add_argument(
+        "--dense-verification",
+        action="store_true",
+        default=False,
+        help="Enable Dense Verification confidence gate for chat responses. "
+             "Scores each draft and regenerates if below threshold. "
+             "Also settable via SWIFTLLM_DV=1 env var.",
+    )
+    parser.add_argument(
+        "--dv-min-confidence",
+        type=float,
+        default=0.75,
+        metavar="CONF",
+        help="Min confidence for Dense Verification gate (default: 0.75).",
+    )
+    parser.add_argument(
+        "--dv-max-regen",
+        type=int,
+        default=2,
+        metavar="N",
+        help="Max regeneration attempts for Dense Verification (default: 2).",
+    )
+    parser.add_argument(
+        "--dv-score-only",
+        action="store_true",
+        help="With --dense-verification: score but always accept (no gating). "
+             "Useful for monitoring quality without blocking.",
     )
 
 
@@ -565,12 +592,39 @@ def _add_chat_args(parser: argparse.ArgumentParser):
         help="Directory for downloading models (default: ~/.cache/swiftllm/models, "
              "or set SWIFTLLM_MODEL_DIR env var)",
     )
+    # --- Quality pipeline flags (can be combined) ---
     parser.add_argument(
         "--rlm",
         action="store_true",
         default=False,
-        help="Enable RLM + Dense Verification quality pipeline. "
+        help="Enable Recursive Language Model for chat. "
              "Also settable via SWIFTLLM_RLM=1 env var.",
+    )
+    parser.add_argument(
+        "--dense-verification",
+        action="store_true",
+        default=False,
+        help="Enable Dense Verification confidence gate. "
+             "Also settable via SWIFTLLM_DV=1 env var.",
+    )
+    parser.add_argument(
+        "--dv-min-confidence",
+        type=float,
+        default=0.75,
+        metavar="CONF",
+        help="Min confidence threshold (default: 0.75).",
+    )
+    parser.add_argument(
+        "--dv-max-regen",
+        type=int,
+        default=2,
+        metavar="N",
+        help="Max regeneration attempts (default: 2).",
+    )
+    parser.add_argument(
+        "--dv-score-only",
+        action="store_true",
+        help="Score but always accept (no gating).",
     )
 
 
@@ -874,13 +928,22 @@ def cmd_serve(args: argparse.Namespace):
     LLM, _ = get_engine()
     SamplingParams, _, _ = get_config()
 
-    # RLM + Dense Verification toggle: CLI flag or env var
+    # RLM and Dense Verification toggles: CLI flags or env vars
     use_rlm = args.rlm or os.environ.get("SWIFTLLM_RLM", "").strip() in ("1", "true", "yes")
+    use_dv = getattr(args, "dense_verification", False) or os.environ.get("SWIFTLLM_DV", "").strip() in ("1", "true", "yes")
+
+    # Dense Verification tuning knobs
+    dv_min_confidence = getattr(args, "dv_min_confidence", 0.75)
+    dv_max_regen = getattr(args, "dv_max_regen", 2)
+    dv_score_only = getattr(args, "dv_score_only", False)
 
     # Initialize engine
     print("Initializing engine...")
     if use_rlm:
-        print("RLM + Dense Verification quality pipeline: ENABLED")
+        print("RLM (Recursive Language Model): ENABLED")
+    if use_dv:
+        strategy = "SCORE_ONLY" if dv_score_only else f"GATE_AND_REGEN (min_conf={dv_min_confidence}, max_regen={dv_max_regen})"
+        print(f"Dense Verification: ENABLED [{strategy}]")
     llm_kwargs = dict(
         model=args.model,
         tensor_parallel_size=args.tensor_parallel_size,
@@ -975,7 +1038,13 @@ def cmd_serve(args: argparse.Namespace):
 
         if not request.stream:
             messages_dicts = [{"role": m.role, "content": m.content} for m in request.messages]
-            response_text = llm.chat(messages_dicts, params, use_rlm=use_rlm)
+            response_text = llm.chat(
+                messages_dicts, params,
+                use_rlm=use_rlm, use_dv=use_dv,
+                dv_min_confidence=dv_min_confidence,
+                dv_max_regen=dv_max_regen,
+                dv_score_only=dv_score_only,
+            )
 
             return ChatResponse(
                 id=request_id,
@@ -992,7 +1061,8 @@ def cmd_serve(args: argparse.Namespace):
 
         messages_dicts = [{"role": m.role, "content": m.content} for m in request.messages]
         return StreamingResponse(
-            _stream_generate(messages_dicts, request, request_id, use_rlm),
+            _stream_generate(messages_dicts, request, request_id, use_rlm, use_dv,
+                            dv_min_confidence, dv_max_regen, dv_score_only),
             media_type="text/event-stream",
             headers={
                 "Cache-Control": "no-cache",
@@ -1000,17 +1070,20 @@ def cmd_serve(args: argparse.Namespace):
             },
         )
 
-    def _stream_generate(messages: list, request: ChatRequest, request_id: str, rlm_enabled: bool = False):
+    def _stream_generate(messages: list, request: ChatRequest, request_id: str,
+                         rlm_enabled: bool = False, dv_enabled: bool = False,
+                         dv_min_conf: float = 0.75, dv_max_regen: int = 2,
+                         dv_score_only: bool = False):
         import json as _json
 
         engine = llm._engine
         engine._ensure_initialized()
 
-        # When RLM is enabled, generate the full response through the quality
-        # pipeline first, then stream it out in word-sized chunks.  The quality
-        # gate needs the complete text to score, so true token-streaming isn't
-        # possible — but the client still gets a streaming SSE response.
-        if rlm_enabled:
+        # When RLM or DV is enabled, generate the full response through the
+        # quality pipeline first, then stream it out in word-sized chunks.
+        # The quality gate needs the complete text to score, so true token-
+        # streaming isn't possible — but the client still gets streaming SSE.
+        if rlm_enabled or dv_enabled:
             params = SamplingParams(
                 temperature=request.temperature,
                 max_tokens=request.max_tokens,
@@ -1022,7 +1095,13 @@ def cmd_serve(args: argparse.Namespace):
             if request.stop:
                 params.stop = request.stop
 
-            response_text = llm.chat(messages, params, use_rlm=True)
+            response_text = llm.chat(
+                messages, params,
+                use_rlm=rlm_enabled, use_dv=dv_enabled,
+                dv_min_confidence=dv_min_conf,
+                dv_max_regen=dv_max_regen,
+                dv_score_only=dv_score_only,
+            )
 
             # Stream the verified response in small chunks for a natural feel
             words = response_text.split(" ")
@@ -1515,12 +1594,19 @@ def cmd_chat(args: argparse.Namespace):
     LLM, _ = get_engine()
     SamplingParams, _, _ = get_config()
 
-    # RLM + Dense Verification toggle: CLI flag or env var
+    # RLM and Dense Verification toggles: CLI flags or env vars
     use_rlm = args.rlm or os.environ.get("SWIFTLLM_RLM", "").strip() in ("1", "true", "yes")
+    use_dv = getattr(args, "dense_verification", False) or os.environ.get("SWIFTLLM_DV", "").strip() in ("1", "true", "yes")
+    dv_min_confidence = getattr(args, "dv_min_confidence", 0.75)
+    dv_max_regen = getattr(args, "dv_max_regen", 2)
+    dv_score_only = getattr(args, "dv_score_only", False)
 
     print(f"SwiftLLM Chat - Loading {args.model}...")
     if use_rlm:
-        print("RLM + Dense Verification quality pipeline: ENABLED")
+        print("RLM (Recursive Language Model): ENABLED")
+    if use_dv:
+        strategy = "SCORE_ONLY" if dv_score_only else f"GATE_AND_REGEN (min_conf={dv_min_confidence}, max_regen={dv_max_regen})"
+        print(f"Dense Verification: ENABLED [{strategy}]")
 
     llm = LLM(
         model=args.model,
@@ -1540,8 +1626,13 @@ def cmd_chat(args: argparse.Namespace):
         messages.append({"role": "system", "content": args.system})
 
     print("\nChat started. Type 'quit' or 'exit' to end.")
-    if use_rlm:
-        print("(RLM enabled — responses may take longer but will be higher quality)")
+    if use_rlm or use_dv:
+        active = []
+        if use_rlm:
+            active.append("RLM")
+        if use_dv:
+            active.append("DV")
+        print(f"({' + '.join(active)} enabled — responses may take longer but will be higher quality)")
     print("=" * 60)
 
     while True:
@@ -1557,7 +1648,13 @@ def cmd_chat(args: argparse.Namespace):
 
         messages.append({"role": "user", "content": user_input})
 
-        response = llm.chat(messages, params, use_rlm=use_rlm)
+        response = llm.chat(
+            messages, params,
+            use_rlm=use_rlm, use_dv=use_dv,
+            dv_min_confidence=dv_min_confidence,
+            dv_max_regen=dv_max_regen,
+            dv_score_only=dv_score_only,
+        )
 
         print(f"\nAssistant: {response}")
         messages.append({"role": "assistant", "content": response})
