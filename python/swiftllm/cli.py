@@ -951,6 +951,8 @@ def cmd_serve(args: argparse.Namespace):
         trust_remote_code=args.trust_remote_code,
         download_dir=args.download_dir,
     )
+    if args.max_model_len:
+        llm_kwargs["max_model_len"] = args.max_model_len
     if args.quantization:
         llm_kwargs["quantization"] = args.quantization
     llm = LLM(**llm_kwargs)
@@ -1173,7 +1175,6 @@ def cmd_serve(args: argparse.Namespace):
                 traceback.print_exc()
         else:
             # GGUF: use llama-cpp-python's native streaming
-            from .engine import _clean_gguf_response
             gguf_model = engine._model
 
             gguf_kwargs = {
@@ -1185,25 +1186,41 @@ def cmd_serve(args: argparse.Namespace):
             if request.stop:
                 gguf_kwargs["stop"] = request.stop
 
-            for stream_chunk in gguf_model.create_chat_completion(
-                messages=messages, **gguf_kwargs,
-            ):
-                delta = stream_chunk["choices"][0].get("delta", {})
-                token_text = delta.get("content", "")
-                if not token_text:
-                    continue
-                chunk = {
+            try:
+                for stream_chunk in gguf_model.create_chat_completion(
+                    messages=messages, **gguf_kwargs,
+                ):
+                    delta = stream_chunk["choices"][0].get("delta", {})
+                    token_text = delta.get("content", "")
+                    if not token_text:
+                        continue
+                    chunk = {
+                        "id": request_id,
+                        "object": "chat.completion.chunk",
+                        "created": int(time.time()),
+                        "model": request.model,
+                        "choices": [{
+                            "index": 0,
+                            "delta": {"content": token_text},
+                            "finish_reason": None,
+                        }],
+                    }
+                    yield f"data: {_json.dumps(chunk)}\n\n"
+            except (ValueError, IndexError) as e:
+                # Context window exceeded or scores array OOB — send error as content
+                err_text = f"\n\n[Error: {e}]"
+                err_chunk = {
                     "id": request_id,
                     "object": "chat.completion.chunk",
                     "created": int(time.time()),
                     "model": request.model,
                     "choices": [{
                         "index": 0,
-                        "delta": {"content": token_text},
+                        "delta": {"content": err_text},
                         "finish_reason": None,
                     }],
                 }
-                yield f"data: {_json.dumps(chunk)}\n\n"
+                yield f"data: {_json.dumps(err_chunk)}\n\n"
 
         done_chunk = {
             "id": request_id,
