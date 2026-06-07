@@ -1061,8 +1061,7 @@ def cmd_serve(args: argparse.Namespace):
 
         messages_dicts = [{"role": m.role, "content": m.content} for m in request.messages]
         return StreamingResponse(
-            _stream_generate(messages_dicts, request, request_id, use_rlm, use_dv,
-                            dv_min_confidence, dv_max_regen, dv_score_only),
+            _stream_generate(messages_dicts, request, request_id),
             media_type="text/event-stream",
             headers={
                 "Cache-Control": "no-cache",
@@ -1070,70 +1069,19 @@ def cmd_serve(args: argparse.Namespace):
             },
         )
 
-    def _stream_generate(messages: list, request: ChatRequest, request_id: str,
-                         rlm_enabled: bool = False, dv_enabled: bool = False,
-                         dv_min_conf: float = 0.75, dv_max_regen: int = 2,
-                         dv_score_only: bool = False):
+    def _stream_generate(messages: list, request: ChatRequest, request_id: str):
+        """Real-time token streaming for both HF and GGUF models.
+
+        Streaming always uses true token-by-token generation so the user
+        sees output as it's produced.  The RLM/DV quality pipeline only
+        applies to non-streaming requests (where latency is acceptable).
+        Streaming requests still benefit from sampling params
+        (repetition_penalty, top_p, etc.) and thinking/reasoning display.
+        """
         import json as _json
 
         engine = llm._engine
         engine._ensure_initialized()
-
-        # When RLM or DV is enabled, generate the full response through the
-        # quality pipeline first, then stream it out in word-sized chunks.
-        # The quality gate needs the complete text to score, so true token-
-        # streaming isn't possible — but the client still gets streaming SSE.
-        if rlm_enabled or dv_enabled:
-            params = SamplingParams(
-                temperature=request.temperature,
-                max_tokens=request.max_tokens,
-                top_p=request.top_p,
-                repetition_penalty=request.repetition_penalty,
-                frequency_penalty=request.frequency_penalty,
-                presence_penalty=request.presence_penalty,
-            )
-            if request.stop:
-                params.stop = request.stop
-
-            response_text = llm.chat(
-                messages, params,
-                use_rlm=rlm_enabled, use_dv=dv_enabled,
-                dv_min_confidence=dv_min_conf,
-                dv_max_regen=dv_max_regen,
-                dv_score_only=dv_score_only,
-            )
-
-            # Stream the verified response in small chunks for a natural feel
-            words = response_text.split(" ")
-            for i, word in enumerate(words):
-                token_text = word if i == 0 else " " + word
-                chunk = {
-                    "id": request_id,
-                    "object": "chat.completion.chunk",
-                    "created": int(time.time()),
-                    "model": request.model,
-                    "choices": [{
-                        "index": 0,
-                        "delta": {"content": token_text},
-                        "finish_reason": None,
-                    }],
-                }
-                yield f"data: {_json.dumps(chunk)}\n\n"
-
-            done_chunk = {
-                "id": request_id,
-                "object": "chat.completion.chunk",
-                "created": int(time.time()),
-                "model": request.model,
-                "choices": [{
-                    "index": 0,
-                    "delta": {},
-                    "finish_reason": "stop",
-                }],
-            }
-            yield f"data: {_json.dumps(done_chunk)}\n\n"
-            yield "data: [DONE]\n\n"
-            return
 
         is_hf = getattr(engine, "_is_hf", False)
 
@@ -1224,24 +1172,38 @@ def cmd_serve(args: argparse.Namespace):
                 import traceback
                 traceback.print_exc()
         else:
-            # GGUF or fallback: use chat() for proper template handling
-            params = SamplingParams(
-                temperature=request.temperature,
-                max_tokens=request.max_tokens,
-            )
-            response_text = llm.chat(messages, params)
-            chunk = {
-                "id": request_id,
-                "object": "chat.completion.chunk",
-                "created": int(time.time()),
-                "model": request.model,
-                "choices": [{
-                    "index": 0,
-                    "delta": {"content": response_text},
-                    "finish_reason": None,
-                }],
+            # GGUF: use llama-cpp-python's native streaming
+            from .engine import _clean_gguf_response
+            gguf_model = engine._model
+
+            gguf_kwargs = {
+                "max_tokens": request.max_tokens,
+                "temperature": request.temperature,
+                "top_p": request.top_p,
+                "stream": True,
             }
-            yield f"data: {_json.dumps(chunk)}\n\n"
+            if request.stop:
+                gguf_kwargs["stop"] = request.stop
+
+            for stream_chunk in gguf_model.create_chat_completion(
+                messages=messages, **gguf_kwargs,
+            ):
+                delta = stream_chunk["choices"][0].get("delta", {})
+                token_text = delta.get("content", "")
+                if not token_text:
+                    continue
+                chunk = {
+                    "id": request_id,
+                    "object": "chat.completion.chunk",
+                    "created": int(time.time()),
+                    "model": request.model,
+                    "choices": [{
+                        "index": 0,
+                        "delta": {"content": token_text},
+                        "finish_reason": None,
+                    }],
+                }
+                yield f"data: {_json.dumps(chunk)}\n\n"
 
         done_chunk = {
             "id": request_id,
