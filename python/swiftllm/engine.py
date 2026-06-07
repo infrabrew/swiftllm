@@ -404,17 +404,24 @@ class LLMEngine:
         if self.config.device == "cpu":
             n_gpu_layers = 0
 
-        # Context length
+        # Context length and batch size
         n_ctx = self.config.max_model_len or 4096
+        # n_batch must be large enough for the generation window;
+        # llama-cpp-python sizes _scores to n_batch, so a small default
+        # (64) causes IndexError on longer outputs.  2048 is a safe
+        # default that balances memory use and generation length.
+        n_batch = min(n_ctx, 2048)
 
         print(f"Loading GGUF model: {model_path}")
         print(f"  GPU layers: {'all' if n_gpu_layers == -1 else n_gpu_layers}")
         print(f"  Context length: {n_ctx}")
+        print(f"  Batch size: {n_batch}")
 
         self._model = Llama(
             model_path=model_path,
             n_gpu_layers=n_gpu_layers,
             n_ctx=n_ctx,
+            n_batch=n_batch,
             verbose=False,
         )
 
@@ -966,11 +973,16 @@ class LLM:
             if sampling_params.stop:
                 kwargs["stop"] = sampling_params.stop
 
-            result = self._engine._model.create_chat_completion(
-                messages=messages,
-                **kwargs,
-            )
-            text = result["choices"][0]["message"]["content"]
+            try:
+                result = self._engine._model.create_chat_completion(
+                    messages=messages,
+                    **kwargs,
+                )
+                text = result["choices"][0]["message"]["content"]
+            except (ValueError, IndexError) as e:
+                # Context overflow or scores array OOB
+                return f"[Error: {e}]"
+
             text = _clean_gguf_response(text)
 
             # GGUF quality pipeline: score and optionally regenerate
