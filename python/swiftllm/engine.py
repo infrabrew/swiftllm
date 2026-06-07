@@ -1010,17 +1010,21 @@ class LLM:
             outputs = self.generate([prompt], [sampling_params], use_tqdm=False)
             text = outputs[0].outputs[0].text.strip()
 
-        return _strip_thinking(text)
+        return text
 
     def _apply_chat_template(self, messages: List[Dict[str, str]]) -> str:
         """Build a prompt string from chat messages using the tokenizer's
-        chat template when available, falling back to a simple format."""
+        chat template when available, falling back to a simple format.
+
+        Thinking/CoT is left enabled so models like Qwen3 produce <think>
+        blocks that Open WebUI can display in its reasoning panel.
+        """
         tokenizer = self._engine._tokenizer
         if hasattr(tokenizer, "apply_chat_template"):
             try:
                 return tokenizer.apply_chat_template(
                     messages, tokenize=False, add_generation_prompt=True,
-                    enable_thinking=False,
+                    enable_thinking=True,
                 )
             except TypeError:
                 return tokenizer.apply_chat_template(
