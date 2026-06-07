@@ -1139,6 +1139,7 @@ def cmd_serve(args: argparse.Namespace):
 
         if is_hf:
             try:
+                import re as _stream_re
                 import torch
                 from transformers import TextIteratorStreamer
                 from threading import Thread
@@ -1146,12 +1147,20 @@ def cmd_serve(args: argparse.Namespace):
                 tokenizer = engine._tokenizer
                 model = engine._hf_model
 
-                # Build prompt using chat template when available
+                # Regex to strip chat-template markup tokens while keeping
+                # <think>...</think> for Open WebUI's reasoning panel.
+                _CHAT_MARKUP_RE = _stream_re.compile(
+                    r"<\|(?:im_start|im_end|endoftext|pad|endofprompt)\|>"
+                    r"(?:\s*(?:system|user|assistant)\s*)?"
+                )
+
+                # Build prompt — leave thinking enabled so models like Qwen3
+                # produce <think> blocks that stream to the UI.
                 if hasattr(tokenizer, "apply_chat_template"):
                     try:
                         prompt = tokenizer.apply_chat_template(
                             messages, tokenize=False, add_generation_prompt=True,
-                            enable_thinking=False,
+                            enable_thinking=True,
                         )
                     except TypeError:
                         prompt = tokenizer.apply_chat_template(
@@ -1180,13 +1189,20 @@ def cmd_serve(args: argparse.Namespace):
                 if request.repetition_penalty != 1.0:
                     gen_kwargs["repetition_penalty"] = request.repetition_penalty
 
-                streamer = TextIteratorStreamer(tokenizer, skip_prompt=True, skip_special_tokens=True)
+                # skip_special_tokens=False so <think>/<​/think> are preserved
+                # for Open WebUI's reasoning panel; chat-template markup
+                # (<|im_start|>, <|im_end|>, etc.) is stripped in the loop.
+                streamer = TextIteratorStreamer(tokenizer, skip_prompt=True, skip_special_tokens=False)
                 gen_kwargs["streamer"] = streamer
 
                 thread = Thread(target=lambda: model.generate(input_ids, **gen_kwargs))
                 thread.start()
 
                 for token_text in streamer:
+                    if not token_text:
+                        continue
+                    # Strip chat-template markup but keep <think>/<​/think>
+                    token_text = _CHAT_MARKUP_RE.sub("", token_text)
                     if not token_text:
                         continue
                     chunk = {
