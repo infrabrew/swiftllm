@@ -100,6 +100,7 @@
   - [Disaggregated Serving](#disaggregated-serving)
   - [Recursive Language Model (RLM)](#recursive-language-model-rlm)
   - [Dense Verification Layer](#dense-verification-layer)
+  - [Quality Pipeline for Serve & Chat](#quality-pipeline-for-serve--chat)
 - [Configuration Reference](#configuration-reference)
 - [Environment Variables](#environment-variables)
 - [CLI Commands](#cli-commands)
@@ -121,9 +122,9 @@
 - **Memory Efficient** — PagedAttention for optimal KV cache management
 - **Low Latency** — Optimized CUDA kernels and speculative decoding
 - **Tensor Parallelism** — Scale to multiple GPUs seamlessly
-- **OpenAI Compatible** — Drop-in replacement for the OpenAI API with security hardening
-- **Multiple Formats** — HuggingFace repos, GGUF quantized models, SafeTensors
-- **GGUF Inference** — Run quantized GGUF models on GPU via llama-cpp-python
+- **OpenAI Compatible** — Drop-in replacement for the OpenAI API with security hardening and SSE token streaming (including `<think>` reasoning streams for Open WebUI)
+- **Dual Inference Backends** — GGUF models run via llama-cpp-python (GPU-offloaded); safetensors/HuggingFace checkpoints run via the transformers backend
+- **4-bit / 8-bit Quantized Loading** — bitsandbytes NF4/int8 loading for safetensors models (`-q 4bit` / `-q 8bit`)
 - **Air-Gapped Install** — Bundle and deploy on networks with no internet access
 - **PyTorch-Optional SDK** — Python package imports cleanly without PyTorch; torch features activate when available
 - **Lifecycle Scripts** — `install.sh`, `update.sh`, and `uninstall.sh` for full install management
@@ -287,6 +288,8 @@ After the RLM generation completes, the Dense Verification Layer performs one ad
 | **Mamba** | Mamba-130M … Mamba-3B | Phase 1 — pure SSM |
 | **Jamba** | Jamba-v0.1, custom | Phase 1 — hybrid Attention + Mamba + MoE |
 
+**Model formats:** `.gguf` files run through the llama-cpp-python backend (any llama.cpp-supported architecture); safetensors checkpoints run through the HuggingFace transformers backend, optionally with bitsandbytes 4-bit/8-bit loading (`-q 4bit` / `-q 8bit`). Compressed-tensors (CT) quantized checkpoints are detected and warned about — they require vLLM for correct decoding, so use the model's GGUF variant or load the unquantized base model with `-q 4bit` instead.
+
 ---
 
 ## Installation
@@ -294,7 +297,7 @@ After the RLM generation completes, the Dense Verification Layer performs one ad
 ### Quick Install (Recommended)
 
 ```bash
-git clone https://github.com/swiftllm/swiftllm.git
+git clone https://github.com/infrabrew/swiftllm.git
 cd swiftllm
 ./install.sh
 ```
@@ -305,6 +308,9 @@ The installer automatically:
 - Installs Rust if needed
 - Builds SwiftLLM from source (CPU or CUDA, depending on what's detected)
 - Installs llama-cpp-python with GPU support (if available)
+- Installs bitsandbytes on GPU hosts (enables 4-bit/8-bit quantized loading via `-q 4bit` / `-q 8bit`)
+- Installs the `kernels` package (optimized compute kernels; non-critical if it fails)
+- Installs a system-wide `swiftllm` command to `/usr/local/bin/swiftllm` (may prompt for `sudo`), so the CLI works without activating the venv — override the install location it points at with the `SWIFTLLM_HOME` env var
 
 #### Supported Platforms
 
@@ -332,7 +338,7 @@ For hosts with no internet access, create a bundle on a connected machine first:
 
 ```bash
 # On a CONNECTED machine
-git clone https://github.com/swiftllm/swiftllm.git && cd swiftllm
+git clone https://github.com/infrabrew/swiftllm.git && cd swiftllm
 
 # Basic bundle (source + all Python wheels + Rust installer)
 ./airgap-bundle.sh
@@ -371,7 +377,7 @@ swiftllm generate -m /path/to/local/model.gguf -p "Hello"
 ```bash
 ./update.sh              # Pull latest source + rebuild
 ./update.sh --branch main-hybrid-rd  # Switch to a specific branch
-./update.sh --tag v2.0.5  # Switch to a specific tag
+./update.sh --tag v2.0.1  # Switch to a specific tag
 ./update.sh --clean      # Clean build artifacts before rebuilding
 ./update.sh --no-pull    # Rebuild from current source (skip git pull)
 ./update.sh --cpu        # Force CPU-only rebuild
@@ -388,7 +394,7 @@ swiftllm generate -m /path/to/local/model.gguf -p "Hello"
 ### Manual Install
 
 ```bash
-git clone https://github.com/swiftllm/swiftllm.git
+git clone https://github.com/infrabrew/swiftllm.git
 cd swiftllm
 
 pip install maturin
@@ -396,10 +402,13 @@ maturin build --release
 pip install target/wheels/swiftllm-*.whl
 
 # GGUF support (CPU)
-pip install llama-cpp-python
+pip install 'llama-cpp-python>=0.3.40'
 
 # GGUF support (CUDA GPU)
-CMAKE_ARGS='-DGGML_CUDA=on' CUDACXX=/usr/local/cuda/bin/nvcc pip install llama-cpp-python
+CMAKE_ARGS='-DGGML_CUDA=on' CUDACXX=/usr/local/cuda/bin/nvcc pip install 'llama-cpp-python>=0.3.8' --force-reinstall --no-cache-dir
+
+# Optional: 4-bit/8-bit quantized loading for safetensors models (GPU only)
+pip install bitsandbytes
 ```
 
 ### Requirements
@@ -458,12 +467,12 @@ You can also **teach it your own content**: point it at a folder of PDFs, Word d
 Open a terminal and run these two commands one at a time:
 
 ```bash
-git clone https://github.com/swiftllm/swiftllm.git
+git clone https://github.com/infrabrew/swiftllm.git
 cd swiftllm
 ./install.sh
 ```
 
-The installer automatically detects your GPU, sets up a Python environment, and builds everything. When it finishes you will see a success message. Close and reopen your terminal so the `swiftllm` command becomes available.
+The installer automatically detects your GPU, sets up a Python environment, and builds everything. Near the end it may ask for your password — that is `sudo` placing the `swiftllm` command in `/usr/local/bin` so it works from any terminal, with no extra setup. When it finishes you will see a success message and `swiftllm` is ready to use immediately.
 
 > **Don't have `git` installed?**
 > - **macOS**: run `xcode-select --install` in your terminal, then try again
@@ -570,9 +579,11 @@ curl http://localhost:8000/v1/chat/completions \
   }'
 ```
 
-You can also open a browser-based chat UI by pointing [Open WebUI](https://github.com/open-webui/open-webui) at `http://localhost:8000`.
+You can also open a browser-based chat UI by pointing [Open WebUI](https://github.com/open-webui/open-webui) at `http://localhost:8000`. Responses stream token-by-token as they are generated, and reasoning models that emit `<think>` blocks (such as Qwen3) show their chain of thought in Open WebUI's collapsible reasoning panel.
 
 > **Want to add a password?** Add `--api-key my-secret-key` to the serve command, then include `-H "Authorization: Bearer my-secret-key"` in your requests.
+
+> **Want higher-quality answers?** Add `--rlm` (structured self-checking) and/or `--dense-verification` (confidence gating with automatic regeneration) to the serve command. These apply to non-streaming requests, where the extra latency is acceptable. See [Quality Pipeline for Serve & Chat](#quality-pipeline-for-serve--chat).
 
 ---
 
@@ -761,7 +772,7 @@ Yes, completely. Everything runs on your own machine. Your prompts, documents, t
 Yes. Pass any HuggingFace model ID directly with `-m`, for example: `-m meta-llama/Llama-2-7b-hf`. SwiftLLM downloads and caches it automatically.
 
 **What file types can I train on?**
-Plain text, Markdown, all major code languages, PDF (needs `pdfplumber`), Word documents (needs `python-docx`), HTML, CSV, JSON, and JSONL. See [Supported Input Formats](#supported-input-formats) for the full list.
+Plain text, Markdown, all major code languages, PDF (needs `pdfplumber`), Word documents (needs `python-docx`), HTML, CSV, JSON, and JSONL. See [Supported Input Sources](#supported-input-sources) for the full list.
 
 **How long does fine-tuning take?**
 For a 7B model with LoRA on a few hundred pages of documents: roughly 20–60 minutes with a mid-range GPU, or 4–8 hours on CPU. You can run it overnight and the result will be waiting for you in the morning.
@@ -784,9 +795,11 @@ A few things to check: (1) Make sure your documents were actually processed — 
 
 | Symptom | What to try |
 |---------|------------|
-| `command not found: swiftllm` | Close and reopen your terminal after install. If still missing, run `source ~/.bashrc` (Linux) or `source ~/.zshrc` (macOS) |
+| `command not found: swiftllm` | The installer places the command at `/usr/local/bin/swiftllm`. Re-run `./install.sh` if it's missing, or activate the venv directly: `source venv/bin/activate` from the install directory. If you moved the install directory, run with `SWIFTLLM_HOME=/new/path swiftllm …` |
 | Model download is very slow | Downloads range from 400 MB to 40 GB depending on the model — this is normal. It only downloads once and is cached locally afterward |
-| `CUDA out of memory` error | Switch to a smaller model, or add `--max-seq-len 512` to limit memory usage |
+| `CUDA out of memory` error | Switch to a smaller model, add `-q 4bit` to load a safetensors model in 4-bit, or add `--max-seq-len 512` to limit memory usage |
+| Replies get cut off / context overflow errors with GGUF models | The GGUF context window defaults to 4096 tokens. Raise it with `--max-model-len 8192` (or higher, up to what the model supports) |
+| Warning about a "compressed-tensors" model | Compressed-tensors quantized checkpoints need vLLM to decode correctly. Use the model's GGUF version instead, or load the unquantized base model with `-q 4bit` |
 | `out of memory` on CPU | Add `--max-seq-len 512`, or try the 0.5B model instead of a larger one |
 | PDF files are not being read | Run `pip install pdfplumber` then try again |
 | Word (.docx) files are not being read | Run `pip install python-docx` then try again |
@@ -821,9 +834,15 @@ swiftllm download -m "Qwen/Qwen2.5-0.5B-Instruct-GGUF:qwen2.5-0.5b-instruct-q4_k
 ### Generate Text
 
 ```bash
-# Standard generation
+# Standard generation (GGUF — llama-cpp-python backend)
 swiftllm generate \
   -m "Qwen/Qwen2.5-0.5B-Instruct-GGUF:qwen2.5-0.5b-instruct-q4_k_m.gguf" \
+  -p "What is the capital of France?" \
+  --max-tokens 128
+
+# Safetensors checkpoints work too (HF transformers backend)
+swiftllm generate \
+  -m Qwen/Qwen2.5-0.5B-Instruct \
   -p "What is the capital of France?" \
   --max-tokens 128
 
@@ -856,6 +875,9 @@ from swiftllm import LLM, SamplingParams
 
 # Load a GGUF model (downloads automatically if not cached)
 llm = LLM(model="Qwen/Qwen2.5-0.5B-Instruct-GGUF:qwen2.5-0.5b-instruct-q4_k_m.gguf")
+
+# Or a safetensors checkpoint (HF transformers backend)
+llm = LLM(model="Qwen/Qwen2.5-0.5B-Instruct")
 
 # Or from a local path
 llm = LLM(model="/path/to/model.gguf")
@@ -2585,6 +2607,10 @@ swiftllm generate -m /path/to/model -p "..." --rlm 3 --rlm-no-repl
 swiftllm generate -m /path/to/model -p "Plan a database migration." --rlm 5
 ```
 
+> Note: on `generate`, `--rlm` takes a recursion DEPTH argument. On `serve` and `chat` it is a
+> boolean toggle that enables RLM in SHALLOW mode (depth 1) — see
+> [Quality Pipeline for Serve & Chat](#quality-pipeline-for-serve--chat).
+
 The `RlmOutput` dataclass contains:
 
 | Field | Description |
@@ -2672,6 +2698,44 @@ The `DenseVerificationOutput` dataclass contains:
 | `step_scores` | Per-REPL-step confidence (empty when `score_repl_steps=False`) |
 | `accepted_on_attempt` | 1-indexed attempt number that was accepted |
 | `low_confidence_positions` | Token indices below `min_confidence` |
+
+---
+
+### Quality Pipeline for Serve & Chat
+
+`swiftllm serve` and `swiftllm chat` expose RLM and Dense Verification as two independent
+toggles that can be combined:
+
+```bash
+# Server with RLM structured self-checking
+swiftllm serve -m /path/to/model --rlm
+
+# Server with Dense Verification confidence gating (regenerates weak drafts)
+swiftllm serve -m /path/to/model --dense-verification
+
+# Both together, with custom gate settings
+swiftllm serve -m /path/to/model --rlm --dense-verification \
+  --dv-min-confidence 0.75 --dv-max-regen 2
+
+# Monitor quality without blocking: score every response but always accept
+swiftllm serve -m /path/to/model --dense-verification --dv-score-only
+
+# Same flags work on interactive chat
+swiftllm chat -m /path/to/model --rlm --dense-verification
+
+# Or via environment variables (no flags needed)
+SWIFTLLM_RLM=1 SWIFTLLM_DV=1 swiftllm serve -m /path/to/model
+```
+
+| Combination | Behaviour |
+|-------------|-----------|
+| Neither | Standard single-pass generation (no overhead) |
+| `--rlm` only | RLM SHALLOW (depth 1) with REPL variable binding and VERIFY self-checks |
+| `--dense-verification` only | Each draft is confidence-scored; drafts below `--dv-min-confidence` (default 0.75) are regenerated up to `--dv-max-regen` times (default 2) |
+| Both | RLM structured generation followed by the DV quality gate |
+
+The pipeline applies to **non-streaming** requests only — streaming responses always use
+direct token-by-token generation so output appears in real time.
 
 ---
 
@@ -2886,7 +2950,7 @@ Every `SWIFTLLM_*` variable maps to a field in `EngineConfig` or `ServerConfig`.
 | `SWIFTLLM_MODEL_DIR` | `~/.cache/swiftllm/models` | Default directory for downloaded models. |
 | `SWIFTLLM_OFFLINE` | `false` | Set to `1` to disable all network downloads. |
 | `SWIFTLLM_DTYPE` | `auto` | Weight data type: `auto`, `float16`, `bfloat16`, `float32`, `int8`, `int4`, `fp8_e4m3`, `fp8_e5m2`. |
-| `SWIFTLLM_QUANTIZATION` | `none` | Quantization method: `none`, `awq`, `gptq`, `squeezellm`, `gguf`. |
+| `SWIFTLLM_QUANTIZATION` | `none` | Quantization method: `none`, `awq`, `gptq`, `squeezellm`, `gguf`, `turboquant`, `4bit`, `8bit` (`4bit`/`8bit` = bitsandbytes loading for safetensors models). |
 | `SWIFTLLM_MAX_MODEL_LEN` | (model default) | Override the model's max sequence length. |
 | `SWIFTLLM_TRUST_REMOTE_CODE` | `false` | Allow executing custom code from HuggingFace repos. |
 | `SWIFTLLM_DEVICE` | `auto` | Device: `auto`, `cuda`, `cpu`, `metal`, `rocm`. |
@@ -2916,10 +2980,18 @@ Every `SWIFTLLM_*` variable maps to a field in `EngineConfig` or `ServerConfig`.
 | `SWIFTLLM_MAX_LOG_LEN` | — | Truncate request/response logs to this many characters. |
 | `SWIFTLLM_RESPONSE_ROLE` | `assistant` | Default role name in chat completion responses. |
 
-### Build & CUDA
+### Quality Pipeline (Serve & Chat)
 
 | Variable | Default | Description |
 |----------|---------|-------------|
+| `SWIFTLLM_RLM` | `0` | Set to `1`/`true`/`yes` to enable the Recursive Language Model for `serve` and `chat` (same as the `--rlm` flag). |
+| `SWIFTLLM_DV` | `0` | Set to `1`/`true`/`yes` to enable the Dense Verification confidence gate for `serve` and `chat` (same as `--dense-verification`). |
+
+### Build, Install & CUDA
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `SWIFTLLM_HOME` | install dir | Used by the `/usr/local/bin/swiftllm` wrapper to locate the SwiftLLM install (venv). Set it if you move the install directory. |
 | `CUDA_PATH` / `CUDA_HOME` | — | Path to CUDA toolkit. |
 | `CUDACXX` | — | Path to `nvcc` binary. |
 | `CMAKE_ARGS` | — | Extra CMake arguments for llama-cpp-python build. |
@@ -2940,7 +3012,8 @@ Every `SWIFTLLM_*` variable maps to a field in `EngineConfig` or `ServerConfig`.
 swiftllm download -m <model> [--download-dir <dir>] [--revision <rev>] [--token <hf-token>]
 
 # Start the OpenAI-compatible server
-swiftllm serve -m <model> --port 8000 [--api-key <key>] [--tensor-parallel-size 2]
+swiftllm serve -m <model> --port 8000 [--api-key <key>] [--tensor-parallel-size 2] \
+  [--max-model-len 8192] [-q 4bit|8bit] [--rlm] [--dense-verification]
 
 # Standard generation
 swiftllm generate -m <model> -p "Hello" --max-tokens 256
@@ -2962,7 +3035,7 @@ swiftllm generate -m <model> -p "Explain Gödel's theorems." \
   --dense-verification --dv-min-confidence 0.80 --dv-max-regen 3
 
 # Interactive chat session
-swiftllm chat -m <model> [--system "You are a helpful assistant"]
+swiftllm chat -m <model> [--system "You are a helpful assistant"] [--rlm] [--dense-verification]
 
 # Benchmark throughput
 swiftllm benchmark -m <model> --num-prompts 100 --input-len 128 --output-len 128
@@ -3015,7 +3088,7 @@ The `-m` / `--model` flag accepts multiple formats:
 
 ```
 +-----------------------------------------------------------------------------------+
-|                           SwiftLLM Architecture (v2.2)                            |
+|                           SwiftLLM Architecture (v2.0)                            |
 +-----------------------------------------------------------------------------------+
 |                                                                                   |
 |  ┌─────────────────┐  ┌──────────────────────┐  ┌───────────────────────────┐   |
@@ -3091,12 +3164,16 @@ The `-m` / `--model` flag accepts multiple formats:
 
 ```
 swiftllm/
-├── install.sh                        # Installer (GPU detection, venv, Rust build)
+├── install.sh                        # Installer (GPU detection, venv, Rust build, CLI wrapper)
+├── update.sh                         # Updater (pull + rebuild; --branch/--tag/--clean)
+├── uninstall.sh                      # Uninstaller (--keep-models, --purge)
 ├── airgap-bundle.sh                  # Air-gap bundle creator (offline deploy)
 │
 ├── python/swiftllm/                  # Python package
 │   ├── __init__.py                   #   Public API & lazy training imports
 │   ├── engine.py                     #   LLM / AsyncLLM / LLMEngine
+│   │                                 #   GGUF backend (llama-cpp-python) +
+│   │                                 #   safetensors backend (HF transformers, bitsandbytes)
 │   │                                 #   + generate_with_self_consistency()
 │   │                                 #   + generate_with_refinement()
 │   │                                 #   + generate_best_of_n()
@@ -3113,6 +3190,10 @@ swiftllm/
 │   │                                 #   DenseVerificationConfig, VerificationStrategy ← Phase 3
 │   ├── cli.py                        #   CLI: serve/generate/train/finetune/grpo/dataset/…
 │   │                                 #   + --rlm DEPTH, --dense-verification flags ← Phase 3
+│   │                                 #   + serve/chat --rlm & --dense-verification toggles
+│   ├── hybrid_model.py               #   Builder API for hybrid Mamba-3 + LatentMoE configs
+│   ├── model_config.py               #   Python mirror of the Rust model config structs
+│   ├── torch_model.py                #   PyTorch bridge — GPU-executable hybrid model
 │   └── model_resolver.py             #   HuggingFace / local / offline resolution
 │
 ├── crates/
@@ -3174,7 +3255,9 @@ swiftllm/
     ├── self_consistency.py           # Phase 3: self-consistency voting demo
     ├── grpo_training.py              # Phase 2: GRPO + CGAR + PRM + LongR training demo
     ├── rlm_inference.py              # Phase 3: RLM — 3 modes + variable-binding demo
-    └── dense_verification_inference.py  # Phase 3: Dense Verification — 4 strategies
+    ├── dense_verification_inference.py  # Phase 3: Dense Verification — 4 strategies
+    ├── hybrid_model.py               # Phase 1: hybrid architecture builder walkthrough
+    └── hybrid_model_torch.py         # Phase 1: PyTorch bridge — hybrid model on GPU
 ```
 
 ---
@@ -3197,6 +3280,8 @@ See the [examples/](examples/) directory:
 | [`grpo_training.py`](examples/grpo_training.py) | **Phase 2**: GRPO + CGAR + PRM + LongR — auto-generates synthetic math data, full config resolution, metric callback |
 | [`rlm_inference.py`](examples/rlm_inference.py) | **Phase 3**: Recursive Language Model — SHALLOW / REASONING / AGENTIC modes, variable-binding demo, no-REPL variant |
 | [`dense_verification_inference.py`](examples/dense_verification_inference.py) | **Phase 3**: Dense Verification — all four strategies, multi-prompt batch scoring, confidence calibration demo |
+| [`hybrid_model.py`](examples/hybrid_model.py) | **Phase 1**: hybrid Mamba-3 + LatentMoE architecture builder walkthrough |
+| [`hybrid_model_torch.py`](examples/hybrid_model_torch.py) | **Phase 1**: PyTorch bridge — building a GPU-executable hybrid model from a config |
 
 ---
 
@@ -3214,12 +3299,39 @@ curl http://localhost:8000/v1/chat/completions \
     "messages": [{"role": "user", "content": "Hello!"}]
   }'
 
+# Streaming (SSE) — tokens arrive as they are generated
+curl http://localhost:8000/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer sk-my-secret-key" \
+  -d '{
+    "model": "my-model",
+    "messages": [{"role": "user", "content": "Hello!"}],
+    "stream": true
+  }'
+
 # Available endpoints
 GET  /health                  # Health check
 GET  /v1/models               # List loaded models
-POST /v1/chat/completions     # Chat completions (streaming supported)
-GET  /metrics                 # Prometheus + JSON metrics
+POST /v1/chat/completions     # Chat completions (SSE streaming via "stream": true)
 ```
+
+**Supported request parameters:** `messages`, `temperature`, `max_tokens`, `top_p`, `top_k`,
+`frequency_penalty`, `presence_penalty`, `repetition_penalty`, `stop`, `stream`. Unknown
+fields are ignored, so off-the-shelf OpenAI clients work unmodified.
+
+**Behaviour notes**
+
+- GGUF models answer through llama-cpp-python's `create_chat_completion` using the model's
+  native chat template; safetensors models apply the tokenizer's chat template via the
+  transformers backend.
+- Streaming is true token-by-token generation. Models that emit `<think>` blocks (e.g. Qwen3)
+  stream their chain of thought, which Open WebUI renders in its reasoning panel.
+- The `--rlm` / `--dense-verification` quality pipeline applies to **non-streaming** requests
+  only; streaming requests still honour all sampling parameters.
+- For GGUF models the context window defaults to 4096 tokens — raise it with
+  `--max-model-len`.
+- The standalone Rust server (`crates/swiftllm-server`) additionally exposes
+  `POST /v1/completions` and `GET /metrics` (Prometheus + JSON).
 
 ---
 
@@ -3272,6 +3384,45 @@ SwiftLLM includes built-in security features across the server, installer, and r
 ---
 
 ## Changelog
+
+### Unreleased (main)
+
+**Streaming & GGUF robustness**
+
+- **Fixed**: Streaming always uses real token-by-token generation — no more buffered pseudo-streaming
+- **New**: Chain-of-thought streaming — `<think>` blocks from reasoning models (e.g. Qwen3) stream live and render in Open WebUI's reasoning panel
+- **Fixed**: `--max-model-len` is now passed through to the GGUF context window (`n_ctx`, default 4096), with graceful handling of context overflow
+- **Fixed**: GGUF `_scores` IndexError on longer outputs — batch size now defaults to `min(n_ctx, 2048)`
+
+---
+
+### v2.0.1
+
+**HuggingFace Transformers Backend**
+
+- **New**: safetensors models now run via a HuggingFace transformers inference backend — GGUF is no longer required for HF checkpoints
+- **New**: bitsandbytes quantized loading for safetensors models: `-q 4bit` (NF4) and `-q 8bit`
+- **New**: compressed-tensors quantized checkpoints are detected with a clear warning and working alternatives (they require vLLM to decode correctly)
+- **New**: GGUF chat goes through llama-cpp-python's `create_chat_completion`, using the model's native chat template
+- **Fixed**: chat quality — missing API parameters wired through (`top_k`, `frequency_penalty`, `presence_penalty`, `repetition_penalty`, `stop`), attention mask, thinking-token stripping
+
+**Server**
+
+- **New**: SSE streaming on `POST /v1/chat/completions` (`"stream": true`)
+- **New**: `--rlm` and `--dense-verification` quality-pipeline toggles on `serve` and `chat` — independent switches, combinable, also settable via `SWIFTLLM_RLM=1` / `SWIFTLLM_DV=1` (non-streaming requests only)
+
+**Install & Build**
+
+- **New**: system-wide CLI wrapper at `/usr/local/bin/swiftllm` (no venv activation needed; relocatable via `SWIFTLLM_HOME`)
+- **New**: installer steps for bitsandbytes (GPU hosts) and the `kernels` package; air-gap bundle synced with the new dependencies (bitsandbytes, accelerate, sentencepiece, compressed-tensors, kernels)
+- **Fixed**: CUDA build failures — `nvcc` PATH resolution, variable typo, missing `tracing` dependency
+- **Changed**: dependency pins — `llama-cpp-python>=0.3.40` (CPU) / `>=0.3.8` (CUDA build), `kernels>=0.14.0,<0.15` for transformers compatibility
+
+**Inference**
+
+- **Fixed**: self-consistency returning no answer on free-form (non-numeric) prompts
+
+---
 
 ### v2.0
 
