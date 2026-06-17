@@ -40,12 +40,10 @@ pub mod embedding;
 pub mod mamba;
 pub mod mlp;
 pub mod moe;
-pub mod mtp;
 pub mod normalization;
 pub mod rlm;
 
 pub use attention::{Attention, AttentionConfig, RotaryEmbedding};
-pub use mtp::{combine_hidden_and_embedding, projection_input_dim, MtpConfig, MtpModule};
 pub use dense_verification::{
     DenseVerificationConfig, DenseVerificationLayer, VerificationResult, embed_repl_trace,
 };

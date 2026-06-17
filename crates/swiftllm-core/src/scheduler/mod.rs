@@ -24,16 +24,10 @@
 //! enabling high-throughput LLM inference by dynamically batching
 //! requests and managing memory efficiently.
 
-pub mod chunked_prefill;
 mod continuous_batching;
-pub mod fairness;
 mod request_queue;
 
-pub use chunked_prefill::ChunkedPrefillBudget;
 pub use continuous_batching::{ContinuousBatchingScheduler, SchedulerPolicy};
-pub use fairness::{
-    FairnessConfig, FairnessPolicy, RequestAging, ScheduleDecision, WaitingRequest,
-};
 pub use request_queue::{RequestQueue, RequestQueueConfig};
 
 use crate::config::SchedulerConfig;

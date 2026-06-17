@@ -365,28 +365,15 @@ impl ContinuousBatchingScheduler {
             let request_id = seq_group.request_id;
             let prompt_len = seq_group.prompt_len();
 
-            // Determine tokens to schedule for this request. With chunked
-            // prefill, the planner caps the chunk to the step's remaining token
-            // budget (decodes are already counted in `batched_tokens`), so a
-            // prompt that does not fit whole still advances by a partial chunk
-            // instead of stalling the batch.
+            // Determine tokens to schedule for this request
             let tokens_to_schedule = if self.enable_chunked_prefill {
                 let info = request_info.get(&request_id).unwrap();
-                let planner = crate::scheduler::chunked_prefill::ChunkedPrefillBudget::new(
-                    max_batched_tokens,
-                    self.max_prefill_tokens,
-                );
-                planner.chunk_size(info.prefill_remaining, batched_tokens)
+                std::cmp::min(info.prefill_remaining, self.max_prefill_tokens)
             } else {
                 prompt_len
             };
 
-            // No budget left this step for a new chunk: defer to a later step.
-            if self.enable_chunked_prefill && tokens_to_schedule == 0 {
-                break;
-            }
-
-            // Check token budget (authoritative for the non-chunked path).
+            // Check token budget
             if batched_tokens + tokens_to_schedule > max_batched_tokens {
                 break;
             }
