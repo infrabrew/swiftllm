@@ -34,14 +34,11 @@ use axum::{
 };
 use chrono::Utc;
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
 use std::collections::HashMap;
 use std::time::Duration;
-use swiftllm_core::config::{ResponseFormat, SamplingConfig};
+use swiftllm_core::config::SamplingConfig;
 use swiftllm_core::types::Request;
 use uuid::Uuid;
-
-use super::tools::{render_tool_system_prompt, ToolCall, ToolChoice, ToolDefinition};
 
 /// Chat completion request
 #[derive(Debug, Clone, Deserialize)]
@@ -103,61 +100,6 @@ pub struct ChatCompletionRequest {
     /// Top logprobs to return
     #[serde(default)]
     pub top_logprobs: Option<usize>,
-
-    /// Tools the model may call.
-    #[serde(default)]
-    pub tools: Option<Vec<ToolDefinition>>,
-
-    /// Tool-choice policy (`"auto"`, `"none"`, `"required"`, or a named tool).
-    #[serde(default)]
-    pub tool_choice: Option<ToolChoice>,
-
-    /// Structured-output format (`text`, `json_object`, or `json_schema`).
-    #[serde(default)]
-    pub response_format: Option<OpenAiResponseFormat>,
-}
-
-/// OpenAI `response_format` field.
-///
-/// Distinct from the core [`ResponseFormat`] because OpenAI nests the schema
-/// under a `json_schema` object; [`OpenAiResponseFormat::to_core`] performs the
-/// mapping.
-#[derive(Debug, Clone, Deserialize)]
-#[serde(tag = "type", rename_all = "snake_case")]
-pub enum OpenAiResponseFormat {
-    /// Free text.
-    Text,
-    /// Any valid JSON object.
-    JsonObject,
-    /// JSON conforming to a named schema.
-    JsonSchema {
-        /// The `json_schema` payload.
-        json_schema: JsonSchemaSpec,
-    },
-}
-
-/// The `json_schema` payload of an OpenAI `response_format`.
-#[derive(Debug, Clone, Deserialize)]
-pub struct JsonSchemaSpec {
-    /// Schema name.
-    #[serde(default)]
-    pub name: String,
-    /// The JSON Schema document.
-    pub schema: Value,
-}
-
-impl OpenAiResponseFormat {
-    /// Map the OpenAI wire shape onto the core [`ResponseFormat`].
-    pub fn to_core(&self) -> ResponseFormat {
-        match self {
-            OpenAiResponseFormat::Text => ResponseFormat::Text,
-            OpenAiResponseFormat::JsonObject => ResponseFormat::JsonObject,
-            OpenAiResponseFormat::JsonSchema { json_schema } => ResponseFormat::JsonSchema {
-                name: json_schema.name.clone(),
-                schema: json_schema.schema.clone(),
-            },
-        }
-    }
 }
 
 fn default_temperature() -> f32 { 1.0 }
@@ -167,25 +109,15 @@ fn default_n() -> usize { 1 }
 /// Chat message
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ChatMessage {
-    /// Role (system, user, assistant, tool)
+    /// Role (system, user, assistant)
     pub role: String,
 
-    /// Message content. May be `null` on assistant turns that only carry tool
-    /// calls, so it is modelled as optional (and serialised as `null`).
-    #[serde(default)]
-    pub content: Option<String>,
+    /// Message content
+    pub content: String,
 
     /// Optional name
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(default)]
     pub name: Option<String>,
-
-    /// Tool calls emitted by the assistant.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub tool_calls: Option<Vec<ToolCall>>,
-
-    /// The id of the tool call this message responds to (role = `tool`).
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub tool_call_id: Option<String>,
 }
 
 /// Chat completion response
@@ -421,7 +353,6 @@ impl OpenAIApi {
     }
 
     /// Convert sampling parameters
-    #[allow(clippy::too_many_arguments)]
     fn to_sampling_config(
         temperature: f32,
         top_p: f32,
@@ -430,7 +361,6 @@ impl OpenAIApi {
         presence_penalty: f32,
         frequency_penalty: f32,
         seed: Option<u64>,
-        response_format: Option<ResponseFormat>,
     ) -> SamplingConfig {
         SamplingConfig {
             temperature,
@@ -440,34 +370,9 @@ impl OpenAIApi {
             presence_penalty,
             frequency_penalty,
             seed,
-            response_format,
             ..Default::default()
         }
     }
-}
-
-/// Resolve the structured-output constraint for a chat request.
-///
-/// An explicit `response_format` wins; otherwise, if `tool_choice` forces a
-/// specific named function that declares a `parameters` schema, the output is
-/// constrained to that schema (so forced tool calls produce well-formed args).
-pub fn resolve_response_format(request: &ChatCompletionRequest) -> Option<ResponseFormat> {
-    if let Some(rf) = &request.response_format {
-        return Some(rf.to_core());
-    }
-    if let (Some(tools), Some(choice)) = (&request.tools, &request.tool_choice) {
-        if let Some(name) = choice.forced_name() {
-            if let Some(tool) = tools.iter().find(|t| t.function.name == name) {
-                if let Some(schema) = &tool.function.parameters {
-                    return Some(ResponseFormat::JsonSchema {
-                        name: name.to_string(),
-                        schema: schema.clone(),
-                    });
-                }
-            }
-        }
-    }
-    None
 }
 
 /// Validate chat completion request parameters
@@ -525,11 +430,7 @@ fn validate_chat_request(request: &ChatCompletionRequest) -> std::result::Result
     }
 
     // Validate message content length (prevent abuse)
-    let total_content_len: usize = request
-        .messages
-        .iter()
-        .map(|m| m.content.as_deref().unwrap_or("").len())
-        .sum();
+    let total_content_len: usize = request.messages.iter().map(|m| m.content.len()).sum();
     if total_content_len > 1_000_000 {
         return Err(ErrorResponse {
             error: ErrorDetail {
@@ -577,28 +478,6 @@ pub async fn chat_completions(
     // In a real implementation, we would use a tokenizer
     let prompt_tokens: Vec<u32> = vec![1, 2, 3]; // Placeholder
 
-    // Resolve structured-output constraint (explicit response_format, or a
-    // forced tool's parameter schema) and whether a tool call is required.
-    let response_format = resolve_response_format(&request);
-    let wants_tool = request.tools.as_ref().is_some_and(|t| !t.is_empty())
-        && request.tool_choice.as_ref().is_some_and(|c| c.is_required());
-    let forced_tool_name = request
-        .tool_choice
-        .as_ref()
-        .and_then(|c| c.forced_name().map(String::from))
-        .or_else(|| {
-            request
-                .tools
-                .as_ref()
-                .and_then(|t| t.first())
-                .map(|t| t.function.name.clone())
-        });
-    // Serialise tool schemas into a system instruction for the engine prompt.
-    let tool_prompt = request
-        .tools
-        .as_ref()
-        .map(|tools| render_tool_system_prompt(tools, request.tool_choice.as_ref()));
-
     // Create sampling config
     let sampling_config = OpenAIApi::to_sampling_config(
         request.temperature,
@@ -608,15 +487,11 @@ pub async fn chat_completions(
         request.presence_penalty,
         request.frequency_penalty,
         request.seed,
-        response_format,
     );
 
     // Create inference request
-    let mut inference_request = Request::new(prompt_tokens.clone())
+    let inference_request = Request::new(prompt_tokens.clone())
         .with_sampling_params(sampling_config);
-    if let Some(tp) = tool_prompt {
-        inference_request.metadata.insert("tool_prompt".to_string(), tp);
-    }
 
     // Add to engine
     match state.engine.add_request(inference_request) {
@@ -693,40 +568,7 @@ pub async fn chat_completions(
                     .keep_alive(KeepAlive::default())
                     .into_response()
             } else {
-                // Non-streaming response. When a tool call is required, emit a
-                // `tool_calls` message; otherwise a normal assistant message.
-                let (message, finish_reason) = if wants_tool {
-                    let tool_calls = forced_tool_name.map(|name| {
-                        // Real argument synthesis runs through the engine's
-                        // generation loop under the schema constraint set above;
-                        // here we emit a well-formed, empty-argument call.
-                        vec![ToolCall::new(name, &serde_json::json!({}))]
-                    });
-                    (
-                        ChatMessage {
-                            role: "assistant".to_string(),
-                            content: None,
-                            name: None,
-                            tool_calls,
-                            tool_call_id: None,
-                        },
-                        "tool_calls",
-                    )
-                } else {
-                    (
-                        ChatMessage {
-                            role: "assistant".to_string(),
-                            content: Some(
-                                "Hello! I'm SwiftLLM, a high-performance inference engine. How can I help you today?".to_string(),
-                            ),
-                            name: None,
-                            tool_calls: None,
-                            tool_call_id: None,
-                        },
-                        "stop",
-                    )
-                };
-
+                // Non-streaming response
                 let response = ChatCompletionResponse {
                     id,
                     object: "chat.completion".to_string(),
@@ -735,8 +577,12 @@ pub async fn chat_completions(
                     system_fingerprint,
                     choices: vec![ChatChoice {
                         index: 0,
-                        message,
-                        finish_reason: Some(finish_reason.to_string()),
+                        message: ChatMessage {
+                            role: "assistant".to_string(),
+                            content: "Hello! I'm SwiftLLM, a high-performance inference engine. How can I help you today?".to_string(),
+                            name: None,
+                        },
+                        finish_reason: Some("stop".to_string()),
                         logprobs: None,
                     }],
                     usage: Usage {
