@@ -169,6 +169,7 @@ pub fn create_router(state: AppState) -> Router {
         .route("/v1/models/:model_id", get(api::openai::get_model))
         // Anthropic-compatible Messages endpoint
         .route("/v1/messages", post(api::anthropic::messages))
+        .route("/v1/messages/count_tokens", post(api::anthropic::count_tokens))
         // Realtime bidirectional WebSocket endpoint
         .route("/v1/realtime", get(api::realtime::realtime_ws))
         // Metrics

@@ -37,6 +37,7 @@ pub mod memory;
 pub mod sampling;
 pub mod scheduler;
 pub mod serving;
+pub mod tuning;
 
 pub mod error;
 pub mod tensor;

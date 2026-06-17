@@ -129,9 +129,27 @@ pub fn rms_normalize(x: &[f32], weight: &[f32], eps: f32, unit_offset: bool) -> 
 // Gemma configuration
 // ----------------------------------------------------------------------------
 
+/// Gemma model generation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum GemmaVersion {
+    /// Gemma 2: alternating 1:1 local/global attention, attention + final
+    /// logit soft-caps.
+    V2,
+    /// Gemma 3: 5:1 local:global schedule, soft-caps removed, QK-norm added.
+    V3,
+    /// Gemma 4: builds on the Gemma 3 design (QK-norm, 5:1 schedule, no
+    /// soft-caps). The Gemma 4 architecture is not publicly documented, so this
+    /// mirrors the latest known-good Gemma 3 configuration as a forward seam.
+    V4,
+}
+
 /// Gemma-specific architecture configuration.
 #[derive(Debug, Clone)]
 pub struct GemmaConfig {
+    /// Model generation.
+    pub version: GemmaVersion,
+    /// Whether query/key normalization is applied before attention (Gemma 3+).
+    pub qk_norm: bool,
     /// Hidden size.
     pub hidden_size: usize,
     /// MLP intermediate size.
@@ -172,6 +190,8 @@ impl GemmaConfig {
     /// attention and final logit soft-caps).
     pub fn from_model_config(config: &ModelConfig) -> Self {
         Self {
+            version: GemmaVersion::V2,
+            qk_norm: false,
             hidden_size: config.hidden_size,
             intermediate_size: config.intermediate_size,
             num_attention_heads: config.num_attention_heads,
@@ -192,11 +212,25 @@ impl GemmaConfig {
         }
     }
 
-    /// Switch to Gemma 3 attention scheduling (5 local : 1 global) and drop the
-    /// attention-logit soft-cap (removed in Gemma 3).
+    /// Switch to Gemma 3 attention scheduling (5 local : 1 global), drop the
+    /// attention-logit soft-cap (removed in Gemma 3), and enable QK-norm.
     pub fn with_gemma3_schedule(mut self) -> Self {
+        self.version = GemmaVersion::V3;
         self.global_attn_period = 6;
         self.attn_logit_softcap = None;
+        self.qk_norm = true;
+        self
+    }
+
+    /// Configure for Gemma 4. Builds on the Gemma 3 design (QK-norm, 5:1
+    /// local:global schedule, no soft-caps) with a smaller default local window;
+    /// see [`GemmaVersion::V4`] for the caveat that Gemma 4 internals are not
+    /// public.
+    pub fn with_gemma4_schedule(mut self) -> Self {
+        self = self.with_gemma3_schedule();
+        self.version = GemmaVersion::V4;
+        self.final_logit_softcap = None;
+        self.sliding_window = 1024;
         self
     }
 }
@@ -589,8 +623,25 @@ mod tests {
     #[test]
     fn gemma3_schedule_config() {
         let cfg = GemmaConfig::from_model_config(&gemma_config()).with_gemma3_schedule();
+        assert_eq!(cfg.version, GemmaVersion::V3);
         assert_eq!(cfg.global_attn_period, 6);
         assert!(cfg.attn_logit_softcap.is_none());
+        assert!(cfg.qk_norm);
+    }
+
+    #[test]
+    fn gemma4_schedule_config() {
+        let base = GemmaConfig::from_model_config(&gemma_config());
+        assert_eq!(base.version, GemmaVersion::V2);
+        assert!(!base.qk_norm);
+
+        let cfg = base.with_gemma4_schedule();
+        assert_eq!(cfg.version, GemmaVersion::V4);
+        assert!(cfg.qk_norm);
+        assert_eq!(cfg.global_attn_period, 6);
+        assert!(cfg.attn_logit_softcap.is_none());
+        assert!(cfg.final_logit_softcap.is_none());
+        assert_eq!(cfg.sliding_window, 1024);
     }
 
     #[test]

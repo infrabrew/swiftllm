@@ -257,10 +257,43 @@ pub enum QuantizationMethod {
     Marlin,
     /// FP8 quantization
     Fp8,
+    /// NVFP4 — NVIDIA 4-bit floating point (E2M1) with per-block FP8 scales,
+    /// for dense and MoE weights on Blackwell-class hardware.
+    Nvfp4,
+    /// MXFP4 — OCP Microscaling 4-bit floating point (E2M1) with shared
+    /// per-block (32-element) E8M0 scales.
+    Mxfp4,
     /// TurboQuant — online vector quantization with near-optimal distortion
     /// (Zandieh et al., ICLR 2026). Random-rotation + Beta-distribution
     /// scalar quantizer for KV cache compression.
     TurboQuant,
+}
+
+impl QuantizationMethod {
+    /// Approximate bits stored per weight element for this method.
+    pub fn bits_per_weight(&self) -> f32 {
+        match self {
+            QuantizationMethod::Nvfp4 | QuantizationMethod::Mxfp4 => 4.0,
+            QuantizationMethod::Gptq
+            | QuantizationMethod::Awq
+            | QuantizationMethod::Marlin
+            | QuantizationMethod::SqueezeLlm
+            | QuantizationMethod::Ggml => 4.0,
+            QuantizationMethod::Fp8 => 8.0,
+            // TurboQuant targets the KV cache (2-bit) rather than weights.
+            QuantizationMethod::TurboQuant => 2.0,
+        }
+    }
+
+    /// Whether this is a 4-bit floating-point microscaling format.
+    pub fn is_fp4(&self) -> bool {
+        matches!(self, QuantizationMethod::Nvfp4 | QuantizationMethod::Mxfp4)
+    }
+
+    /// Whether this method primarily compresses the KV cache (vs. weights).
+    pub fn is_kv_cache_format(&self) -> bool {
+        matches!(self, QuantizationMethod::TurboQuant)
+    }
 }
 
 /// RoPE scaling configuration
@@ -844,6 +877,24 @@ mod tests {
 
         assert_eq!(config.device.tensor_parallel_size, 2);
         assert_eq!(config.model.max_seq_len, 8192);
+    }
+
+    #[test]
+    fn test_quantization_formats() {
+        // New 4-bit microscaling formats are recognised.
+        assert!(QuantizationMethod::Nvfp4.is_fp4());
+        assert!(QuantizationMethod::Mxfp4.is_fp4());
+        assert!(!QuantizationMethod::Fp8.is_fp4());
+        assert_eq!(QuantizationMethod::Nvfp4.bits_per_weight(), 4.0);
+        assert_eq!(QuantizationMethod::Fp8.bits_per_weight(), 8.0);
+        // TurboQuant compresses the KV cache (2-bit), not weights.
+        assert!(QuantizationMethod::TurboQuant.is_kv_cache_format());
+        assert_eq!(QuantizationMethod::TurboQuant.bits_per_weight(), 2.0);
+        // Serde round-trips the new variants as lowercase.
+        assert_eq!(
+            serde_json::to_string(&QuantizationMethod::Nvfp4).unwrap(),
+            "\"nvfp4\""
+        );
     }
 
     #[test]

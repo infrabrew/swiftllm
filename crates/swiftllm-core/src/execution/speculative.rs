@@ -511,6 +511,36 @@ fn argmax(logits: &[f32]) -> TokenId {
         .unwrap_or(0)
 }
 
+/// Validate that a sampling configuration is supported under speculative
+/// decoding. Previously-ignored, incompatible parameters now fail **explicitly**
+/// so a request cannot silently get different semantics than asked for.
+///
+/// Speculative decoding advances a single token chain per sequence, so it is
+/// incompatible with multi-sequence sampling (`n > 1`, `best_of > 1`) and with
+/// beam search.
+pub fn validate_speculative_sampling(config: &crate::config::SamplingConfig) -> Result<()> {
+    if config.n > 1 {
+        return Err(Error::SpeculativeDecoding(format!(
+            "n={} is not supported with speculative decoding; use n=1",
+            config.n
+        )));
+    }
+    if let Some(best_of) = config.best_of {
+        if best_of > 1 {
+            return Err(Error::SpeculativeDecoding(format!(
+                "best_of={} is not supported with speculative decoding; use best_of=1",
+                best_of
+            )));
+        }
+    }
+    if config.prompt_logprobs.is_some() {
+        return Err(Error::SpeculativeDecoding(
+            "prompt_logprobs is not supported with speculative decoding".to_string(),
+        ));
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -658,6 +688,22 @@ mod tests {
         assert_eq!(accepted, vec![1, 0]);
         assert!(next.is_some());
         assert!(mtp.acceptance_rate() > 0.0);
+    }
+
+    #[test]
+    fn test_speculative_sampling_validation() {
+        use crate::config::SamplingConfig;
+        // Default (n=1, no best_of) is supported.
+        assert!(validate_speculative_sampling(&SamplingConfig::default()).is_ok());
+        // n>1 fails explicitly rather than being silently ignored.
+        let multi = SamplingConfig { n: 4, ..Default::default() };
+        assert!(validate_speculative_sampling(&multi).is_err());
+        // best_of>1 fails.
+        let bo = SamplingConfig { best_of: Some(3), ..Default::default() };
+        assert!(validate_speculative_sampling(&bo).is_err());
+        // prompt_logprobs fails.
+        let pl = SamplingConfig { prompt_logprobs: Some(2), ..Default::default() };
+        assert!(validate_speculative_sampling(&pl).is_err());
     }
 }
 

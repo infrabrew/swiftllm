@@ -253,6 +253,72 @@ pub struct ChatMessageDelta {
     /// Content delta
     #[serde(skip_serializing_if = "Option::is_none")]
     pub content: Option<String>,
+
+    /// Incremental tool-call fragments (streaming function calling).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tool_calls: Option<Vec<ToolCallDelta>>,
+}
+
+/// One streamed fragment of a tool call.
+#[derive(Debug, Clone, Serialize)]
+pub struct ToolCallDelta {
+    /// Index of the tool call within the message.
+    pub index: usize,
+    /// Call id (sent on the opening fragment only).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub id: Option<String>,
+    /// Always `"function"` (opening fragment only).
+    #[serde(rename = "type", skip_serializing_if = "Option::is_none")]
+    pub call_type: Option<String>,
+    /// The function name/arguments fragment.
+    pub function: FunctionCallDelta,
+}
+
+/// A streamed fragment of a function call's name/arguments.
+#[derive(Debug, Clone, Serialize)]
+pub struct FunctionCallDelta {
+    /// Function name (opening fragment only).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    /// A fragment of the JSON-encoded arguments.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub arguments: Option<String>,
+}
+
+impl ChatMessageDelta {
+    /// Opening fragment of a tool call: announces the id and function name.
+    pub fn tool_call_open(index: usize, id: &str, name: &str) -> Self {
+        Self {
+            role: None,
+            content: None,
+            tool_calls: Some(vec![ToolCallDelta {
+                index,
+                id: Some(id.to_string()),
+                call_type: Some("function".to_string()),
+                function: FunctionCallDelta {
+                    name: Some(name.to_string()),
+                    arguments: None,
+                },
+            }]),
+        }
+    }
+
+    /// A subsequent fragment carrying part of the arguments JSON.
+    pub fn tool_call_args(index: usize, fragment: &str) -> Self {
+        Self {
+            role: None,
+            content: None,
+            tool_calls: Some(vec![ToolCallDelta {
+                index,
+                id: None,
+                call_type: None,
+                function: FunctionCallDelta {
+                    name: None,
+                    arguments: Some(fragment.to_string()),
+                },
+            }]),
+        }
+    }
 }
 
 /// Streaming response chunk
@@ -625,65 +691,58 @@ pub async fn chat_completions(
                 // Streaming response
                 // In a real implementation, we would stream tokens as they're generated
                 let stream = async_stream::stream! {
-                    // First chunk with role
-                    let chunk = ChatCompletionChunk {
+                    let mk = |delta: ChatMessageDelta, finish: Option<String>| ChatCompletionChunk {
                         id: id.clone(),
                         object: "chat.completion.chunk".to_string(),
                         created,
                         model: request.model.clone(),
                         system_fingerprint: system_fingerprint.clone(),
-                        choices: vec![ChatChoiceDelta {
-                            index: 0,
-                            delta: ChatMessageDelta {
-                                role: Some("assistant".to_string()),
-                                content: None,
-                            },
-                            finish_reason: None,
-                        }],
+                        choices: vec![ChatChoiceDelta { index: 0, delta, finish_reason: finish }],
                     };
+
+                    // First chunk announces the assistant role.
+                    let first = mk(
+                        ChatMessageDelta { role: Some("assistant".to_string()), content: None, tool_calls: None },
+                        None,
+                    );
                     yield Ok::<_, std::convert::Infallible>(
-                        Event::default().data(serde_json::to_string(&chunk).unwrap())
+                        Event::default().data(serde_json::to_string(&first).unwrap())
                     );
 
-                    // Simulate streaming content
-                    let response_text = "Hello! I'm SwiftLLM, ready to help you.";
-                    for word in response_text.split_whitespace() {
-                        tokio::time::sleep(Duration::from_millis(50)).await;
-                        let chunk = ChatCompletionChunk {
-                            id: id.clone(),
-                            object: "chat.completion.chunk".to_string(),
-                            created,
-                            model: request.model.clone(),
-                            system_fingerprint: system_fingerprint.clone(),
-                            choices: vec![ChatChoiceDelta {
-                                index: 0,
-                                delta: ChatMessageDelta {
-                                    role: None,
-                                    content: Some(format!("{} ", word)),
-                                },
-                                finish_reason: None,
-                            }],
-                        };
-                        yield Ok(Event::default().data(serde_json::to_string(&chunk).unwrap()));
+                    if wants_tool {
+                        // Stream a tool call: an opening fragment (id + name)
+                        // followed by argument fragments, then finish_reason.
+                        let name = forced_tool_name.clone().unwrap_or_else(|| "function".to_string());
+                        let call_id = format!("call_{}", &Uuid::new_v4().to_string().replace('-', "")[..24]);
+                        let open = mk(ChatMessageDelta::tool_call_open(0, &call_id, &name), None);
+                        yield Ok(Event::default().data(serde_json::to_string(&open).unwrap()));
+                        for fragment in ["{", "}"] {
+                            tokio::time::sleep(Duration::from_millis(20)).await;
+                            let c = mk(ChatMessageDelta::tool_call_args(0, fragment), None);
+                            yield Ok(Event::default().data(serde_json::to_string(&c).unwrap()));
+                        }
+                        let fin = mk(
+                            ChatMessageDelta { role: None, content: None, tool_calls: None },
+                            Some("tool_calls".to_string()),
+                        );
+                        yield Ok(Event::default().data(serde_json::to_string(&fin).unwrap()));
+                    } else {
+                        // Stream text content token-by-token.
+                        let response_text = "Hello! I'm SwiftLLM, ready to help you.";
+                        for word in response_text.split_whitespace() {
+                            tokio::time::sleep(Duration::from_millis(50)).await;
+                            let c = mk(
+                                ChatMessageDelta { role: None, content: Some(format!("{} ", word)), tool_calls: None },
+                                None,
+                            );
+                            yield Ok(Event::default().data(serde_json::to_string(&c).unwrap()));
+                        }
+                        let fin = mk(
+                            ChatMessageDelta { role: None, content: None, tool_calls: None },
+                            Some("stop".to_string()),
+                        );
+                        yield Ok(Event::default().data(serde_json::to_string(&fin).unwrap()));
                     }
-
-                    // Final chunk
-                    let chunk = ChatCompletionChunk {
-                        id: id.clone(),
-                        object: "chat.completion.chunk".to_string(),
-                        created,
-                        model: request.model.clone(),
-                        system_fingerprint: system_fingerprint.clone(),
-                        choices: vec![ChatChoiceDelta {
-                            index: 0,
-                            delta: ChatMessageDelta {
-                                role: None,
-                                content: None,
-                            },
-                            finish_reason: Some("stop".to_string()),
-                        }],
-                    };
-                    yield Ok(Event::default().data(serde_json::to_string(&chunk).unwrap()));
 
                     // Done marker
                     yield Ok(Event::default().data("[DONE]"));
@@ -901,6 +960,67 @@ pub async fn get_model(
     };
 
     Json(model)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn tool_call_open_delta_shape() {
+        let delta = ChatMessageDelta::tool_call_open(0, "call_abc", "get_weather");
+        let v = serde_json::to_value(&delta).unwrap();
+        assert_eq!(v["tool_calls"][0]["index"], 0);
+        assert_eq!(v["tool_calls"][0]["id"], "call_abc");
+        assert_eq!(v["tool_calls"][0]["type"], "function");
+        assert_eq!(v["tool_calls"][0]["function"]["name"], "get_weather");
+        // No content/role keys on a tool-call delta.
+        assert!(v.get("content").is_none());
+        assert!(v.get("role").is_none());
+    }
+
+    #[test]
+    fn tool_call_args_delta_shape() {
+        let delta = ChatMessageDelta::tool_call_args(0, "{\"city\":");
+        let v = serde_json::to_value(&delta).unwrap();
+        assert_eq!(v["tool_calls"][0]["function"]["arguments"], "{\"city\":");
+        // The opening-only fields are omitted on argument fragments.
+        assert!(v["tool_calls"][0].get("id").is_none());
+        assert!(v["tool_calls"][0]["function"].get("name").is_none());
+    }
+
+    #[test]
+    fn response_format_resolves_from_json_schema() {
+        let request: ChatCompletionRequest = serde_json::from_value(json!({
+            "model": "m",
+            "messages": [{"role": "user", "content": "hi"}],
+            "response_format": {
+                "type": "json_schema",
+                "json_schema": {"name": "p", "schema": {"type": "object"}}
+            }
+        }))
+        .unwrap();
+        let rf = resolve_response_format(&request).unwrap();
+        assert!(matches!(rf, ResponseFormat::JsonSchema { .. }));
+    }
+
+    #[test]
+    fn response_format_from_forced_tool_schema() {
+        let request: ChatCompletionRequest = serde_json::from_value(json!({
+            "model": "m",
+            "messages": [{"role": "user", "content": "hi"}],
+            "tools": [{"type": "function", "function": {
+                "name": "f", "parameters": {"type": "object", "properties": {"x": {"type": "integer"}}}
+            }}],
+            "tool_choice": {"type": "function", "function": {"name": "f"}}
+        }))
+        .unwrap();
+        match resolve_response_format(&request) {
+            Some(ResponseFormat::JsonSchema { name, .. }) => assert_eq!(name, "f"),
+            other => panic!("expected schema constraint, got {:?}", other),
+        }
+    }
 }
 
 // ------------------------------------------------------------------------------

@@ -28,10 +28,12 @@ mod speculative;
 mod tensor_parallel;
 
 pub use async_scheduling::{
-    overlap_speedup, AsyncScheduler, AsyncSchedulerConfig, StepHandle,
+    effective_bubble_fraction, overlap_speedup, pipeline_bubble_fraction,
+    speculative_async_tokens_per_step, AsyncScheduler, AsyncSchedulerConfig, StepHandle,
 };
 pub use speculative::{
-    MtpConfig, MtpSpeculator, SpeculativeDecoder, SpeculativeDecodingConfig,
+    validate_speculative_sampling, MtpConfig, MtpSpeculator, SpeculativeDecoder,
+    SpeculativeDecodingConfig,
 };
 pub use tensor_parallel::{TensorParallelConfig, TensorParallelExecutor};
 

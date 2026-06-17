@@ -1302,6 +1302,7 @@ def load_checkpoint(
     path: str,
     device: Union[str, torch.device] = "cpu",
     strict: bool = True,
+    trust_checkpoint: bool = False,
 ) -> Tuple[HybridModel, Dict]:
     """Load a checkpoint saved by :func:`save_checkpoint`.
 
@@ -1328,7 +1329,12 @@ def load_checkpoint(
         model, meta = load_checkpoint("./checkpoints/step_1000.pt", device="cuda")
         print(f"Resumed from step {meta['step']}")
     """
-    ckpt = torch.load(path, map_location=device, weights_only=False)
+    # Security: default to weights_only=True so loading an untrusted checkpoint
+    # cannot execute arbitrary code via pickle. Saved checkpoints store
+    # model_config/metadata as plain dicts, which load fine under this setting.
+    # Only fall back to the unsafe full-unpickle path when the caller explicitly
+    # vouches for the checkpoint's provenance via trust_checkpoint=True.
+    ckpt = torch.load(path, map_location=device, weights_only=not trust_checkpoint)
     cfg  = HybridModelConfig.from_dict(ckpt["model_config"])
     model = build_torch_model(cfg).to(device)
     model.load_state_dict(ckpt["model_state_dict"], strict=strict)

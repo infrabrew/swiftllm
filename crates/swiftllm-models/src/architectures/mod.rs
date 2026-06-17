@@ -29,7 +29,7 @@ pub mod mistral;
 pub mod phi;
 pub mod qwen;
 
-pub use gemma::{GemmaAttentionType, GemmaConfig, GemmaModel};
+pub use gemma::{GemmaAttentionType, GemmaConfig, GemmaModel, GemmaVersion};
 pub use jamba::{
     HybridLayerType, HybridRecurrentState, JambaConfig, JambaModel,
     count_attention_layers, jamba_schedule,

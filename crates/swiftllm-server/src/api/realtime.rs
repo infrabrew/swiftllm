@@ -130,6 +130,15 @@ pub enum ServerEvent {
         /// The complete text.
         text: String,
     },
+    /// An incremental chunk of synthesized output audio (when the `audio`
+    /// modality is enabled).
+    #[serde(rename = "response.output_audio.delta")]
+    OutputAudioDelta {
+        /// The response id.
+        response_id: String,
+        /// Number of audio samples in this chunk.
+        samples: usize,
+    },
     /// A response has finished.
     #[serde(rename = "response.done")]
     ResponseDone {
@@ -250,10 +259,21 @@ impl RealtimeSession {
                 delta: word.to_string(),
             });
         }
+        let text_len = text.len();
         events.push(ServerEvent::OutputTextDone {
             response_id: response_id.clone(),
             text,
         });
+
+        // When the audio modality is enabled, also stream synthesized audio
+        // (sample count modeled at 24 kHz ≈ 80 samples per output character).
+        if self.modalities.iter().any(|m| m == "audio") {
+            events.push(ServerEvent::OutputAudioDelta {
+                response_id: response_id.clone(),
+                samples: text_len * 80,
+            });
+        }
+
         events.push(ServerEvent::ResponseDone { response_id });
 
         // Consume the input buffer after responding.
@@ -459,6 +479,44 @@ mod tests {
         let v: Value = serde_json::from_str(&e.to_json()).unwrap();
         assert_eq!(v["type"], "response.output_text.delta");
         assert_eq!(v["delta"], "hi");
+    }
+
+    #[test]
+    fn audio_modality_streams_audio_delta() {
+        let (mut session, _) = RealtimeSession::new();
+        // Enable the audio modality.
+        session.handle(ev(json!({
+            "type": "session.update",
+            "session": {"modalities": ["text", "audio"]}
+        })));
+        session.handle(ev(json!({"type": "input_text.append", "text": "hi"})));
+        let out = session.handle(ev(json!({"type": "response.create"})));
+
+        // An audio delta is emitted in addition to the text events.
+        let audio = out.iter().find_map(|e| match e {
+            ServerEvent::OutputAudioDelta { samples, .. } => Some(*samples),
+            _ => None,
+        });
+        assert!(audio.is_some());
+        assert!(audio.unwrap() > 0);
+        let v: Value = serde_json::from_str(
+            &out.iter()
+                .find(|e| matches!(e, ServerEvent::OutputAudioDelta { .. }))
+                .unwrap()
+                .to_json(),
+        )
+        .unwrap();
+        assert_eq!(v["type"], "response.output_audio.delta");
+    }
+
+    #[test]
+    fn text_only_modality_has_no_audio_delta() {
+        let (mut session, _) = RealtimeSession::new();
+        session.handle(ev(json!({"type": "input_text.append", "text": "hi"})));
+        let out = session.handle(ev(json!({"type": "response.create"})));
+        assert!(!out
+            .iter()
+            .any(|e| matches!(e, ServerEvent::OutputAudioDelta { .. })));
     }
 }
 

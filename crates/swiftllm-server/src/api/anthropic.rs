@@ -63,7 +63,9 @@ pub struct MessagesRequest {
     #[serde(default)]
     pub system: Option<SystemPrompt>,
 
-    /// Maximum tokens to sample (required by the Anthropic API).
+    /// Maximum tokens to sample. Required by the Messages endpoint (enforced in
+    /// validation); optional for `count_tokens`, hence `serde(default)`.
+    #[serde(default)]
     pub max_tokens: usize,
 
     /// Sampling temperature.
@@ -93,6 +95,32 @@ pub struct MessagesRequest {
     /// Tool-choice policy.
     #[serde(default)]
     pub tool_choice: Option<AnthropicToolChoice>,
+
+    /// Extended-thinking configuration.
+    #[serde(default)]
+    pub thinking: Option<ThinkingConfig>,
+}
+
+/// Extended-thinking configuration for a request.
+#[derive(Debug, Clone, Deserialize)]
+pub struct ThinkingConfig {
+    /// `"enabled"` or `"disabled"`.
+    #[serde(rename = "type", default = "default_thinking_type")]
+    pub thinking_type: String,
+    /// Token budget allotted to the thinking phase.
+    #[serde(default)]
+    pub budget_tokens: Option<usize>,
+}
+
+fn default_thinking_type() -> String {
+    "disabled".to_string()
+}
+
+impl ThinkingConfig {
+    /// Whether extended thinking is enabled.
+    pub fn is_enabled(&self) -> bool {
+        self.thinking_type == "enabled"
+    }
 }
 
 /// A system prompt: either a plain string or a list of text blocks.
@@ -216,6 +244,11 @@ pub struct MessagesResponse {
 #[derive(Debug, Clone, Serialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum OutputBlock {
+    /// Extended-thinking trace emitted before the answer.
+    Thinking {
+        /// The model's thinking text.
+        thinking: String,
+    },
     /// Generated text.
     Text {
         /// The text.
@@ -363,6 +396,30 @@ pub fn render_prompt(request: &MessagesRequest) -> String {
     prompt
 }
 
+/// Count image blocks across all messages.
+fn count_images(messages: &[InputMessage]) -> usize {
+    messages
+        .iter()
+        .map(|m| match &m.content {
+            MessageContent::Blocks(blocks) => blocks
+                .iter()
+                .filter(|b| matches!(b, ContentBlock::Image { .. }))
+                .count(),
+            MessageContent::Text(_) => 0,
+        })
+        .sum()
+}
+
+/// Estimate the input token count for a request (used by the `count_tokens`
+/// endpoint and the response usage). Text is counted by whitespace; each image
+/// adds a fixed surcharge approximating its tile-token cost.
+pub fn estimate_input_tokens(request: &MessagesRequest) -> usize {
+    const IMAGE_TOKEN_COST: usize = 256;
+    let text_tokens = render_prompt(request).split_whitespace().count();
+    let image_tokens = count_images(&request.messages) * IMAGE_TOKEN_COST;
+    (text_tokens + image_tokens).max(1)
+}
+
 /// Convert Anthropic tools to the shared OpenAI-shaped [`ToolDefinition`]s.
 pub fn convert_tools(tools: &[AnthropicTool]) -> Vec<ToolDefinition> {
     tools
@@ -473,9 +530,9 @@ pub async fn messages(
     }
 
     let id = generate_id("msg");
-    let prompt = render_prompt(&request);
     let sampling = to_sampling_config(&request);
-    let prompt_tokens = prompt.split_whitespace().count().max(1);
+    let prompt_tokens = estimate_input_tokens(&request);
+    let thinking_enabled = request.thinking.as_ref().is_some_and(|t| t.is_enabled());
 
     // Determine whether the request forces a tool call.
     let forced_tool = match (&request.tools, &request.tool_choice) {
@@ -503,7 +560,7 @@ pub async fn messages(
             .into_response();
     }
 
-    let (content, reason) = match forced_tool {
+    let (mut content, reason) = match forced_tool {
         Some(name) => (
             vec![OutputBlock::ToolUse {
                 id: generate_id("toolu"),
@@ -523,6 +580,16 @@ pub async fn messages(
         ),
     };
 
+    // Extended thinking: prepend a thinking block before the answer.
+    if thinking_enabled {
+        content.insert(
+            0,
+            OutputBlock::Thinking {
+                thinking: "Considering the request...".to_string(),
+            },
+        );
+    }
+
     let response = MessagesResponse {
         id,
         type_: "message".to_string(),
@@ -537,6 +604,22 @@ pub async fn messages(
         },
     };
     Json(response).into_response()
+}
+
+/// `POST /v1/messages/count_tokens` — return how many input tokens a request
+/// would consume, without running generation.
+pub async fn count_tokens(
+    State(_state): State<AppState>,
+    Json(request): Json<MessagesRequest>,
+) -> impl IntoResponse {
+    if request.messages.is_empty() {
+        return error_response(
+            StatusCode::BAD_REQUEST,
+            "invalid_request_error",
+            "messages: at least one message is required",
+        );
+    }
+    Json(json!({ "input_tokens": estimate_input_tokens(&request) })).into_response()
 }
 
 /// Build the native Anthropic SSE event stream.
@@ -753,6 +836,64 @@ mod tests {
         assert_eq!(v["content"][0]["type"], "text");
         assert_eq!(v["content"][0]["text"], "hi");
         assert_eq!(v["stop_reason"], "end_turn");
+    }
+
+    #[test]
+    fn thinking_block_serializes() {
+        let block = OutputBlock::Thinking { thinking: "let me reason".into() };
+        let v = serde_json::to_value(&block).unwrap();
+        assert_eq!(v["type"], "thinking");
+        assert_eq!(v["thinking"], "let me reason");
+    }
+
+    #[test]
+    fn thinking_config_parsed_and_detected() {
+        let r = req(json!({
+            "model": "m", "max_tokens": 100,
+            "messages": [{"role": "user", "content": "x"}],
+            "thinking": {"type": "enabled", "budget_tokens": 1024}
+        }));
+        assert!(r.thinking.as_ref().unwrap().is_enabled());
+        assert_eq!(r.thinking.as_ref().unwrap().budget_tokens, Some(1024));
+
+        let disabled = req(json!({
+            "model": "m", "max_tokens": 100,
+            "messages": [{"role": "user", "content": "x"}]
+        }));
+        assert!(disabled.thinking.is_none());
+    }
+
+    #[test]
+    fn count_tokens_estimate_includes_images() {
+        // Text-only request.
+        let text_only = req(json!({
+            "model": "m", "max_tokens": 10,
+            "messages": [{"role": "user", "content": "one two three"}]
+        }));
+        let base = estimate_input_tokens(&text_only);
+        assert!(base >= 3);
+
+        // Same plus an image block costs substantially more (image surcharge).
+        let with_image = req(json!({
+            "model": "m",
+            "messages": [{"role": "user", "content": [
+                {"type": "text", "text": "one two three"},
+                {"type": "image", "source": {"type": "base64", "media_type": "image/png", "data": "AAAA"}}
+            ]}]
+        }));
+        let with_img = estimate_input_tokens(&with_image);
+        assert!(with_img >= base + 256);
+    }
+
+    #[test]
+    fn count_tokens_request_without_max_tokens_parses() {
+        // count_tokens omits max_tokens; it must still deserialize.
+        let r = req(json!({
+            "model": "m",
+            "messages": [{"role": "user", "content": "hello"}]
+        }));
+        assert_eq!(r.max_tokens, 0);
+        assert!(estimate_input_tokens(&r) >= 1);
     }
 }
 

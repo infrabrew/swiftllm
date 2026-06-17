@@ -117,6 +117,42 @@ async fn anthropic_forced_tool_use() {
 }
 
 #[tokio::test]
+async fn anthropic_count_tokens_endpoint() {
+    // No max_tokens (count_tokens omits it) and an image block.
+    let (status, body) = post_json(
+        "/v1/messages/count_tokens",
+        json!({
+            "model": "swiftllm",
+            "messages": [{"role": "user", "content": [
+                {"type": "text", "text": "describe this"},
+                {"type": "image", "source": {"type": "base64", "media_type": "image/png", "data": "AAAA"}}
+            ]}]
+        }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    // text + image surcharge.
+    assert!(body["input_tokens"].as_u64().unwrap() >= 256);
+}
+
+#[tokio::test]
+async fn anthropic_thinking_block_in_response() {
+    let (status, body) = post_json(
+        "/v1/messages",
+        json!({
+            "model": "swiftllm",
+            "max_tokens": 64,
+            "messages": [{"role": "user", "content": "hard question"}],
+            "thinking": {"type": "enabled", "budget_tokens": 512}
+        }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    // First content block is the thinking trace.
+    assert_eq!(body["content"][0]["type"], "thinking");
+}
+
+#[tokio::test]
 async fn anthropic_validation_rejects_empty_messages() {
     let (status, body) = post_json(
         "/v1/messages",

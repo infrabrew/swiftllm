@@ -27,7 +27,7 @@
   <img src="https://img.shields.io/badge/version-2.0-green.svg" alt="v2.0">
   <img src="https://img.shields.io/badge/rust-%23000000.svg?style=flat&logo=rust&logoColor=white" alt="Rust">
   <img src="https://img.shields.io/badge/python-3.8+-blue.svg" alt="Python 3.8+">
-  <img src="https://img.shields.io/badge/CUDA-11.8+-green.svg" alt="CUDA 11.8+">
+  <img src="https://img.shields.io/badge/CUDA-12.4+-green.svg" alt="CUDA 12.4+">
   <img src="https://img.shields.io/badge/license-Apache%202.0-blue.svg" alt="License">
 </p>
 
@@ -123,6 +123,7 @@
 - **Low Latency** — Optimized CUDA kernels and speculative decoding
 - **Tensor Parallelism** — Scale to multiple GPUs seamlessly
 - **OpenAI Compatible** — Drop-in replacement for the OpenAI API with security hardening and SSE token streaming (including `<think>` reasoning streams for Open WebUI)
+- **Tool Calling & Structured Outputs** — Function/tool calling (OpenAI and Anthropic shapes, including streamed tool-call deltas) and JSON-schema-constrained generation; the Rust server also exposes an Anthropic-compatible Messages API and a WebSocket realtime endpoint
 - **Dual Inference Backends** — GGUF models run via llama-cpp-python (GPU-offloaded); safetensors/HuggingFace checkpoints run via the transformers backend
 - **4-bit / 8-bit Quantized Loading** — bitsandbytes NF4/int8 loading for safetensors models (`-q 4bit` / `-q 8bit`)
 - **Air-Gapped Install** — Bundle and deploy on networks with no internet access
@@ -281,10 +282,10 @@ After the RLM generation completes, the Dense Verification Layer performs one ad
 |-------------|--------|-------|
 | **LLaMA** |  LLaMA 3, Code Llama | |
 | **Mistral** | Mistral 7B, Mixtral 8x7B, Devstral | Mixtral uses MoE FFN |
-| **Qwen** | Qwen3, Qwen 3, Qwen 3.5 | |
+| **Qwen** | Qwen 3, Qwen 3.5 | |
 | **Phi** | Phi-3, Phi-4 | |
-| **Deepseek** | R1, V4| |
-| **Gemma** | Gemma | |
+| **Deepseek** | R1 | Runs via the GGUF backend; no native Rust runner yet |
+| **Gemma** | Gemma 2, Gemma 3, Gemma 4 | Native runner: GeGLU, unit-offset RMSNorm, sliding/global attention, logit soft-capping |
 | **Mamba** | Mamba-130M … Mamba-3B | Phase 1 — pure SSM |
 | **Jamba** | Jamba-v0.1, custom | Phase 1 — hybrid Attention + Mamba + MoE |
 
@@ -415,7 +416,7 @@ pip install bitsandbytes
 
 - Python 3.8+
 - Rust 1.70+ (auto-installed by `install.sh` if missing)
-- CUDA 11.8+ (optional, for GPU acceleration)
+- CUDA 12.4+ (optional, for GPU acceleration; the `cudarc` bindings target the CUDA 12.4 API and are tested through CUDA 13.0 on Blackwell)
 
 ---
 
@@ -3331,7 +3332,14 @@ fields are ignored, so off-the-shelf OpenAI clients work unmodified.
 - For GGUF models the context window defaults to 4096 tokens — raise it with
   `--max-model-len`.
 - The standalone Rust server (`crates/swiftllm-server`) additionally exposes
-  `POST /v1/completions` and `GET /metrics` (Prometheus + JSON).
+  `POST /v1/completions`, `GET /metrics` (Prometheus + JSON), an
+  **Anthropic-compatible Messages API** (`POST /v1/messages` and
+  `POST /v1/messages/count_tokens`), and a **WebSocket realtime endpoint**
+  (`GET /v1/realtime`) for bidirectional text/audio event streaming.
+- On the Rust server, `/v1/chat/completions` and `/v1/messages` also accept
+  `tools` / `tool_choice` for function/tool calling (OpenAI and Anthropic
+  shapes, including streamed tool-call deltas) and `response_format` for
+  JSON-schema-constrained structured output.
 
 ---
 
@@ -3393,6 +3401,28 @@ SwiftLLM includes built-in security features across the server, installer, and r
 - **New**: Chain-of-thought streaming — `<think>` blocks from reasoning models (e.g. Qwen3) stream live and render in Open WebUI's reasoning panel
 - **Fixed**: `--max-model-len` is now passed through to the GGUF context window (`n_ctx`, default 4096), with graceful handling of context overflow
 - **Fixed**: GGUF `_scores` IndexError on longer outputs — batch size now defaults to `min(n_ctx, 2048)`
+
+**API server (Rust)**
+
+- **New**: Anthropic-compatible Messages API — `POST /v1/messages` with content blocks, `tool_use`, extended-thinking blocks, a native SSE event stream, and `POST /v1/messages/count_tokens`
+- **New**: tool / function calling on `/v1/chat/completions` and `/v1/messages` (OpenAI and Anthropic shapes), including streamed tool-call deltas
+- **New**: JSON-schema-constrained structured outputs (`response_format`) — a sampling constraint that masks any token leaving a schema-valid path
+- **New**: WebSocket realtime endpoint (`GET /v1/realtime`) for bidirectional text/audio event streaming
+- **Security**: `torch.load` now defaults to `weights_only=True` (explicit `trust_checkpoint=True` opt-in for trusted checkpoints), closing an arbitrary-code-execution path on untrusted checkpoints
+
+**Models**
+
+- **New**: native Gemma runner (Gemma 2 / 3 / 4) — GeGLU, unit-offset RMSNorm, alternating sliding/global attention, query pre-attention scaling, and attention/final logit soft-capping
+- **New**: Multi-Token Prediction (MTP) speculative drafting, integrated with the rejection-sampling verifier
+- **New**: NVFP4 / MXFP4 quantization-format metadata
+
+**Engine & scheduler (core API)**
+
+- **New**: asynchronous scheduling (on by default) with pipeline overlap and zero-bubble modeling; compatible with speculative decoding and structured outputs
+- **New**: chunked-prefill token-budget planner (reserves decode budget), head-of-line-blocking fairness with anti-starvation aging, and CUDA-graph capture bucketing/padding with hit-rate stats
+- **New**: reference-counted prefix-cache reclamation that refuses to evict KV still referenced by a live sequence
+- **New**: automatic context-length fitting, performance-mode presets, and a model-inspection API (`MaxModelLen::Auto`, `PerformanceMode`, `ModelInspection`)
+- **Changed**: speculative decoding now rejects unsupported sampling params (`n > 1`, `best_of > 1`, `prompt_logprobs`) explicitly instead of silently ignoring them
 
 ---
 
