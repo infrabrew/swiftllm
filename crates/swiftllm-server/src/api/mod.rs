@@ -20,7 +20,10 @@
 
 //! API implementations
 
+pub mod anthropic;
 pub mod openai;
+pub mod realtime;
+pub mod tools;
 
 // ------------------------------------------------------------------------------
 // END OF FILE: mod.rs

@@ -526,6 +526,34 @@ pub struct SamplingConfig {
 
     /// Logit bias
     pub logit_bias: Option<std::collections::HashMap<u32, f32>>,
+
+    /// Structured-output constraint applied during sampling. When set to a
+    /// JSON-Schema constraint, the sampler masks any token that would push the
+    /// decoded text off a schema-valid path (see [`crate::sampling::constraint`]).
+    #[serde(default)]
+    pub response_format: Option<ResponseFormat>,
+}
+
+/// Requested output format for a generation request.
+///
+/// Mirrors the OpenAI `response_format` field and Anthropic structured-output
+/// usage. `JsonSchema` carries the raw schema document; it is compiled into a
+/// [`crate::sampling::SchemaConstraint`] at sampling time.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum ResponseFormat {
+    /// Unconstrained free text (the default).
+    Text,
+    /// Output must be a syntactically valid JSON object/value.
+    JsonObject,
+    /// Output must conform to the supplied JSON Schema.
+    JsonSchema {
+        /// Optional name for the schema (informational).
+        #[serde(default)]
+        name: String,
+        /// The JSON Schema document.
+        schema: serde_json::Value,
+    },
 }
 
 impl Default for SamplingConfig {
@@ -549,6 +577,7 @@ impl Default for SamplingConfig {
             logprobs: None,
             prompt_logprobs: None,
             logit_bias: None,
+            response_format: None,
         }
     }
 }

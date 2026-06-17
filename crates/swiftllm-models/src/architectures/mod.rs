@@ -22,12 +22,14 @@
 //!
 //! This module provides implementations of popular LLM architectures.
 
+pub mod gemma;
 pub mod jamba;
 pub mod llama;
 pub mod mistral;
 pub mod phi;
 pub mod qwen;
 
+pub use gemma::{GemmaAttentionType, GemmaConfig, GemmaModel};
 pub use jamba::{
     HybridLayerType, HybridRecurrentState, JambaConfig, JambaModel,
     count_attention_layers, jamba_schedule,
@@ -95,6 +97,7 @@ pub fn create_model(
         ModelArchitecture::Mistral => Ok(Box::new(MistralModel::new(config)?)),
         ModelArchitecture::Qwen | ModelArchitecture::Qwen2 => Ok(Box::new(QwenModel::new(config)?)),
         ModelArchitecture::Phi | ModelArchitecture::Phi3 => Ok(Box::new(PhiModel::new(config)?)),
+        ModelArchitecture::Gemma => Ok(Box::new(GemmaModel::new(config)?)),
         ModelArchitecture::Jamba | ModelArchitecture::NemotronH => {
             // Jamba-style hybrid: build a default schedule, then construct JambaModel
             let jamba_cfg = JambaConfig::small_hybrid(config.hidden_size, config.num_hidden_layers);

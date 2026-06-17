@@ -69,6 +69,7 @@ subtle = "2.5"
 
 [dev-dependencies]
 tokio-test = { workspace = true }
+tower = { workspace = true, features = ["util"] }
 
 # ------------------------------------------------------------------------------
 # END OF FILE: Cargo.toml

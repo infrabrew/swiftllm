@@ -336,6 +336,108 @@ impl BlockManager {
             .expect("block_size_bytes overflowed")
     }
 
+    // ------------------------------------------------------------------------
+    // Prefix caching
+    //
+    // The prefix cache maps a content hash of a filled KV block to the physical
+    // block holding it, so identical prompt prefixes share KV instead of being
+    // recomputed. Correctness hinges on reference counting: the cache itself
+    // holds one reference to every block it maps, and eviction must never return
+    // a block to the free pool while a live sequence still references it (doing
+    // so silently corrupts that sequence's KV — the high-concurrency eviction
+    // bug this discipline prevents).
+    // ------------------------------------------------------------------------
+
+    /// Hash a block's worth of tokens into a stable prefix-cache key (FNV-1a).
+    pub fn compute_block_hash(tokens: &[crate::types::TokenId]) -> u64 {
+        let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
+        for &token in tokens {
+            for byte in (token as u32).to_le_bytes() {
+                hash ^= byte as u64;
+                hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
+            }
+        }
+        hash
+    }
+
+    /// Cache a filled prefix block under `hash`, taking a cache-held reference so
+    /// the block survives until explicitly evicted. Idempotent: re-caching the
+    /// same hash does not take a second reference.
+    pub fn cache_prefix(&self, hash: u64, block_id: PhysicalBlockId) {
+        if !self.enable_prefix_caching {
+            return;
+        }
+        let mut cache = self.prefix_cache.write();
+        if cache.contains_key(&hash) {
+            return;
+        }
+        self.gpu_allocator.lock().inc_ref(block_id);
+        cache.insert(hash, block_id);
+    }
+
+    /// Look up a cached prefix block. On a hit the block gains a reference for
+    /// the caller (the reusing sequence) and its id is returned.
+    pub fn lookup_prefix(&self, hash: u64) -> Option<PhysicalBlockId> {
+        if !self.enable_prefix_caching {
+            return None;
+        }
+        let cache = self.prefix_cache.read();
+        let block_id = *cache.get(&hash)?;
+        self.gpu_allocator.lock().inc_ref(block_id);
+        Some(block_id)
+    }
+
+    /// Number of cached prefix blocks.
+    pub fn prefix_cache_len(&self) -> usize {
+        self.prefix_cache.read().len()
+    }
+
+    /// Reference count of a GPU block (test/diagnostic helper).
+    pub fn gpu_block_ref_count(&self, block_id: PhysicalBlockId) -> usize {
+        self.gpu_allocator.lock().ref_count(block_id)
+    }
+
+    /// Evict a prefix entry, releasing the cache's held reference. The block is
+    /// reclaimed only when no other reference remains (the allocator frees it
+    /// solely when its count reaches zero), so this is safe even if a sequence
+    /// still uses the block. Returns whether an entry was removed.
+    pub fn evict_prefix(&self, hash: u64) -> bool {
+        if !self.enable_prefix_caching {
+            return false;
+        }
+        let mut cache = self.prefix_cache.write();
+        match cache.remove(&hash) {
+            Some(block_id) => {
+                self.gpu_allocator.lock().free(block_id);
+                true
+            }
+            None => false,
+        }
+    }
+
+    /// Reclaim a prefix entry **only if** no live sequence still references its
+    /// block (i.e. the cache is the sole holder). Refuses otherwise, preventing
+    /// the silent eviction of in-use KV under high-concurrency cycling. Returns
+    /// whether the block was evicted.
+    pub fn try_evict_unreferenced_prefix(&self, hash: u64) -> bool {
+        if !self.enable_prefix_caching {
+            return false;
+        }
+        let mut cache = self.prefix_cache.write();
+        let block_id = match cache.get(&hash) {
+            Some(&b) => b,
+            None => return false,
+        };
+        let mut allocator = self.gpu_allocator.lock();
+        // ref_count > 1 means a sequence holds it in addition to the cache.
+        if allocator.ref_count(block_id) > 1 {
+            return false;
+        }
+        cache.remove(&hash);
+        allocator.free(block_id);
+        true
+    }
+
     /// Calculate number of blocks needed for given number of tokens
     pub fn blocks_needed(&self, num_tokens: usize) -> usize {
         num_tokens.div_ceil(self.block_size)
@@ -665,6 +767,99 @@ mod tests {
         // Free the sequence
         manager.free(seq_id);
         assert!(manager.get_block_table(seq_id).is_none());
+    }
+
+    fn prefix_manager() -> BlockManager {
+        BlockManager::new(16, 100, 50, 32, 128, 32, true /* prefix caching */, None)
+    }
+
+    #[test]
+    fn test_prefix_hash_is_deterministic() {
+        let a = BlockManager::compute_block_hash(&[1, 2, 3, 4]);
+        let b = BlockManager::compute_block_hash(&[1, 2, 3, 4]);
+        let c = BlockManager::compute_block_hash(&[1, 2, 3, 5]);
+        assert_eq!(a, b);
+        assert_ne!(a, c);
+    }
+
+    #[test]
+    fn test_prefix_cache_holds_reference() {
+        let manager = prefix_manager();
+        let block = manager.gpu_allocator.lock().allocate().unwrap();
+        // Sequence holds one reference after allocation.
+        assert_eq!(manager.gpu_block_ref_count(block), 1);
+
+        let hash = BlockManager::compute_block_hash(&[10, 11, 12]);
+        manager.cache_prefix(hash, block);
+        // Cache took its own reference.
+        assert_eq!(manager.gpu_block_ref_count(block), 2);
+        assert_eq!(manager.prefix_cache_len(), 1);
+
+        // Caching the same hash again is idempotent (no extra reference).
+        manager.cache_prefix(hash, block);
+        assert_eq!(manager.gpu_block_ref_count(block), 2);
+    }
+
+    #[test]
+    fn test_prefix_lookup_increments_reference() {
+        let manager = prefix_manager();
+        let block = manager.gpu_allocator.lock().allocate().unwrap();
+        let hash = BlockManager::compute_block_hash(&[7, 8, 9]);
+        manager.cache_prefix(hash, block);
+
+        let hit = manager.lookup_prefix(hash);
+        assert_eq!(hit, Some(block));
+        // Lookup handed a reference to the reusing sequence (seq + cache + reuse).
+        assert_eq!(manager.gpu_block_ref_count(block), 3);
+
+        assert_eq!(manager.lookup_prefix(BlockManager::compute_block_hash(&[0])), None);
+    }
+
+    #[test]
+    fn test_try_evict_refuses_in_use_block() {
+        let manager = prefix_manager();
+        let block = manager.gpu_allocator.lock().allocate().unwrap();
+        let hash = BlockManager::compute_block_hash(&[1, 1, 1]);
+        manager.cache_prefix(hash, block); // ref_count = 2 (sequence + cache)
+
+        // A live sequence still references the block, so reclamation is refused —
+        // this is the guard against silently evicting in-use KV.
+        assert!(!manager.try_evict_unreferenced_prefix(hash));
+        assert_eq!(manager.prefix_cache_len(), 1);
+        assert_eq!(manager.gpu_block_ref_count(block), 2);
+
+        // The sequence finishes and drops its reference.
+        manager.gpu_allocator.lock().free(block); // ref_count = 1 (cache only)
+        // Now the cache is the sole holder, so reclamation succeeds.
+        assert!(manager.try_evict_unreferenced_prefix(hash));
+        assert_eq!(manager.prefix_cache_len(), 0);
+        assert_eq!(manager.gpu_block_ref_count(block), 0);
+    }
+
+    #[test]
+    fn test_evict_prefix_keeps_block_alive_for_sequences() {
+        let manager = prefix_manager();
+        let block = manager.gpu_allocator.lock().allocate().unwrap();
+        let hash = BlockManager::compute_block_hash(&[2, 2]);
+        manager.cache_prefix(hash, block); // ref_count = 2
+
+        // Unconditional eviction releases only the cache's reference; the block
+        // remains alive for the still-active sequence (ref_count 2 -> 1).
+        assert!(manager.evict_prefix(hash));
+        assert_eq!(manager.prefix_cache_len(), 0);
+        assert_eq!(manager.gpu_block_ref_count(block), 1);
+        // Evicting a missing hash is a no-op.
+        assert!(!manager.evict_prefix(hash));
+    }
+
+    #[test]
+    fn test_prefix_cache_disabled_is_noop() {
+        let manager = BlockManager::new(16, 100, 50, 32, 128, 32, false, None);
+        let block = manager.gpu_allocator.lock().allocate().unwrap();
+        let hash = BlockManager::compute_block_hash(&[5]);
+        manager.cache_prefix(hash, block);
+        assert_eq!(manager.prefix_cache_len(), 0);
+        assert_eq!(manager.lookup_prefix(hash), None);
     }
 
     #[test]
