@@ -41,6 +41,7 @@ pub mod metrics;
 pub mod muon;
 pub mod optimizer;
 pub mod process_reward;
+pub mod realtime_rl;
 pub mod trainer;
 
 pub use config::{DataConfig, FineTuningConfig, TrainingConfig};
@@ -64,6 +65,10 @@ pub use optimizer::{clip_grad_norm, AdamW, LearningRateScheduler, Optimizer, SGD
 pub use process_reward::{
     aggregate_step_scores, blend_prm_with_outcome, parse_steps, NeuralPrm, PrmAggregation,
     PrmConfig, PrmResult, ReasoningStep, RulePrm, StepBoundary, StepScore,
+};
+pub use realtime_rl::{
+    ActorLearner, ActorLearnerStats, AdapterRegistry, Experience, ExperienceBuffer, LearnerBackend,
+    PendingResponse, RealtimeRlConfig, RealtimeRlTrainer, RewardJoin,
 };
 pub use trainer::Trainer;
 

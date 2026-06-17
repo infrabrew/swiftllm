@@ -139,6 +139,7 @@
 - **CGAR Curriculum** — Curriculum-Guided Adaptive Recursion for 1.71× training speedup (Phase 2)
 - **Process Reward Models** — Step-level reasoning feedback with 5 aggregation strategies (Phase 2)
 - **LongR Dense Rewards** — Per-token NLL information gain for long-context tasks; +9% LongBench v2 (Phase 2)
+- **Realtime / Online RL** — Learn-while-serving loop built on GRPO: a staleness-bounded experience replay buffer, delayed-reward join, async actor↔learner with replay-ratio back-pressure, and LoRA adapter hot-swap + rollback (Rust API)
 
 **Inference**
 - **Self-Consistency Voting** — Majority vote across N independent chains (Wang et al., 2022) (Phase 3)
@@ -2348,6 +2349,52 @@ JSONL with one JSON object per line:
 
 ---
 
+### Realtime (Online) Reinforcement Learning
+
+Offline RLHF freezes the policy, generates a dataset, scores it, trains, and
+redeploys. **Realtime RL collapses that loop** — generation (serving) and
+learning run concurrently, so the policy improves from live interaction without
+a redeploy step. SwiftLLM implements the online *orchestration* layer
+(`swiftllm-training::realtime_rl`) on top of the existing GRPO objective; the
+forward pass and gradient step are expressed through a `LearnerBackend` trait so
+the controller is fully testable on CPU and a real backend can wire in the
+engine + autograd.
+
+The four pieces that make RL "realtime":
+
+| Component | Role |
+|---|---|
+| `ExperienceBuffer` | Bounded replay buffer with **staleness bounds** — drops experiences older than `max_staleness` policy versions (off-policy management) |
+| `RewardJoin` | Joins **delayed reward** (human feedback or a verifier returning later) back to its response by request id, then computes group-relative advantages |
+| `ActorLearner` | Async **actor↔learner** controller: replay-ratio back-pressure (off-policy budget), staleness gating, and weight-sync scheduling (IMPALA / async-RLHF pattern) |
+| `AdapterRegistry` | **LoRA adapter** versioning with hot-swap, a last-known-good checkpoint, and rollback |
+
+```rust
+use swiftllm_training::{RealtimeRlConfig, RealtimeRlTrainer, LearnerBackend};
+
+// `backend` implements LearnerBackend (policy forward pass + gradient apply).
+let mut trainer = RealtimeRlTrainer::new(RealtimeRlConfig::default(), backend);
+
+// Actors stream in reward-joined experiences while the learner runs:
+trainer.record(experience);          // from RewardJoin::submit(request_id, rewards)
+if trainer.can_learn() {
+    let loss = trainer.learner_step(); // sample fresh batch → GRPO loss → update → hot-swap
+}
+```
+
+**Recommended first version:** verifiable rewards (the RLM/REPL sandbox or dense
+verification as the reward function) + GRPO + a LoRA adapter — the stable corner
+of the design space (objective rewards resist reward-hacking; LoRA makes updates
+cheap to hot-swap and roll back). Keep a frozen reference model + KL leash
+(`kl_coeff`), clamp rewards (`reward_clip`) against poisoned live feedback, and
+shadow-eval each adapter before `mark_good()`.
+
+> **Note:** this is the online control loop. The actual policy forward pass and
+> gradient application are the GPU/model seam (`LearnerBackend`); wiring them to
+> the live engine + autograd is the remaining work to run it end-to-end on GPU.
+
+---
+
 ## Advanced Inference Capabilities
 
 ### Test-Time Inference Enhancements
@@ -3423,6 +3470,10 @@ SwiftLLM includes built-in security features across the server, installer, and r
 - **New**: reference-counted prefix-cache reclamation that refuses to evict KV still referenced by a live sequence
 - **New**: automatic context-length fitting, performance-mode presets, and a model-inspection API (`MaxModelLen::Auto`, `PerformanceMode`, `ModelInspection`)
 - **Changed**: speculative decoding now rejects unsupported sampling params (`n > 1`, `best_of > 1`, `prompt_logprobs`) explicitly instead of silently ignoring them
+
+**Training**
+
+- **New**: realtime (online) RL — a learn-while-serving loop on top of GRPO (`swiftllm-training::realtime_rl`): staleness-bounded experience replay, delayed-reward join, async actor↔learner with replay-ratio back-pressure, reward clamping, and LoRA adapter hot-swap + rollback. The policy forward pass and gradient step are a `LearnerBackend` trait seam (orchestration is CPU-tested)
 
 ---
 
