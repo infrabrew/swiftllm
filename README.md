@@ -140,6 +140,8 @@
 - **Process Reward Models** — Step-level reasoning feedback with 5 aggregation strategies (Phase 2)
 - **LongR Dense Rewards** — Per-token NLL information gain for long-context tasks; +9% LongBench v2 (Phase 2)
 - **Realtime / Online RL** — Learn-while-serving loop built on GRPO: a staleness-bounded experience replay buffer, delayed-reward join, async actor↔learner with replay-ratio back-pressure, and LoRA adapter hot-swap + rollback (Rust API)
+- **Self-Supervised Learning** — Build training targets from unlabeled tokens automatically: causal (next-token), BERT-style masked LM (80/10/10 corruption), and T5 span corruption with sentinels (Rust API)
+- **Self-Learning (Self-Training)** — STaR / ReST / RFT loop: the model self-labels its best generations (reward / confidence / best-of-N), deduplicates, and fine-tunes on them, iterated with an acceptance-plateau stop (Rust API)
 
 **Inference**
 - **Self-Consistency Voting** — Majority vote across N independent chains (Wang et al., 2022) (Phase 3)
@@ -2395,6 +2397,57 @@ shadow-eval each adapter before `mark_good()`.
 
 ---
 
+### Self-Supervised Learning
+
+Self-supervised learning derives its own supervision from unlabeled text — no
+human labels. `swiftllm-training::self_supervised` turns a token sequence into a
+training example for three classic objectives via `build_example()`:
+
+| Objective | What it builds |
+|---|---|
+| `CausalLm` | Next-token prediction — inputs and labels are the sequence shifted by one |
+| `MaskedLm` | BERT-style masking — selects ~15% of tokens with the 80% `[MASK]` / 10% random / 10% keep corruption; labels carry the originals |
+| `SpanCorruption` | T5-style denoising — contiguous spans are replaced by sentinels, with the spans recovered in the decoder target |
+
+```rust
+use swiftllm_training::{build_example, SslObjective, MlmConfig};
+
+let example = build_example(&SslObjective::MaskedLm(MlmConfig::default()), &token_ids, /*seed=*/ 42);
+// example.input_ids (corrupted) + example.labels (None = no loss) feed the model.
+```
+
+Examples are pure, deterministic token transforms (CPU-tested); the forward pass
+and loss are the model seam.
+
+### Self-Learning (Self-Training)
+
+The model improves from **its own** outputs: it samples candidates, a reward or
+confidence signal **self-labels** the good ones, and those become new SFT data —
+repeated for several iterations (the STaR / ReST / rejection-sampling-fine-tuning
+loop). `swiftllm-training::self_learning` provides the self-labeling and the
+iteration controller:
+
+```rust
+use swiftllm_training::{SelfTrainingLoop, SelfTrainingConfig, AcceptancePolicy, Candidate};
+
+let mut loop_ = SelfTrainingLoop::new(SelfTrainingConfig {
+    policy: AcceptancePolicy::BestOfN,   // or RewardThreshold / ConfidenceThreshold / TopK
+    ..Default::default()
+});
+while loop_.should_continue() {
+    let candidates: Vec<Candidate> = /* generate + score (verifier / RewardFunction) */;
+    let round = loop_.run_round(&candidates);   // self-label → accepted SFT examples
+    // fine-tune on round.accepted, then iterate
+}
+```
+
+Acceptance policies, deduplication, yield accounting, and the
+acceptance-plateau stop are real and CPU-tested; candidate generation and the
+SFT step are the model seam. Pairs naturally with verifiable rewards (the
+RLM/REPL sandbox, dense verification, or `RewardFunction`).
+
+---
+
 ## Advanced Inference Capabilities
 
 ### Test-Time Inference Enhancements
@@ -3474,6 +3527,13 @@ SwiftLLM includes built-in security features across the server, installer, and r
 **Training**
 
 - **New**: realtime (online) RL — a learn-while-serving loop on top of GRPO (`swiftllm-training::realtime_rl`): staleness-bounded experience replay, delayed-reward join, async actor↔learner with replay-ratio back-pressure, reward clamping, and LoRA adapter hot-swap + rollback. The policy forward pass and gradient step are a `LearnerBackend` trait seam (orchestration is CPU-tested)
+- **New**: self-supervised learning objectives (`swiftllm-training::self_supervised`) — causal LM, BERT-style masked LM (80/10/10), and T5 span corruption, as pure deterministic token transforms
+- **New**: self-learning / self-training (`swiftllm-training::self_learning`) — the STaR / ReST / rejection-sampling loop: reward/confidence/best-of-N/top-k self-labeling, deduplication, and an iteration controller with an acceptance-plateau stop
+
+**Hardware / GPU validation**
+
+- **Validated on Blackwell**: the `swiftllm-cuda` layer runs on an NVIDIA **RTX PRO 4000 Blackwell** (driver 580, **CUDA 13.0**, Ubuntu 24.04) — all **13 GPU integration tests pass**, covering the device-buffer lifecycle, raw `cudaMalloc`/`memset`, f16 host↔device round-trips, **f16 linear-kernel execution**, and a **real Gemma-style gated FFN forward block** (`swiftllm_cuda::forward::ffn_forward_gpu` — `down(geglu(gate(x), up(x)))`) whose three projections run on the GPU and match a pure-CPU reference within f16 tolerance (run: `CUDA_PATH=/usr/local/cuda cargo test -p swiftllm-cuda --test gpu_integration`)
+- **Scope**: a genuine neural-net forward *block* now executes and is numerically verified on the GPU — not just raw primitives. What remains a documented seam: the GeGLU activation is currently applied host-side (a GPU activation kernel is future work), and a *full* transformer layer (attention/RoPE/norm kernels) and the end-to-end multi-layer model + training backward pass are not yet wired onto these primitives. The `cuda` feature builds cleanly on Blackwell/CUDA 13 and the CPU-feature crates' full unit suite is green on the same host
 
 ---
 

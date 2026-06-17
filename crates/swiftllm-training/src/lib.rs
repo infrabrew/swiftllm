@@ -42,6 +42,8 @@ pub mod muon;
 pub mod optimizer;
 pub mod process_reward;
 pub mod realtime_rl;
+pub mod self_learning;
+pub mod self_supervised;
 pub mod trainer;
 
 pub use config::{DataConfig, FineTuningConfig, TrainingConfig};
@@ -69,6 +71,14 @@ pub use process_reward::{
 pub use realtime_rl::{
     ActorLearner, ActorLearnerStats, AdapterRegistry, Experience, ExperienceBuffer, LearnerBackend,
     PendingResponse, RealtimeRlConfig, RealtimeRlTrainer, RewardJoin,
+};
+pub use self_learning::{
+    filter_candidates, score_candidate, AcceptancePolicy, Candidate, RoundResult, SelfTrainingConfig,
+    SelfTrainingLoop, SftExample,
+};
+pub use self_supervised::{
+    build_causal_lm, build_example, build_masked_lm, build_span_corruption, MlmConfig, SpanConfig,
+    SslExample, SslObjective,
 };
 pub use trainer::Trainer;
 

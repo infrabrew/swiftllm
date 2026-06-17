@@ -64,6 +64,9 @@ fn main() {
         "kernels/rlm_ops.cu",
         "kernels/linear_f16.cu",
         "kernels/paged_attention.cu",
+        "kernels/activation.cu",
+        "kernels/norm.cu",
+        "kernels/attention.cu",
     ];
 
     // ── Detect CUDA toolkit version for conditional gencode flags ──────────

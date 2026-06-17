@@ -270,6 +270,98 @@ mod tests {
         // Just verify it doesn't crash; don't D2H the whole thing
         drop(buf);
     }
+
+    // =======================================================================
+    // 5. End-to-end model forward pass on the GPU
+    //    A real Gemma-style gated FFN block — gate/up/down projections run on
+    //    the device via linear_f16 — verified against a pure-CPU reference.
+    // =======================================================================
+
+    #[test]
+    fn test_gemma_ffn_forward_on_gpu() {
+        require_gpu!();
+        use swiftllm_cuda::forward::{ffn_forward_gpu, ffn_reference, FfnWeights};
+
+        let hidden = 8usize;
+        let inter = 16usize;
+        let m = 2usize;
+
+        // Deterministic small f16 weights in roughly [-0.25, 0.25].
+        let mk = |count: usize, seed: u32| -> Vec<half::f16> {
+            (0..count)
+                .map(|j| {
+                    let h = (j as u32)
+                        .wrapping_mul(2_654_435_761)
+                        .wrapping_add(seed.wrapping_mul(40_503));
+                    let v = ((h % 1000) as f32 / 1000.0 - 0.5) * 0.5;
+                    half::f16::from_f32(v)
+                })
+                .collect()
+        };
+        let weights = FfnWeights {
+            hidden_size: hidden,
+            intermediate_size: inter,
+            gate_w: mk(inter * hidden, 1),
+            up_w: mk(inter * hidden, 2),
+            down_w: mk(hidden * inter, 3),
+        };
+
+        // Input [m, hidden].
+        let x_f16: Vec<half::f16> = (0..m * hidden)
+            .map(|j| half::f16::from_f32((j as f32) / 16.0 - 0.25))
+            .collect();
+        // Reference uses the SAME f16-rounded input so only kernel accumulation differs.
+        let x_ref: Vec<f32> = x_f16.iter().map(|v| v.to_f32()).collect();
+
+        let gpu = ffn_forward_gpu(&x_f16, &weights, m).expect("GPU FFN forward");
+        let cpu = ffn_reference(&x_ref, &weights, m);
+
+        assert_eq!(gpu.len(), cpu.len());
+        assert_eq!(gpu.len(), m * hidden);
+        for j in 0..gpu.len() {
+            let g = gpu[j].to_f32();
+            assert!(
+                (g - cpu[j]).abs() < 0.05,
+                "FFN output mismatch at {}: gpu={} cpu={}",
+                j,
+                g,
+                cpu[j]
+            );
+        }
+    }
+
+    #[test]
+    fn test_rmsnorm_on_gpu() {
+        require_gpu!();
+        use swiftllm_cuda::forward::{rmsnorm_forward_gpu, rmsnorm_reference};
+
+        let rows = 3usize;
+        let dim = 16usize;
+        let x_f16: Vec<half::f16> = (0..rows * dim)
+            .map(|i| half::f16::from_f32((i as f32 % 7.0) - 3.0))
+            .collect();
+        let w_f16: Vec<half::f16> = (0..dim)
+            .map(|i| half::f16::from_f32(0.5 + (i as f32) / 32.0))
+            .collect();
+        let x_ref: Vec<f32> = x_f16.iter().map(|v| v.to_f32()).collect();
+        let w_ref: Vec<f32> = w_f16.iter().map(|v| v.to_f32()).collect();
+
+        // Gemma unit-offset RMSNorm (offset = 1.0), eps = 1e-6.
+        let gpu = rmsnorm_forward_gpu(&x_f16, &w_f16, rows, dim, 1e-6, 1.0).expect("GPU rmsnorm");
+        let cpu = rmsnorm_reference(&x_ref, &w_ref, rows, dim, 1e-6, 1.0);
+
+        assert_eq!(gpu.len(), cpu.len());
+        for i in 0..gpu.len() {
+            let g = gpu[i].to_f32();
+            assert!(
+                (g - cpu[i]).abs() < 0.02,
+                "RMSNorm mismatch at {}: gpu={} cpu={}",
+                i,
+                g,
+                cpu[i]
+            );
+        }
+    }
 }
 
 // ------------------------------------------------------------------------------

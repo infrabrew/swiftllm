@@ -32,6 +32,7 @@
 #![allow(clippy::too_many_arguments)] // CUDA kernel signatures require many parameters
 
 pub mod bindings;
+pub mod forward;
 pub mod memory;
 
 use thiserror::Error;

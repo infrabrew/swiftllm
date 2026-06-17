@@ -822,6 +822,83 @@ pub unsafe fn linear_f16(
     { Err(CudaError::DeviceNotFound) }
 }
 
+// ---------------------------------------------------------------------------
+// Element-wise activations + RMS norm (real kernels — kernels/activation.cu,
+// kernels/norm.cu). Unlike the legacy stubs above, these launch actual kernels.
+// ---------------------------------------------------------------------------
+
+#[cfg(has_cuda)]
+extern "C" {
+    fn geglu_f16_launch(gate: *const half::f16, up: *const half::f16, out: *mut half::f16, n: i32);
+    fn silu_mul_f16_launch(gate: *const half::f16, up: *const half::f16, out: *mut half::f16, n: i32);
+    fn rmsnorm_f16_launch(
+        x: *const half::f16, weight: *const half::f16, out: *mut half::f16,
+        rows: i32, dim: i32, eps: f32, weight_offset: f32,
+    );
+}
+
+/// GeGLU activation on the GPU: `out = gelu(gate) * up`, element-wise (`n` elems).
+///
+/// # Safety
+/// All pointers must reference valid GPU buffers of length `n`.
+pub unsafe fn geglu_f16(
+    gate: *const half::f16,
+    up: *const half::f16,
+    out: *mut half::f16,
+    n: usize,
+) -> Result<()> {
+    #[cfg(has_cuda)]
+    {
+        geglu_f16_launch(gate, up, out, n as i32);
+        check_cuda_last_error("geglu_f16")
+    }
+    #[cfg(not(has_cuda))]
+    { Err(CudaError::DeviceNotFound) }
+}
+
+/// SwiGLU activation on the GPU: `out = silu(gate) * up`, element-wise (`n` elems).
+///
+/// # Safety
+/// All pointers must reference valid GPU buffers of length `n`.
+pub unsafe fn silu_mul_f16(
+    gate: *const half::f16,
+    up: *const half::f16,
+    out: *mut half::f16,
+    n: usize,
+) -> Result<()> {
+    #[cfg(has_cuda)]
+    {
+        silu_mul_f16_launch(gate, up, out, n as i32);
+        check_cuda_last_error("silu_mul_f16")
+    }
+    #[cfg(not(has_cuda))]
+    { Err(CudaError::DeviceNotFound) }
+}
+
+/// RMS normalization on the GPU: `out[row] = x[row] * rsqrt(mean(x²)+eps) *
+/// (weight + offset)`. `offset = 0.0` is standard RMSNorm; `offset = 1.0` is
+/// Gemma's unit-offset variant.
+///
+/// # Safety
+/// `x`/`out` must be valid GPU buffers of `rows * dim`; `weight` of `dim`.
+pub unsafe fn rmsnorm_f16(
+    x: *const half::f16,
+    weight: *const half::f16,
+    out: *mut half::f16,
+    rows: usize,
+    dim: usize,
+    eps: f32,
+    weight_offset: f32,
+) -> Result<()> {
+    #[cfg(has_cuda)]
+    {
+        rmsnorm_f16_launch(x, weight, out, rows as i32, dim as i32, eps, weight_offset);
+        check_cuda_last_error("rmsnorm_f16")
+    }
+    #[cfg(not(has_cuda))]
+    { Err(CudaError::DeviceNotFound) }
+}
+
 // ------------------------------------------------------------------------------
 // END OF FILE: bindings.rs
 // REPO PATH:   /swiftllm/crates/swiftllm-cuda/src/bindings.rs
