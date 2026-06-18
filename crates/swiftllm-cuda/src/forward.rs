@@ -196,6 +196,231 @@ pub fn rmsnorm_forward_gpu(
     out_buf.to_vec()
 }
 
+// ----------------------------------------------------------------------------
+// Multi-head attention
+// ----------------------------------------------------------------------------
+
+/// Pure-CPU multi-head scaled-dot-product attention reference (verifies the GPU
+/// kernel). `q`/`k`/`v` are `[seq_len, num_heads * head_dim]`.
+#[allow(clippy::too_many_arguments)]
+pub fn attention_reference(
+    q: &[f32],
+    k: &[f32],
+    v: &[f32],
+    seq_len: usize,
+    num_heads: usize,
+    head_dim: usize,
+    scale: f32,
+    causal: bool,
+) -> Vec<f32> {
+    let hd = num_heads * head_dim;
+    let mut out = vec![0.0f32; seq_len * hd];
+    for i in 0..seq_len {
+        for h in 0..num_heads {
+            let qbase = i * hd + h * head_dim;
+            let jmax = if causal { i + 1 } else { seq_len };
+            let mut scores = vec![0.0f32; jmax];
+            let mut maxv = f32::NEG_INFINITY;
+            for (j, score) in scores.iter_mut().enumerate() {
+                let kbase = j * hd + h * head_dim;
+                let mut s = 0.0f32;
+                for d in 0..head_dim {
+                    s += q[qbase + d] * k[kbase + d];
+                }
+                s *= scale;
+                *score = s;
+                if s > maxv {
+                    maxv = s;
+                }
+            }
+            let mut denom = 0.0f32;
+            for score in scores.iter_mut() {
+                *score = (*score - maxv).exp();
+                denom += *score;
+            }
+            let inv = if denom > 0.0 { 1.0 / denom } else { 0.0 };
+            for d in 0..head_dim {
+                let mut acc = 0.0f32;
+                for (j, &sc) in scores.iter().enumerate() {
+                    acc += sc * v[j * hd + h * head_dim + d];
+                }
+                out[i * hd + h * head_dim + d] = acc * inv;
+            }
+        }
+    }
+    out
+}
+
+/// Multi-head attention on the GPU via the `attention_f16` kernel. CUDA-only.
+#[cfg(has_cuda)]
+#[allow(clippy::too_many_arguments)]
+pub fn attention_forward_gpu(
+    q: &[f16],
+    k: &[f16],
+    v: &[f16],
+    seq_len: usize,
+    num_heads: usize,
+    head_dim: usize,
+    scale: f32,
+    causal: bool,
+) -> crate::Result<Vec<f16>> {
+    use crate::memory::DeviceBuffer;
+    let hd = num_heads * head_dim;
+    let q_buf = DeviceBuffer::<f16>::from_slice(q, 0)?;
+    let k_buf = DeviceBuffer::<f16>::from_slice(k, 0)?;
+    let v_buf = DeviceBuffer::<f16>::from_slice(v, 0)?;
+    let mut o_buf = DeviceBuffer::<f16>::zeros(seq_len * hd, 0)?;
+    unsafe {
+        crate::bindings::attention_f16(
+            q_buf.as_ptr(), k_buf.as_ptr(), v_buf.as_ptr(), o_buf.as_mut_ptr(),
+            seq_len, num_heads, head_dim, scale, causal,
+        )?;
+    }
+    crate::synchronize()?;
+    o_buf.to_vec()
+}
+
+// ----------------------------------------------------------------------------
+// Full transformer decoder layer
+// ----------------------------------------------------------------------------
+
+/// Weights for one Gemma-style transformer decoder layer. Attention dimension is
+/// `num_heads * head_dim`; projections are `y = x · Wᵀ`.
+pub struct LayerWeights {
+    /// Hidden size `H`.
+    pub hidden_size: usize,
+    /// Attention heads.
+    pub num_heads: usize,
+    /// Per-head dimension.
+    pub head_dim: usize,
+    /// FFN intermediate size.
+    pub intermediate_size: usize,
+    /// Pre-attention RMSNorm weight `[H]`.
+    pub input_norm_w: Vec<f16>,
+    /// Query projection `[num_heads*head_dim, H]`.
+    pub q_w: Vec<f16>,
+    /// Key projection `[num_heads*head_dim, H]`.
+    pub k_w: Vec<f16>,
+    /// Value projection `[num_heads*head_dim, H]`.
+    pub v_w: Vec<f16>,
+    /// Output projection `[H, num_heads*head_dim]`.
+    pub o_w: Vec<f16>,
+    /// Post-attention RMSNorm weight `[H]`.
+    pub post_norm_w: Vec<f16>,
+    /// FFN gate projection `[intermediate, H]`.
+    pub gate_w: Vec<f16>,
+    /// FFN up projection `[intermediate, H]`.
+    pub up_w: Vec<f16>,
+    /// FFN down projection `[H, intermediate]`.
+    pub down_w: Vec<f16>,
+    /// RMSNorm epsilon.
+    pub rms_eps: f32,
+    /// RMSNorm weight offset (`1.0` for Gemma unit-offset).
+    pub norm_unit_offset: f32,
+}
+
+/// Pure-CPU reference for one transformer decoder layer:
+/// `h = x + attn(rmsnorm(x))`, `out = h + ffn(rmsnorm(h))`, causal attention.
+pub fn transformer_layer_reference(x: &[f32], w: &LayerWeights, seq_len: usize) -> Vec<f32> {
+    let h = w.hidden_size;
+    let attn_dim = w.num_heads * w.head_dim;
+    let inter = w.intermediate_size;
+    let s = seq_len;
+    let scale = 1.0 / (w.head_dim as f32).sqrt();
+    let f = |v: &[f16]| -> Vec<f32> { v.iter().map(|x| x.to_f32()).collect() };
+
+    let normed = rmsnorm_reference(x, &f(&w.input_norm_w), s, h, w.rms_eps, w.norm_unit_offset);
+    let q = matmul_wt(&normed, &f(&w.q_w), s, attn_dim, h);
+    let k = matmul_wt(&normed, &f(&w.k_w), s, attn_dim, h);
+    let v = matmul_wt(&normed, &f(&w.v_w), s, attn_dim, h);
+    let attn = attention_reference(&q, &k, &v, s, w.num_heads, w.head_dim, scale, true);
+    let attn_out = matmul_wt(&attn, &f(&w.o_w), s, h, attn_dim);
+    let hres: Vec<f32> = x.iter().zip(&attn_out).map(|(a, b)| a + b).collect();
+
+    let normed2 = rmsnorm_reference(&hres, &f(&w.post_norm_w), s, h, w.rms_eps, w.norm_unit_offset);
+    let gate = matmul_wt(&normed2, &f(&w.gate_w), s, inter, h);
+    let up = matmul_wt(&normed2, &f(&w.up_w), s, inter, h);
+    let ffn_hidden = geglu(&gate, &up);
+    let ffn_out = matmul_wt(&ffn_hidden, &f(&w.down_w), s, h, inter);
+    hres.iter().zip(&ffn_out).map(|(a, b)| a + b).collect()
+}
+
+/// Run one full transformer decoder layer on the GPU: RMSNorm → QKV → attention
+/// → output projection → residual → RMSNorm → GeGLU FFN → residual. Every step
+/// runs on the device. Verify against [`transformer_layer_reference`]. CUDA-only.
+#[cfg(has_cuda)]
+pub fn transformer_layer_forward_gpu(x: &[f16], w: &LayerWeights, seq_len: usize) -> crate::Result<Vec<f16>> {
+    use crate::bindings::{add_f16, attention_f16, geglu_f16, linear_f16, rmsnorm_f16};
+    use crate::memory::DeviceBuffer;
+
+    let h = w.hidden_size;
+    let attn_dim = w.num_heads * w.head_dim;
+    let inter = w.intermediate_size;
+    let s = seq_len;
+    let scale = 1.0f32 / (w.head_dim as f32).sqrt();
+
+    // Upload input + weights.
+    let x_buf = DeviceBuffer::<f16>::from_slice(x, 0)?;
+    let in_norm = DeviceBuffer::<f16>::from_slice(&w.input_norm_w, 0)?;
+    let qw = DeviceBuffer::<f16>::from_slice(&w.q_w, 0)?;
+    let kw = DeviceBuffer::<f16>::from_slice(&w.k_w, 0)?;
+    let vw = DeviceBuffer::<f16>::from_slice(&w.v_w, 0)?;
+    let ow = DeviceBuffer::<f16>::from_slice(&w.o_w, 0)?;
+    let post_norm = DeviceBuffer::<f16>::from_slice(&w.post_norm_w, 0)?;
+    let gatew = DeviceBuffer::<f16>::from_slice(&w.gate_w, 0)?;
+    let upw = DeviceBuffer::<f16>::from_slice(&w.up_w, 0)?;
+    let downw = DeviceBuffer::<f16>::from_slice(&w.down_w, 0)?;
+
+    let mut normed = DeviceBuffer::<f16>::zeros(s * h, 0)?;
+    let mut q = DeviceBuffer::<f16>::zeros(s * attn_dim, 0)?;
+    let mut k = DeviceBuffer::<f16>::zeros(s * attn_dim, 0)?;
+    let mut v = DeviceBuffer::<f16>::zeros(s * attn_dim, 0)?;
+    let mut attn = DeviceBuffer::<f16>::zeros(s * attn_dim, 0)?;
+    let mut attn_out = DeviceBuffer::<f16>::zeros(s * h, 0)?;
+    let mut hres = DeviceBuffer::<f16>::zeros(s * h, 0)?;
+    let mut normed2 = DeviceBuffer::<f16>::zeros(s * h, 0)?;
+    let mut gate = DeviceBuffer::<f16>::zeros(s * inter, 0)?;
+    let mut up = DeviceBuffer::<f16>::zeros(s * inter, 0)?;
+    let mut ffn_hidden = DeviceBuffer::<f16>::zeros(s * inter, 0)?;
+    let mut ffn_out = DeviceBuffer::<f16>::zeros(s * h, 0)?;
+    let mut out = DeviceBuffer::<f16>::zeros(s * h, 0)?;
+
+    unsafe {
+        // Attention sub-block.
+        rmsnorm_f16(x_buf.as_ptr(), in_norm.as_ptr(), normed.as_mut_ptr(), s, h, w.rms_eps, w.norm_unit_offset)?;
+        linear_f16(normed.as_ptr(), qw.as_ptr(), None, q.as_mut_ptr(), s, attn_dim, h)?;
+        linear_f16(normed.as_ptr(), kw.as_ptr(), None, k.as_mut_ptr(), s, attn_dim, h)?;
+        linear_f16(normed.as_ptr(), vw.as_ptr(), None, v.as_mut_ptr(), s, attn_dim, h)?;
+        attention_f16(q.as_ptr(), k.as_ptr(), v.as_ptr(), attn.as_mut_ptr(), s, w.num_heads, w.head_dim, scale, true)?;
+        linear_f16(attn.as_ptr(), ow.as_ptr(), None, attn_out.as_mut_ptr(), s, h, attn_dim)?;
+        add_f16(x_buf.as_ptr(), attn_out.as_ptr(), hres.as_mut_ptr(), s * h)?;
+
+        // FFN sub-block.
+        rmsnorm_f16(hres.as_ptr(), post_norm.as_ptr(), normed2.as_mut_ptr(), s, h, w.rms_eps, w.norm_unit_offset)?;
+        linear_f16(normed2.as_ptr(), gatew.as_ptr(), None, gate.as_mut_ptr(), s, inter, h)?;
+        linear_f16(normed2.as_ptr(), upw.as_ptr(), None, up.as_mut_ptr(), s, inter, h)?;
+        geglu_f16(gate.as_ptr(), up.as_ptr(), ffn_hidden.as_mut_ptr(), s * inter)?;
+        linear_f16(ffn_hidden.as_ptr(), downw.as_ptr(), None, ffn_out.as_mut_ptr(), s, h, inter)?;
+        add_f16(hres.as_ptr(), ffn_out.as_ptr(), out.as_mut_ptr(), s * h)?;
+    }
+    crate::synchronize()?;
+    out.to_vec()
+}
+
+/// Run a stack of transformer layers on the GPU (the multi-layer forward).
+#[cfg(has_cuda)]
+pub fn transformer_stack_forward_gpu(
+    x: &[f16],
+    layers: &[LayerWeights],
+    seq_len: usize,
+) -> crate::Result<Vec<f16>> {
+    let mut cur = x.to_vec();
+    for layer in layers {
+        cur = transformer_layer_forward_gpu(&cur, layer, seq_len)?;
+    }
+    Ok(cur)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -258,6 +483,46 @@ mod tests {
         let gemma = rmsnorm_reference(&[3.0, 4.0], &[0.0, 0.0], 1, 2, 0.0, 1.0);
         assert!((gemma[0] - out[0]).abs() < 1e-5);
         assert!((gemma[1] - out[1]).abs() < 1e-5);
+    }
+
+    #[test]
+    fn attention_reference_causal() {
+        // S=2, H=1, D=2, causal. Query 0 attends only to key 0 → out[0] = v[0].
+        let q = vec![1.0, 0.0, 0.0, 1.0];
+        let k = vec![1.0, 0.0, 0.0, 1.0];
+        let v = vec![5.0, 6.0, 7.0, 8.0];
+        let out = attention_reference(&q, &k, &v, 2, 1, 2, 1.0, true);
+        assert!((out[0] - 5.0).abs() < 1e-5);
+        assert!((out[1] - 6.0).abs() < 1e-5);
+        // Row 1 mixes v[0] and v[1], so each component lies between them.
+        assert!(out[2] >= 5.0 && out[2] <= 7.0);
+        assert!(out[3] >= 6.0 && out[3] <= 8.0);
+    }
+
+    #[test]
+    fn transformer_layer_reference_shapes() {
+        let (h, nh, d, inter, s) = (4usize, 2usize, 2usize, 8usize, 3usize); // attn_dim = nh*d = 4 = h
+        let w = LayerWeights {
+            hidden_size: h,
+            num_heads: nh,
+            head_dim: d,
+            intermediate_size: inter,
+            input_norm_w: vec![f16::from_f32(0.0); h],
+            q_w: vec![f16::from_f32(0.1); nh * d * h],
+            k_w: vec![f16::from_f32(0.1); nh * d * h],
+            v_w: vec![f16::from_f32(0.1); nh * d * h],
+            o_w: vec![f16::from_f32(0.1); h * nh * d],
+            post_norm_w: vec![f16::from_f32(0.0); h],
+            gate_w: vec![f16::from_f32(0.1); inter * h],
+            up_w: vec![f16::from_f32(0.1); inter * h],
+            down_w: vec![f16::from_f32(0.1); h * inter],
+            rms_eps: 1e-6,
+            norm_unit_offset: 1.0,
+        };
+        let x = vec![0.5f32; s * h];
+        let out = transformer_layer_reference(&x, &w, s);
+        assert_eq!(out.len(), s * h);
+        assert!(out.iter().all(|v| v.is_finite()));
     }
 }
 

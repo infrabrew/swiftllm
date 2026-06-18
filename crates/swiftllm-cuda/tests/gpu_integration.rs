@@ -362,6 +362,115 @@ mod tests {
             );
         }
     }
+
+    // Deterministic small f16 weights in ~[-0.2, 0.2].
+    fn mk_f16(n: usize, seed: u32) -> Vec<half::f16> {
+        (0..n)
+            .map(|i| {
+                let hsh = (i as u32)
+                    .wrapping_mul(2_654_435_761)
+                    .wrapping_add(seed.wrapping_mul(40_503));
+                half::f16::from_f32(((hsh % 1000) as f32 / 1000.0 - 0.5) * 0.4)
+            })
+            .collect()
+    }
+
+    fn make_layer(seed: u32) -> swiftllm_cuda::forward::LayerWeights {
+        use swiftllm_cuda::forward::LayerWeights;
+        let (h, nh, d, inter) = (8usize, 2usize, 4usize, 16usize); // attn_dim = nh*d = 8 = h
+        let zeros = |n: usize| vec![half::f16::from_f32(0.0); n]; // norm weight 0 (+unit offset = identity)
+        LayerWeights {
+            hidden_size: h,
+            num_heads: nh,
+            head_dim: d,
+            intermediate_size: inter,
+            input_norm_w: zeros(h),
+            q_w: mk_f16(nh * d * h, seed + 1),
+            k_w: mk_f16(nh * d * h, seed + 2),
+            v_w: mk_f16(nh * d * h, seed + 3),
+            o_w: mk_f16(h * nh * d, seed + 4),
+            post_norm_w: zeros(h),
+            gate_w: mk_f16(inter * h, seed + 5),
+            up_w: mk_f16(inter * h, seed + 6),
+            down_w: mk_f16(h * inter, seed + 7),
+            rms_eps: 1e-6,
+            norm_unit_offset: 1.0,
+        }
+    }
+
+    #[test]
+    fn test_attention_on_gpu() {
+        require_gpu!();
+        use swiftllm_cuda::forward::{attention_forward_gpu, attention_reference};
+        let (s, nh, d) = (4usize, 2usize, 4usize);
+        let hd = nh * d;
+        let scale = 1.0f32 / (d as f32).sqrt();
+        let q = mk_f16(s * hd, 1);
+        let k = mk_f16(s * hd, 2);
+        let v = mk_f16(s * hd, 3);
+        let f = |x: &[half::f16]| -> Vec<f32> { x.iter().map(|v| v.to_f32()).collect() };
+
+        let gpu = attention_forward_gpu(&q, &k, &v, s, nh, d, scale, true).expect("GPU attention");
+        let cpu = attention_reference(&f(&q), &f(&k), &f(&v), s, nh, d, scale, true);
+        assert_eq!(gpu.len(), cpu.len());
+        for i in 0..gpu.len() {
+            assert!(
+                (gpu[i].to_f32() - cpu[i]).abs() < 0.02,
+                "attention mismatch at {}: gpu={} cpu={}",
+                i,
+                gpu[i].to_f32(),
+                cpu[i]
+            );
+        }
+    }
+
+    #[test]
+    fn test_transformer_layer_on_gpu() {
+        require_gpu!();
+        use swiftllm_cuda::forward::{transformer_layer_forward_gpu, transformer_layer_reference};
+        let (h, s) = (8usize, 3usize);
+        let w = make_layer(10);
+        let x_f16: Vec<half::f16> = (0..s * h)
+            .map(|i| half::f16::from_f32((i as f32) / 8.0 - 0.5))
+            .collect();
+        let x_ref: Vec<f32> = x_f16.iter().map(|v| v.to_f32()).collect();
+
+        let gpu = transformer_layer_forward_gpu(&x_f16, &w, s).expect("GPU layer");
+        let cpu = transformer_layer_reference(&x_ref, &w, s);
+        assert_eq!(gpu.len(), cpu.len());
+        let mut max_err = 0.0f32;
+        for i in 0..gpu.len() {
+            max_err = max_err.max((gpu[i].to_f32() - cpu[i]).abs());
+        }
+        assert!(max_err < 0.2, "transformer layer max f16 error {} too high", max_err);
+    }
+
+    #[test]
+    fn test_transformer_stack_on_gpu() {
+        require_gpu!();
+        use swiftllm_cuda::forward::{
+            transformer_layer_reference, transformer_stack_forward_gpu,
+        };
+        let (h, s) = (8usize, 3usize);
+        let layers = vec![make_layer(100), make_layer(200)]; // 2-layer stack
+        let x_f16: Vec<half::f16> = (0..s * h)
+            .map(|i| half::f16::from_f32((i as f32) / 10.0 - 0.4))
+            .collect();
+        let x_ref: Vec<f32> = x_f16.iter().map(|v| v.to_f32()).collect();
+
+        let gpu = transformer_stack_forward_gpu(&x_f16, &layers, s).expect("GPU stack");
+        // CPU reference: apply each layer in sequence.
+        let mut cpu = x_ref;
+        for layer in &layers {
+            cpu = transformer_layer_reference(&cpu, layer, s);
+        }
+        assert_eq!(gpu.len(), cpu.len());
+        let mut max_err = 0.0f32;
+        for i in 0..gpu.len() {
+            max_err = max_err.max((gpu[i].to_f32() - cpu[i]).abs());
+        }
+        assert!(max_err < 0.4, "2-layer stack max f16 error {} too high", max_err);
+    }
 }
 
 // ------------------------------------------------------------------------------

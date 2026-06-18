@@ -3532,8 +3532,14 @@ SwiftLLM includes built-in security features across the server, installer, and r
 
 **Hardware / GPU validation**
 
-- **Validated on Blackwell**: the `swiftllm-cuda` layer runs on an NVIDIA **RTX PRO 4000 Blackwell** (driver 580, **CUDA 13.0**, Ubuntu 24.04) — all **13 GPU integration tests pass**, covering the device-buffer lifecycle, raw `cudaMalloc`/`memset`, f16 host↔device round-trips, **f16 linear-kernel execution**, and a **real Gemma-style gated FFN forward block** (`swiftllm_cuda::forward::ffn_forward_gpu` — `down(geglu(gate(x), up(x)))`) whose three projections run on the GPU and match a pure-CPU reference within f16 tolerance (run: `CUDA_PATH=/usr/local/cuda cargo test -p swiftllm-cuda --test gpu_integration`)
-- **Scope**: a genuine neural-net forward *block* now executes and is numerically verified on the GPU — not just raw primitives. What remains a documented seam: the GeGLU activation is currently applied host-side (a GPU activation kernel is future work), and a *full* transformer layer (attention/RoPE/norm kernels) and the end-to-end multi-layer model + training backward pass are not yet wired onto these primitives. The `cuda` feature builds cleanly on Blackwell/CUDA 13 and the CPU-feature crates' full unit suite is green on the same host
+- **A full transformer decoder layer runs on Blackwell.** On an NVIDIA **RTX PRO 4000 Blackwell** (driver 580, **CUDA 13.0**, Ubuntu 24.04), **17 GPU integration tests pass** (`CUDA_PATH=/usr/local/cuda cargo test -p swiftllm-cuda --test gpu_integration`). Real CUDA kernels — `linear_f16` (GEMM), `geglu_f16`, `rmsnorm_f16`, `attention_f16` (causal multi-head scaled-dot-product attention), and `add_f16` — compose **entirely on the device** into:
+  - a Gemma-style gated FFN block (`forward::ffn_forward_gpu`);
+  - RMSNorm (`forward::rmsnorm_forward_gpu`) and multi-head attention (`forward::attention_forward_gpu`);
+  - a **complete transformer decoder layer** (`forward::transformer_layer_forward_gpu` — RMSNorm → QKV → attention → output projection → residual → RMSNorm → GeGLU FFN → residual); and
+  - a **multi-layer stack** (`forward::transformer_stack_forward_gpu`).
+
+  Every one is verified numerically against a pure-CPU reference within f16 tolerance.
+- **Still out of scope (honest):** the **training backward pass / autograd** (a separate, much larger effort); **token embeddings + final LM head + sampling** to make a complete token→token model; **RoPE** positional encoding in the attention path; and the attention kernel is a correctness-first *reference* kernel (sequence ≤ 256), not a fused flash-attention kernel. The `cuda` feature builds cleanly on Blackwell/CUDA 13 and the CPU-feature crates' full unit suite is green on the same host.
 
 ---
 

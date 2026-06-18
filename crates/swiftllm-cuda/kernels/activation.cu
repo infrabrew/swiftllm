@@ -72,6 +72,26 @@ extern "C" void silu_mul_f16_launch(const __half* gate, const __half* up, __half
     silu_mul_kernel<<<blocks, threads>>>(gate, up, out, n);
 }
 
+// ---------------------------------------------------------------------------
+// Element-wise add (residual connections): out[i] = a[i] + b[i]
+// ---------------------------------------------------------------------------
+__global__ void add_kernel(
+    const __half* __restrict__ a,
+    const __half* __restrict__ b,
+    __half*       __restrict__ out,
+    int n
+) {
+    int i = blockIdx.x * blockDim.x + threadIdx.x;
+    if (i >= n) return;
+    out[i] = __float2half(__half2float(a[i]) + __half2float(b[i]));
+}
+
+extern "C" void add_f16_launch(const __half* a, const __half* b, __half* out, int n) {
+    int threads = 256;
+    int blocks  = (n + threads - 1) / threads;
+    add_kernel<<<blocks, threads>>>(a, b, out, n);
+}
+
 // ==============================================================================
 // END OF FILE: activation.cu
 // (c) 2026 SWIFTLLM | Apache 2.0 License

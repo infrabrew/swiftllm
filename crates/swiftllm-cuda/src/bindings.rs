@@ -831,9 +831,14 @@ pub unsafe fn linear_f16(
 extern "C" {
     fn geglu_f16_launch(gate: *const half::f16, up: *const half::f16, out: *mut half::f16, n: i32);
     fn silu_mul_f16_launch(gate: *const half::f16, up: *const half::f16, out: *mut half::f16, n: i32);
+    fn add_f16_launch(a: *const half::f16, b: *const half::f16, out: *mut half::f16, n: i32);
     fn rmsnorm_f16_launch(
         x: *const half::f16, weight: *const half::f16, out: *mut half::f16,
         rows: i32, dim: i32, eps: f32, weight_offset: f32,
+    );
+    fn attention_f16_launch(
+        q: *const half::f16, k: *const half::f16, v: *const half::f16, out: *mut half::f16,
+        seq_len: i32, num_heads: i32, head_dim: i32, scale: f32, causal: i32,
     );
 }
 
@@ -841,6 +846,7 @@ extern "C" {
 ///
 /// # Safety
 /// All pointers must reference valid GPU buffers of length `n`.
+#[allow(unused_variables)]
 pub unsafe fn geglu_f16(
     gate: *const half::f16,
     up: *const half::f16,
@@ -860,6 +866,7 @@ pub unsafe fn geglu_f16(
 ///
 /// # Safety
 /// All pointers must reference valid GPU buffers of length `n`.
+#[allow(unused_variables)]
 pub unsafe fn silu_mul_f16(
     gate: *const half::f16,
     up: *const half::f16,
@@ -875,12 +882,33 @@ pub unsafe fn silu_mul_f16(
     { Err(CudaError::DeviceNotFound) }
 }
 
+/// Element-wise add on the GPU (residual): `out = a + b` (`n` elements).
+///
+/// # Safety
+/// All pointers must reference valid GPU buffers of length `n`.
+#[allow(unused_variables)]
+pub unsafe fn add_f16(
+    a: *const half::f16,
+    b: *const half::f16,
+    out: *mut half::f16,
+    n: usize,
+) -> Result<()> {
+    #[cfg(has_cuda)]
+    {
+        add_f16_launch(a, b, out, n as i32);
+        check_cuda_last_error("add_f16")
+    }
+    #[cfg(not(has_cuda))]
+    { Err(CudaError::DeviceNotFound) }
+}
+
 /// RMS normalization on the GPU: `out[row] = x[row] * rsqrt(mean(x²)+eps) *
 /// (weight + offset)`. `offset = 0.0` is standard RMSNorm; `offset = 1.0` is
 /// Gemma's unit-offset variant.
 ///
 /// # Safety
 /// `x`/`out` must be valid GPU buffers of `rows * dim`; `weight` of `dim`.
+#[allow(unused_variables)]
 pub unsafe fn rmsnorm_f16(
     x: *const half::f16,
     weight: *const half::f16,
@@ -894,6 +922,35 @@ pub unsafe fn rmsnorm_f16(
     {
         rmsnorm_f16_launch(x, weight, out, rows as i32, dim as i32, eps, weight_offset);
         check_cuda_last_error("rmsnorm_f16")
+    }
+    #[cfg(not(has_cuda))]
+    { Err(CudaError::DeviceNotFound) }
+}
+
+/// Multi-head scaled-dot-product attention on the GPU. `q`/`k`/`v`/`out` are
+/// `[seq_len, num_heads * head_dim]`; `causal = true` masks future keys.
+///
+/// # Safety
+/// All pointers must reference valid GPU buffers of `seq_len * num_heads * head_dim`.
+#[allow(clippy::too_many_arguments, unused_variables)]
+pub unsafe fn attention_f16(
+    q: *const half::f16,
+    k: *const half::f16,
+    v: *const half::f16,
+    out: *mut half::f16,
+    seq_len: usize,
+    num_heads: usize,
+    head_dim: usize,
+    scale: f32,
+    causal: bool,
+) -> Result<()> {
+    #[cfg(has_cuda)]
+    {
+        attention_f16_launch(
+            q, k, v, out,
+            seq_len as i32, num_heads as i32, head_dim as i32, scale, causal as i32,
+        );
+        check_cuda_last_error("attention_f16")
     }
     #[cfg(not(has_cuda))]
     { Err(CudaError::DeviceNotFound) }
